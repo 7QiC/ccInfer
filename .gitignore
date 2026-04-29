@@ -49,7 +49,7 @@ checkpoint*/
 # Misc
 *.log
 *.tmp
-core
+/core
 
 # claude code
 .claude

@@ -1,0 +1,52 @@
+#pragma once
+#include <cstddef>
+#include <cuda_runtime.h>
+#include <utility>
+
+namespace ccinfer {
+
+template<typename T>
+class DeviceBuffer {
+public:
+    DeviceBuffer() = default;
+
+    explicit DeviceBuffer(size_t n) : size_(n) {
+        cudaMalloc(&ptr_, n * sizeof(T));
+    }
+
+    ~DeviceBuffer() {
+        if (ptr_) cudaFree(ptr_);
+    }
+
+    DeviceBuffer(const DeviceBuffer&) = delete;
+    DeviceBuffer& operator=(const DeviceBuffer&) = delete;
+
+    DeviceBuffer(DeviceBuffer&& other) noexcept
+        : ptr_(other.ptr_), size_(other.size_)
+    {
+        other.ptr_ = nullptr;
+        other.size_ = 0;
+    }
+
+    DeviceBuffer& operator=(DeviceBuffer&& other) noexcept {
+        if (this != &other) {
+            if (ptr_) cudaFree(ptr_);
+            ptr_ = other.ptr_;
+            size_ = other.size_;
+            other.ptr_ = nullptr;
+            other.size_ = 0;
+        }
+        return *this;
+    }
+
+    T* get() const { return ptr_; }
+    operator T*() const { return ptr_; }
+    size_t size() const { return size_; }
+    bool empty() const { return size_ == 0; }
+
+private:
+    T* ptr_ = nullptr;
+    size_t size_ = 0;
+};
+
+} // namespace ccinfer
