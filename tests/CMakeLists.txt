@@ -14,3 +14,7 @@ gtest_discover_tests(test_tensor)
 add_executable(test_config unit/test_config.cpp)
 target_link_libraries(test_config PRIVATE engine gtest_main)
 gtest_discover_tests(test_config)
+
+add_executable(test_smoke unit/test_smoke.cpp)
+target_link_libraries(test_smoke PRIVATE engine gtest_main CUDA::cudart)
+gtest_discover_tests(test_smoke)
