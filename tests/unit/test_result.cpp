@@ -1,11 +1,17 @@
 #include <gtest/gtest.h>
 #include "result.h"
 
+using namespace ccinfer;
+
 TEST(ResultTest, Success) {
     Result<int> r = 42;
     EXPECT_TRUE(r.has_value());
     EXPECT_EQ(r.value(), 42);
     EXPECT_EQ(*r, 42);
+}
+
+TEST(ResultTest, OkIsZero) {
+    EXPECT_EQ(static_cast<uint8_t>(ErrorCode::Ok), 0);
 }
 
 TEST(ResultTest, Error) {
@@ -32,6 +38,7 @@ TEST(ResultTest, OrElseRecovery) {
 }
 
 TEST(ResultTest, ErrorMessage) {
+    EXPECT_STREQ(error_message(ErrorCode::Ok).data(), "ok");
     EXPECT_STREQ(error_message(ErrorCode::KVBlockExhausted).data(), "KV cache blocks exhausted");
     EXPECT_STREQ(error_message(ErrorCode::CudaOutOfMemory).data(), "CUDA out of memory");
 }

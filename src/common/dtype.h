@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <string_view>
 
+namespace ccinfer {
+
 enum class DType : uint8_t {
     Float32,
     Float16,
@@ -32,3 +34,5 @@ inline constexpr std::string_view dtype_name(DType dt) {
     }
     return "unknown";
 }
+
+} // namespace ccinfer
