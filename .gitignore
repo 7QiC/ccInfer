@@ -1,0 +1,56 @@
+# Build
+build/
+cmake-build-*/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Compiled / generated
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.out
+
+# CUDA
+*.ptx
+*.cubin
+*.fatbin
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Model weights (large files)
+*.bin
+*.safetensors
+*.gguf
+*.pt
+*.pth
+*.ckpt
+*.onnx
+model*/
+checkpoint*/
+
+# Environment
+.env
+.env.local
+
+# Misc
+*.log
+*.tmp
+core
+
+# claude code
+.claude
+/docs
