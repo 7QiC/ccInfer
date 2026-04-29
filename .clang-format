@@ -1,0 +1,20 @@
+BasedOnStyle: Google
+ColumnLimit: 100
+IndentWidth: 4
+UseTab: Never
+IndentCaseLabels: true
+AccessModifierOffset: 0
+MaxEmptyLinesToKeep: 1
+SpaceAfterControlStatementKeyword: true
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^<.*\.h>'
+    Priority: 1
+    SortPriority: 1
+  - Regex: '^<.*>'
+    Priority: 3
+    SortPriority: 2
+  - Regex: '^".*"'
+    Priority: 5
+    SortPriority: 3
+SortIncludes: true
