@@ -18,3 +18,7 @@ gtest_discover_tests(test_config)
 add_executable(test_smoke unit/test_smoke.cpp)
 target_link_libraries(test_smoke PRIVATE engine gtest_main CUDA::cudart)
 gtest_discover_tests(test_smoke)
+
+add_executable(test_rms_norm kernel/test_rms_norm.cu)
+target_link_libraries(test_rms_norm PRIVATE engine gtest_main CUDA::cudart)
+gtest_discover_tests(test_rms_norm)

@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+
 #include "result.h"
 
 using namespace ccinfer;
@@ -10,9 +11,7 @@ TEST(ResultTest, Success) {
     EXPECT_EQ(*r, 42);
 }
 
-TEST(ResultTest, OkIsZero) {
-    EXPECT_EQ(static_cast<uint8_t>(ErrorCode::Ok), 0);
-}
+TEST(ResultTest, OkIsZero) { EXPECT_EQ(static_cast<uint8_t>(ErrorCode::Ok), 0); }
 
 TEST(ResultTest, Error) {
     Result<int> r = std::unexpected(ErrorCode::CudaOutOfMemory);
@@ -31,9 +30,7 @@ TEST(ResultTest, AndThenChaining) {
 
 TEST(ResultTest, OrElseRecovery) {
     Result<int> err = std::unexpected(ErrorCode::CudaOutOfMemory);
-    auto recovered = err.or_else([](ErrorCode) -> Result<int> {
-        return 0;
-    });
+    auto recovered = err.or_else([](ErrorCode) -> Result<int> { return 0; });
     EXPECT_EQ(recovered.value(), 0);
 }
 

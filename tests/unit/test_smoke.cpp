@@ -1,13 +1,16 @@
-#include <gtest/gtest.h>
 #include <cuda_runtime.h>
+#include <gtest/gtest.h>
+
 #include <vector>
+
 #include "core/device_buffer.h"
 #include "core/tensor.h"
-#include "result.h"
-#include "model/config.h"
 #include "dtype.h"
+#include "model/config.h"
+#include "result.h"
 
 using namespace ccinfer;
+using namespace ccinfer::engine;
 
 TEST(SmokeTest, GPUAccessible) {
     int device;

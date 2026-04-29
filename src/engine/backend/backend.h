@@ -3,11 +3,12 @@
 #include <cstdint>
 #include <memory>
 
-#include "core/tensor.h"
 #include "backend/params.h"
+#include "core/tensor.h"
 #include "result.h"
 
 namespace ccinfer {
+namespace engine {
 
 class DeviceBackend {
 public:
@@ -24,4 +25,5 @@ public:
     static std::unique_ptr<DeviceBackend> create();
 };
 
-} // namespace ccinfer
+}  // namespace engine
+}  // namespace ccinfer

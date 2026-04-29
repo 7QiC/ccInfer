@@ -1,4 +1,5 @@
 #pragma once
+
 #include <cstdint>
 
 namespace ccinfer {
@@ -8,4 +9,4 @@ inline uint64_t hash_combine(uint64_t seed, uint64_t val) {
     return seed;
 }
 
-} // namespace ccinfer
+}  // namespace ccinfer

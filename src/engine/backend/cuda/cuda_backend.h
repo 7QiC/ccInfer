@@ -6,6 +6,7 @@
 #include "backend/backend.h"
 
 namespace ccinfer {
+namespace engine {
 
 class CudaBackend : public DeviceBackend {
 public:
@@ -26,4 +27,5 @@ private:
     cudaStream_t stream_;
 };
 
-} // namespace ccinfer
+}  // namespace engine
+}  // namespace ccinfer

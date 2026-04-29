@@ -9,12 +9,13 @@
 #include "dtype.h"
 
 namespace ccinfer {
+namespace engine {
 
-template<int MaxRank = 5>
+template <int MaxRank = 5>
 struct Tensor {
-    void*   data = nullptr;
-    DType   dtype = DType::kFloat32;
-    int     rank = 0;
+    void* data = nullptr;
+    DType dtype = DType::kFloat32;
+    int rank = 0;
     std::array<int64_t, MaxRank> shape{};
     std::array<int64_t, MaxRank> stride{};
 
@@ -82,4 +83,5 @@ struct Tensor {
     }
 };
 
-} // namespace ccinfer
+}  // namespace engine
+}  // namespace ccinfer

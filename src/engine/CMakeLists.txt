@@ -1,5 +1,6 @@
 add_library(engine STATIC
     backend/cuda/cuda_backend.cpp
+    kernel/norm/rms_norm.cu
 )
 
 target_include_directories(engine

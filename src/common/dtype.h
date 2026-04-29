@@ -1,4 +1,5 @@
 #pragma once
+
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -6,33 +7,38 @@
 namespace ccinfer {
 
 enum class DType : uint8_t {
-    Float32,
-    Float16,
-    BFloat16,
-    Int8,
-    Int4,
+    kFloat32,
+    kFloat16,
+    kBFloat16,
+    kInt8,
 };
 
-inline constexpr size_t dtype_size(DType dt) {
+inline constexpr size_t dtype_size(DType dt) noexcept {
     switch (dt) {
-        case DType::Float32:  return 4;
-        case DType::Float16:  return 2;
-        case DType::BFloat16: return 2;
-        case DType::Int8:     return 1;
-        case DType::Int4:     return 1;
+        case DType::kFloat32:
+            return 4;
+        case DType::kFloat16:
+            return 2;
+        case DType::kBFloat16:
+            return 2;
+        case DType::kInt8:
+            return 1;
     }
     return 0;
 }
 
-inline constexpr std::string_view dtype_name(DType dt) {
+inline constexpr std::string_view dtype_name(DType dt) noexcept {
     switch (dt) {
-        case DType::Float32:  return "float32";
-        case DType::Float16:  return "float16";
-        case DType::BFloat16: return "bfloat16";
-        case DType::Int8:     return "int8";
-        case DType::Int4:     return "int4";
+        case DType::kFloat32:
+            return "float32";
+        case DType::kFloat16:
+            return "float16";
+        case DType::kBFloat16:
+            return "bfloat16";
+        case DType::kInt8:
+            return "int8";
     }
     return "unknown";
 }
 
-} // namespace ccinfer
+}  // namespace ccinfer

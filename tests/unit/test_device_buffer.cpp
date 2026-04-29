@@ -1,9 +1,12 @@
-#include <gtest/gtest.h>
 #include <cuda_runtime.h>
+#include <gtest/gtest.h>
+
 #include <vector>
+
 #include "core/device_buffer.h"
 
 using namespace ccinfer;
+using namespace ccinfer::engine;
 
 TEST(DeviceBufferTest, DefaultConstruction) {
     DeviceBuffer<float> buf;

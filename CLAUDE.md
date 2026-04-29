@@ -30,7 +30,7 @@ Requires: CUDA Toolkit 11.8+, GCC 13+, CMake 3.20+, Boost 1.83+, nlohmann-json, 
 - **Error handling:** `Result<T>` = `std::expected<T, ErrorCode>`, no exceptions in hot paths
 - **CUDA:** Device memory via `DeviceBuffer<T>` RAII, macros `CCINFER_CUDA_CHECK` / `CCINFER_CUBLAS_CHECK`
 - **Tests:** GTest, test file per module, `TYPED_TEST` for dtype-generic tests
-- **Format:** `.clang-format` (Google-based, 100col, 4-space indent)
+- **Format:** `.clang-format` (Google-based, 100col, 4-space indent), use clang-format before commit
 
 ## Design Spec
 
