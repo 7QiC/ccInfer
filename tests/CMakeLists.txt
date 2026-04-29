@@ -10,3 +10,7 @@ gtest_discover_tests(test_device_buffer)
 add_executable(test_tensor unit/test_tensor.cpp)
 target_link_libraries(test_tensor PRIVATE engine gtest_main)
 gtest_discover_tests(test_tensor)
+
+add_executable(test_config unit/test_config.cpp)
+target_link_libraries(test_config PRIVATE engine gtest_main)
+gtest_discover_tests(test_config)

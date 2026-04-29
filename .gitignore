@@ -39,8 +39,8 @@ venv/
 *.pth
 *.ckpt
 *.onnx
-model*/
-checkpoint*/
+/model*/
+/checkpoint*/
 
 # Environment
 .env
