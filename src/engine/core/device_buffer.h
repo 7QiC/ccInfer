@@ -39,6 +39,14 @@ public:
         return *this;
     }
 
+    void allocate(size_t n) {
+        if (ptr_) cudaFree(ptr_);
+        size_ = n;
+        cudaMalloc(&ptr_, n * sizeof(T));
+    }
+
+    T* data() noexcept { return ptr_; }
+    const T* data() const noexcept { return ptr_; }
     T* get() noexcept { return ptr_; }
     const T* get() const noexcept { return ptr_; }
     operator T*() const noexcept { return ptr_; }

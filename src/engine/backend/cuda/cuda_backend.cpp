@@ -5,6 +5,7 @@
 #include "cuda_utils.h"
 #include "result.h"
 #include "kernel/norm/rms_norm.h"
+#include "kernel/pos/rope.h"
 
 namespace ccinfer {
 namespace engine {
@@ -40,7 +41,12 @@ Result<void> CudaBackend::rms_norm(const RmsNormParams& p) {
                     static_cast<cudaStream_t>(p.stream_));
     return {};
 }
-Result<void> CudaBackend::rope(const RopeParams&) { return {}; }
+Result<void> CudaBackend::rope(const RopeParams& p) {
+    launch_rope(static_cast<half*>(p.q_), static_cast<half*>(p.k_), p.positions_, p.rope_cache_,
+                p.num_tokens_, p.num_q_heads_, p.num_kv_heads_, p.head_dim_, p.rotary_dim_,
+                p.max_position_, static_cast<cudaStream_t>(p.stream_));
+    return {};
+}
 Result<void> CudaBackend::silu_mul(const SiluMulParams&) { return {}; }
 
 std::unique_ptr<DeviceBackend> DeviceBackend::create() { return std::make_unique<CudaBackend>(); }

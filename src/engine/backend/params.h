@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include <cuda_runtime.h>
+
 namespace ccinfer {
 namespace engine {
 
@@ -30,11 +32,13 @@ struct RopeParams {
     void* q_;
     void* k_;
     const int32_t* positions_;
+    const float2* rope_cache_;
     int num_tokens_ = 0;
     int num_q_heads_ = 0;
     int num_kv_heads_ = 0;
     int head_dim_ = 0;
-    float rope_theta_ = 10000.0f;
+    int rotary_dim_ = 0;
+    int max_position_ = 0;
     void* stream_ = nullptr;
 };
 
