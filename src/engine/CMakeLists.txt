@@ -5,6 +5,7 @@ add_library(engine STATIC
     kernel/pos/rope_cache.cpp
     kernel/mlp/silu_mul.cu
     model/loader.cpp
+    kernel/attention/naive_attn.cu
 )
 
 target_include_directories(engine

@@ -30,3 +30,7 @@ gtest_discover_tests(test_rope)
 add_executable(test_silu_mul kernel/test_silu_mul.cu)
 target_link_libraries(test_silu_mul PRIVATE engine gtest_main CUDA::cudart)
 gtest_discover_tests(test_silu_mul)
+
+add_executable(test_naive_attn kernel/test_naive_attn.cu)
+target_link_libraries(test_naive_attn PRIVATE engine gtest_main CUDA::cudart CUDA::cublas)
+gtest_discover_tests(test_naive_attn)
