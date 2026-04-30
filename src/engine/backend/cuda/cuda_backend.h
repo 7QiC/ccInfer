@@ -18,6 +18,7 @@ public:
     Result<void> rope(const RopeParams& p) override;
     Result<void> silu_mul(const SiluMulParams& p) override;
 
+    Result<void> naive_attention(const NaiveAttnParams& p) override;
     Result<void> prefill_attention(const PrefillAttnParams&) override { return {}; }
     Result<void> decode_attention(const DecodeAttnParams&) override { return {}; }
     Result<void> write_kv_cache(const WriteKVCacheParams&) override { return {}; }

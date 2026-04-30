@@ -6,6 +6,7 @@
 
 #include "common/result.h"
 #include "cuda_utils.h"
+#include "engine/kernel/attention/naive_attn.h"
 #include "engine/kernel/mlp/silu_mul.h"
 #include "engine/kernel/norm/rms_norm.h"
 #include "engine/kernel/pos/rope.h"
@@ -14,18 +15,37 @@ namespace ccinfer {
 namespace engine {
 
 CudaBackend::CudaBackend() {
-    if (auto r = cublas_check(cublasCreate(&cublas_handle_)); !r) abort();
-    if (auto r = cuda_check(cudaStreamCreate(&stream_)); !r) abort();
+    if (auto r = cublas_check(cublasCreate(&cublas_handle_)); !r) {
+        std::abort();
+    }
+
+    if (auto r = cuda_check(cudaStreamCreate(&stream_)); !r) {
+        std::abort();
+    }
+
+    if (auto r = cublas_check(cublasSetStream(cublas_handle_, stream_)); !r) {
+        std::abort();
+    }
 }
 
 CudaBackend::~CudaBackend() {
-    cublasDestroy(cublas_handle_);
-    cudaStreamDestroy(stream_);
+    if (cublas_handle_ != nullptr) {
+        cublasDestroy(cublas_handle_);
+        cublas_handle_ = nullptr;
+    }
+
+    if (stream_ != nullptr) {
+        cudaStreamDestroy(stream_);
+        stream_ = nullptr;
+    }
 }
 
 Result<void> CudaBackend::gemm(const GemmParams& p) {
-    auto s = static_cast<cudaStream_t>(p.stream_);
-    if (auto r = cublas_check(cublasSetStream(cublas_handle_, s)); !r) return r;
+    cudaStream_t s = p.stream_ ? static_cast<cudaStream_t>(p.stream_) : stream_;
+
+    if (auto r = cublas_check(cublasSetStream(cublas_handle_, s)); !r) {
+        return r;
+    }
 
     float alpha = 1.0f;
     float beta = 0.0f;
@@ -38,23 +58,36 @@ Result<void> CudaBackend::gemm(const GemmParams& p) {
 }
 
 Result<void> CudaBackend::rms_norm(const RmsNormParams& p) {
+    cudaStream_t s = p.stream_ ? static_cast<cudaStream_t>(p.stream_) : stream_;
+
     return launch_rms_norm(static_cast<const __nv_bfloat16*>(p.input_),
                            static_cast<const __nv_bfloat16*>(p.weight_),
-                           static_cast<__nv_bfloat16*>(p.output_), p.rows_, p.dim_, p.eps_,
-                           static_cast<cudaStream_t>(p.stream_));
+                           static_cast<__nv_bfloat16*>(p.output_), p.rows_, p.dim_, p.eps_, s);
 }
 
 Result<void> CudaBackend::rope(const RopeParams& p) {
+    cudaStream_t s = p.stream_ ? static_cast<cudaStream_t>(p.stream_) : stream_;
+
     return launch_rope(static_cast<__nv_bfloat16*>(p.q_), static_cast<__nv_bfloat16*>(p.k_),
                        p.positions_, p.rope_cache_, p.num_tokens_, p.num_q_heads_, p.num_kv_heads_,
-                       p.head_dim_, p.rotary_dim_, p.max_position_,
-                       static_cast<cudaStream_t>(p.stream_));
+                       p.head_dim_, p.rotary_dim_, p.max_position_, s);
 }
 
 Result<void> CudaBackend::silu_mul(const SiluMulParams& p) {
-    return launch_silu_mul(
-        static_cast<const __nv_bfloat16*>(p.gate_), static_cast<const __nv_bfloat16*>(p.up_),
-        static_cast<__nv_bfloat16*>(p.output_), p.n_, static_cast<cudaStream_t>(p.stream_));
+    cudaStream_t s = p.stream_ ? static_cast<cudaStream_t>(p.stream_) : stream_;
+
+    return launch_silu_mul(static_cast<const __nv_bfloat16*>(p.gate_),
+                           static_cast<const __nv_bfloat16*>(p.up_),
+                           static_cast<__nv_bfloat16*>(p.output_), p.n_, s);
+}
+
+Result<void> CudaBackend::naive_attention(const NaiveAttnParams& p) {
+    cudaStream_t s = p.stream_ ? static_cast<cudaStream_t>(p.stream_) : stream_;
+
+    return ::ccinfer::engine::naive_attention(
+        static_cast<const __nv_bfloat16*>(p.q_), static_cast<const __nv_bfloat16*>(p.k_),
+        static_cast<const __nv_bfloat16*>(p.v_), static_cast<__nv_bfloat16*>(p.output_),
+        p.num_tokens_, p.num_q_heads_, p.num_kv_heads_, p.head_dim_, s);
 }
 
 std::unique_ptr<DeviceBackend> DeviceBackend::create() { return std::make_unique<CudaBackend>(); }
