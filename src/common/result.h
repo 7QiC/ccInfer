@@ -2,7 +2,7 @@
 
 #include <expected>
 
-#include "error_code.h"
+#include "common/error_code.h"
 
 namespace ccinfer {
 

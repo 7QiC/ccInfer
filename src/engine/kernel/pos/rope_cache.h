@@ -3,7 +3,7 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
-#include "core/device_buffer.h"
+#include "engine/core/device_buffer.h"
 
 namespace ccinfer {
 namespace engine {

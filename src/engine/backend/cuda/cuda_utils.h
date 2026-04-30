@@ -2,7 +2,6 @@
 
 #include <cstdio>
 #include <cstdlib>
-
 #include <source_location>
 
 #include <cublas_v2.h>

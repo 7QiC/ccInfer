@@ -1,4 +1,4 @@
-#include "rms_norm.h"
+#include "engine/kernel/norm/rms_norm.h"
 
 #include <cstdint>
 

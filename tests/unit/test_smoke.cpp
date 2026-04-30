@@ -5,9 +5,9 @@
 
 #include "core/device_buffer.h"
 #include "core/tensor.h"
-#include "dtype.h"
-#include "model/config.h"
-#include "result.h"
+#include "common/dtype.h"
+#include "engine/model/config.h"
+#include "common/result.h"
 
 using namespace ccinfer;
 using namespace ccinfer::engine;

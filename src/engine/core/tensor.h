@@ -3,11 +3,10 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-
 #include <array>
 #include <initializer_list>
 
-#include "dtype.h"
+#include "common/dtype.h"
 
 namespace ccinfer {
 namespace engine {

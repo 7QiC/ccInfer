@@ -1,11 +1,9 @@
 #pragma once
 
-#include <cstdint>
-
 #include <memory>
 
-#include "backend/params.h"
-#include "result.h"
+#include "engine/backend/params.h"
+#include "common/result.h"
 
 namespace ccinfer {
 namespace engine {

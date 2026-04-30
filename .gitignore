@@ -51,6 +51,9 @@ venv/
 *.tmp
 /core
 
+# clang cache
+.cache
+
 # claude code
 .claude
 /docs

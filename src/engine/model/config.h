@@ -1,13 +1,12 @@
 #pragma once
 
 #include <cstdint>
-
 #include <string>
 
 #include <nlohmann/json.hpp>
 
-#include "dtype.h"
-#include "result.h"
+#include "common/dtype.h"
+#include "common/result.h"
 
 namespace ccinfer {
 namespace engine {

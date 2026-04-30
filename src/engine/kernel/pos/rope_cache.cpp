@@ -1,7 +1,6 @@
-#include "rope_cache.h"
+#include "engine/kernel/pos/rope_cache.h"
 
 #include <cmath>
-
 #include <vector>
 
 #include "backend/cuda/cuda_utils.h"

@@ -1,9 +1,9 @@
 #pragma once
 
+#include <cstdint>
+
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
-
-#include <cstdint>
 
 namespace ccinfer {
 namespace engine {

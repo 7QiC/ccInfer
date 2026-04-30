@@ -4,8 +4,6 @@
 
 #include <cuda_runtime.h>
 
-#include <utility>
-
 namespace ccinfer {
 namespace engine {
 

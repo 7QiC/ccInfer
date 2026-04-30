@@ -7,7 +7,7 @@ add_library(engine STATIC
 
 target_include_directories(engine
     PUBLIC
-        ${CMAKE_SOURCE_DIR}/src/common
+        ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}
     PRIVATE
         ${CUDAToolkit_INCLUDE_DIRS}

@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-#include <cuda_runtime.h>
+#include "cuda_runtime.h"
 
 namespace ccinfer {
 namespace engine {

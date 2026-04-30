@@ -1,11 +1,11 @@
-#include "cuda_backend.h"
+#include "engine/backend/cuda/cuda_backend.h"
 
 #include <cuda_fp16.h>
 
 #include "cuda_utils.h"
-#include "result.h"
-#include "kernel/norm/rms_norm.h"
-#include "kernel/pos/rope.h"
+#include "common/result.h"
+#include "engine/kernel/norm/rms_norm.h"
+#include "engine/kernel/pos/rope.h"
 
 namespace ccinfer {
 namespace engine {
