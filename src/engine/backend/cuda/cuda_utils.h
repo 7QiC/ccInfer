@@ -1,12 +1,12 @@
 #pragma once
 
-#include <cstdio>
-
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 
-#include "common/result.h"
+#include <cstdio>
+
 #include "common/error_code.h"
+#include "common/result.h"
 
 namespace ccinfer {
 namespace engine {

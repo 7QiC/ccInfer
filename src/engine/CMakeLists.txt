@@ -4,6 +4,7 @@ add_library(engine STATIC
     kernel/pos/rope.cu
     kernel/pos/rope_cache.cpp
     kernel/mlp/silu_mul.cu
+    model/loader.cpp
 )
 
 target_include_directories(engine

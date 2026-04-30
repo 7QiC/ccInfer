@@ -1,8 +1,8 @@
 #pragma once
 
-#include <cstddef>
-
 #include <cuda_runtime.h>
+
+#include <cstddef>
 
 namespace ccinfer {
 namespace engine {

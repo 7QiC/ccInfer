@@ -1,9 +1,9 @@
 #pragma once
 
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <array>
 #include <initializer_list>
 
 #include "common/dtype.h"

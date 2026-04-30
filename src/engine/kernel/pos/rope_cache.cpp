@@ -1,8 +1,9 @@
+#include "engine/kernel/pos/rope_cache.h"
+
 #include <cmath>
 #include <vector>
 
 #include "engine/backend/cuda/cuda_utils.h"
-#include "engine/kernel/pos/rope_cache.h"
 
 namespace ccinfer {
 namespace engine {
@@ -33,7 +34,7 @@ void RopeCache::init(int max_position, int rotary_dim, float rope_theta) {
     cache_.allocate(host_cache.size());
 
     auto r = cuda_check(cudaMemcpy(cache_.data(), host_cache.data(),
-                                    host_cache.size() * sizeof(float2), cudaMemcpyHostToDevice));
+                                   host_cache.size() * sizeof(float2), cudaMemcpyHostToDevice));
     if (!r) {
         fprintf(stderr, "RopeCache: cudaMemcpy failed\n");
         abort();

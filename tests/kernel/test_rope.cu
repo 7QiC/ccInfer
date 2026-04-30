@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include <cuda_fp16.h>
+#include <cuda_bf16.h>
 #include <cuda_runtime.h>
 
 #include <cmath>
@@ -28,7 +28,7 @@ static std::vector<float2> build_rope_cache_cpu(int max_position, int rotary_dim
 }
 
 // CPU split-half RoPE application
-static void rope_cpu(half* q, half* k, const int32_t* positions, const float2* cache,
+static void rope_cpu(__nv_bfloat16* q, __nv_bfloat16* k, const int32_t* positions, const float2* cache,
                      int num_tokens, int num_q_heads, int num_kv_heads, int head_dim,
                      int rotary_dim, int max_position) {
     int half_dim = rotary_dim / 2;
@@ -40,16 +40,16 @@ static void rope_cpu(half* q, half* k, const int32_t* positions, const float2* c
             bool is_q = h < num_q_heads;
             int head = is_q ? h : h - num_q_heads;
             int n_heads = is_q ? num_q_heads : num_kv_heads;
-            half* x = is_q ? q : k;
+            __nv_bfloat16* x = is_q ? q : k;
             int64_t base = (static_cast<int64_t>(t) * n_heads + head) * head_dim;
             for (int pair = 0; pair < half_dim; pair++) {
                 int i0 = pair;
                 int i1 = pair + half_dim;
                 float2 cs = cache[static_cast<int64_t>(pos) * half_dim + pair];
-                float x0 = __half2float(x[base + i0]);
-                float x1 = __half2float(x[base + i1]);
-                x[base + i0] = __float2half_rn(x0 * cs.x - x1 * cs.y);
-                x[base + i1] = __float2half_rn(x1 * cs.x + x0 * cs.y);
+                float x0 = __bfloat162float(x[base + i0]);
+                float x1 = __bfloat162float(x[base + i1]);
+                x[base + i0] = __float2bfloat16_rn(x0 * cs.x - x1 * cs.y);
+                x[base + i1] = __float2bfloat16_rn(x1 * cs.x + x0 * cs.y);
             }
         }
     }
@@ -75,35 +75,35 @@ TEST_F(RopeTest, SingleTokenNoGQA) {
     // Input data
     int total_q = tokens * heads * dim;
     int total_k = tokens * heads * dim;
-    std::vector<half> q_h(total_q), k_h(total_k), q_expected(total_q), k_expected(total_k);
+    std::vector<__nv_bfloat16> q_h(total_q), k_h(total_k), q_expected(total_q), k_expected(total_k);
     std::vector<int32_t> pos_h = {3};
     for (int i = 0; i < total_q; i++) {
-        q_h[i] = __float2half((float)(i % 5));
-        k_h[i] = __float2half((float)((i + 1) % 5));
+        q_h[i] = __float2bfloat16((float)(i % 5));
+        k_h[i] = __float2bfloat16((float)((i + 1) % 5));
     }
     q_expected = q_h;
     k_expected = k_h;
     rope_cpu(q_expected.data(), k_expected.data(), pos_h.data(), cache_cpu.data(),
              tokens, heads, heads, dim, rotary_dim, max_pos);
 
-    half *q_d, *k_d; int32_t *pos_d;
-    cudaMalloc(&q_d, total_q * sizeof(half));
-    cudaMalloc(&k_d, total_k * sizeof(half));
+    __nv_bfloat16 *q_d, *k_d; int32_t *pos_d;
+    cudaMalloc(&q_d, total_q * sizeof(__nv_bfloat16));
+    cudaMalloc(&k_d, total_k * sizeof(__nv_bfloat16));
     cudaMalloc(&pos_d, pos_h.size() * sizeof(int32_t));
-    cudaMemcpy(q_d, q_h.data(), total_q * sizeof(half), cudaMemcpyHostToDevice);
-    cudaMemcpy(k_d, k_h.data(), total_k * sizeof(half), cudaMemcpyHostToDevice);
+    cudaMemcpy(q_d, q_h.data(), total_q * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
+    cudaMemcpy(k_d, k_h.data(), total_k * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
     cudaMemcpy(pos_d, pos_h.data(), pos_h.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
 
     ASSERT_TRUE(launch_rope(q_d, k_d, pos_d, cache_d, tokens, heads, heads, dim, rotary_dim, max_pos, stream_));
     cudaStreamSynchronize(stream_);
 
-    std::vector<half> q_out(total_q), k_out(total_k);
-    cudaMemcpy(q_out.data(), q_d, total_q * sizeof(half), cudaMemcpyDeviceToHost);
-    cudaMemcpy(k_out.data(), k_d, total_k * sizeof(half), cudaMemcpyDeviceToHost);
+    std::vector<__nv_bfloat16> q_out(total_q), k_out(total_k);
+    cudaMemcpy(q_out.data(), q_d, total_q * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost);
+    cudaMemcpy(k_out.data(), k_d, total_k * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost);
 
     for (int i = 0; i < total_q; i++) {
-        EXPECT_NEAR(__half2float(q_out[i]), __half2float(q_expected[i]), 0.02f);
-        EXPECT_NEAR(__half2float(k_out[i]), __half2float(k_expected[i]), 0.02f);
+        EXPECT_NEAR(__bfloat162float(q_out[i]), __bfloat162float(q_expected[i]), 0.02f);
+        EXPECT_NEAR(__bfloat162float(k_out[i]), __bfloat162float(k_expected[i]), 0.02f);
     }
 
     cudaFree(q_d); cudaFree(k_d); cudaFree(pos_d); cudaFree(cache_d);
@@ -120,34 +120,34 @@ TEST_F(RopeTest, GQA) {
 
     int total_q = tokens * q_heads * dim;
     int total_k = tokens * kv_heads * dim;
-    std::vector<half> q_h(total_q), k_h(total_k), q_expected(total_q), k_expected(total_k);
+    std::vector<__nv_bfloat16> q_h(total_q), k_h(total_k), q_expected(total_q), k_expected(total_k);
     std::vector<int32_t> pos_h = {5, 17};
-    for (int i = 0; i < total_q; i++) q_h[i] = __float2half((float)(i % 7 - 2));
-    for (int i = 0; i < total_k; i++) k_h[i] = __float2half((float)((i + 3) % 9 - 3));
+    for (int i = 0; i < total_q; i++) q_h[i] = __float2bfloat16((float)(i % 7 - 2));
+    for (int i = 0; i < total_k; i++) k_h[i] = __float2bfloat16((float)((i + 3) % 9 - 3));
     q_expected = q_h;
     k_expected = k_h;
     rope_cpu(q_expected.data(), k_expected.data(), pos_h.data(), cache_cpu.data(),
              tokens, q_heads, kv_heads, dim, rotary_dim, max_pos);
 
-    half *q_d, *k_d; int32_t *pos_d;
-    cudaMalloc(&q_d, total_q * sizeof(half));
-    cudaMalloc(&k_d, total_k * sizeof(half));
+    __nv_bfloat16 *q_d, *k_d; int32_t *pos_d;
+    cudaMalloc(&q_d, total_q * sizeof(__nv_bfloat16));
+    cudaMalloc(&k_d, total_k * sizeof(__nv_bfloat16));
     cudaMalloc(&pos_d, pos_h.size() * sizeof(int32_t));
-    cudaMemcpy(q_d, q_h.data(), total_q * sizeof(half), cudaMemcpyHostToDevice);
-    cudaMemcpy(k_d, k_h.data(), total_k * sizeof(half), cudaMemcpyHostToDevice);
+    cudaMemcpy(q_d, q_h.data(), total_q * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
+    cudaMemcpy(k_d, k_h.data(), total_k * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
     cudaMemcpy(pos_d, pos_h.data(), pos_h.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
 
     ASSERT_TRUE(launch_rope(q_d, k_d, pos_d, cache_d, tokens, q_heads, kv_heads, dim, rotary_dim, max_pos, stream_));
     cudaStreamSynchronize(stream_);
 
-    std::vector<half> q_out(total_q), k_out(total_k);
-    cudaMemcpy(q_out.data(), q_d, total_q * sizeof(half), cudaMemcpyDeviceToHost);
-    cudaMemcpy(k_out.data(), k_d, total_k * sizeof(half), cudaMemcpyDeviceToHost);
+    std::vector<__nv_bfloat16> q_out(total_q), k_out(total_k);
+    cudaMemcpy(q_out.data(), q_d, total_q * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost);
+    cudaMemcpy(k_out.data(), k_d, total_k * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost);
 
     for (int i = 0; i < total_q; i++)
-        EXPECT_NEAR(__half2float(q_out[i]), __half2float(q_expected[i]), 0.02f);
+        EXPECT_NEAR(__bfloat162float(q_out[i]), __bfloat162float(q_expected[i]), 0.02f);
     for (int i = 0; i < total_k; i++)
-        EXPECT_NEAR(__half2float(k_out[i]), __half2float(k_expected[i]), 0.02f);
+        EXPECT_NEAR(__bfloat162float(k_out[i]), __bfloat162float(k_expected[i]), 0.02f);
 
     cudaFree(q_d); cudaFree(k_d); cudaFree(pos_d); cudaFree(cache_d);
 }
