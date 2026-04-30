@@ -26,3 +26,7 @@ gtest_discover_tests(test_rms_norm)
 add_executable(test_rope kernel/test_rope.cu)
 target_link_libraries(test_rope PRIVATE engine gtest_main CUDA::cudart)
 gtest_discover_tests(test_rope)
+
+add_executable(test_silu_mul kernel/test_silu_mul.cu)
+target_link_libraries(test_silu_mul PRIVATE engine gtest_main CUDA::cudart)
+gtest_discover_tests(test_silu_mul)

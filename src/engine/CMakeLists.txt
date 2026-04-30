@@ -3,6 +3,7 @@ add_library(engine STATIC
     kernel/norm/rms_norm.cu
     kernel/pos/rope.cu
     kernel/pos/rope_cache.cpp
+    kernel/mlp/silu_mul.cu
 )
 
 target_include_directories(engine
