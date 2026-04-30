@@ -1,11 +1,10 @@
-#include "engine/kernel/norm/rms_norm.h"
-
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 
 #include <cstdint>
 
 #include "engine/backend/cuda/cuda_utils.h"
+#include "engine/kernel/norm/rms_norm.h"
 
 namespace ccinfer {
 namespace engine {
@@ -111,7 +110,7 @@ Result<void> launch_rms_norm(const __nv_bfloat16* input, const __nv_bfloat16* we
                              __nv_bfloat16* output, int rows, int dim, float eps,
                              cudaStream_t stream) {
     constexpr int kBlockSize = 256;
-    if (rows <= 0 || dim <= 0) return {};
+    if (rows <= 0 || dim <= 0) return std::unexpected(ErrorCode::InvalidArgument);
 
     dim3 grid(rows);
     dim3 block(kBlockSize);

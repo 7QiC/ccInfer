@@ -1,11 +1,10 @@
-#include "engine/kernel/mlp/silu_mul.h"
-
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 
 #include <cstdint>
 
 #include "engine/backend/cuda/cuda_utils.h"
+#include "engine/kernel/mlp/silu_mul.h"
 
 namespace ccinfer {
 namespace engine {
@@ -53,8 +52,8 @@ __global__ void silu_mul_scalar_kernel(const __nv_bfloat16* __restrict__ gate,
 
 Result<void> launch_silu_mul(const __nv_bfloat16* gate, const __nv_bfloat16* up,
                              __nv_bfloat16* output, int64_t n, cudaStream_t stream) {
-    if (n <= 0) return {};
-    if (!gate || !up || !output) return {};
+    if (n <= 0) return std::unexpected(ErrorCode::InvalidArgument);
+    if (!gate || !up || !output) return std::unexpected(ErrorCode::InvalidArgument);
 
     constexpr int kBlockSize = 256;
     bool use_bf162 = is_aligned_4(gate) && is_aligned_4(up) && is_aligned_4(output);
