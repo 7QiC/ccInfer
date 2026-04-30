@@ -149,27 +149,27 @@ __global__ void rope_split_half_half2_kernel(half* __restrict__ q, half* __restr
 
 }  // namespace
 
-void launch_rope(half* q, half* k, const int32_t* positions, const float2* rope_cache,
+Result<void> launch_rope(half* q, half* k, const int32_t* positions, const float2* rope_cache,
                  int num_tokens, int num_q_heads, int num_kv_heads, int head_dim, int rotary_dim,
                  int max_position, cudaStream_t stream) {
     if (num_tokens <= 0) {
-        return;
+        return {};
     }
 
     if (q == nullptr || k == nullptr || positions == nullptr || rope_cache == nullptr) {
-        return;
+        return {};
     }
 
     if (num_q_heads <= 0 || num_kv_heads <= 0 || head_dim <= 0) {
-        return;
+        return {};
     }
 
     if (rotary_dim <= 0 || rotary_dim > head_dim || (rotary_dim % 2 != 0)) {
-        return;
+        return {};
     }
 
     if (max_position <= 0) {
-        return;
+        return {};
     }
 
     const int half_rotary_dim = rotary_dim / 2;
@@ -202,7 +202,7 @@ void launch_rope(half* q, half* k, const int32_t* positions, const float2* rope_
             rotary_dim, max_position);
     }
 
-    CCINFER_CUDA_CHECK(cudaGetLastError());
+    return cuda_check(cudaGetLastError());
 }
 
 }  // namespace engine

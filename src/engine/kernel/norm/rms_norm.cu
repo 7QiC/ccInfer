@@ -134,12 +134,12 @@ inline bool is_aligned_4(const void* ptr) { return (reinterpret_cast<uintptr_t>(
 
 }  // namespace
 
-void launch_rms_norm(const half* input, const half* weight, half* output, int rows, int dim,
+Result<void> launch_rms_norm(const half* input, const half* weight, half* output, int rows, int dim,
                      float eps, cudaStream_t stream) {
     constexpr int kBlockSize = 256;
 
     if (rows <= 0 || dim <= 0) {
-        return;
+        return {};
     }
 
     dim3 grid(rows);
@@ -156,7 +156,7 @@ void launch_rms_norm(const half* input, const half* weight, half* output, int ro
             <<<grid, block, 0, stream>>>(input, weight, output, rows, dim, eps);
     }
 
-    CCINFER_CUDA_CHECK(cudaGetLastError());
+    return cuda_check(cudaGetLastError());
 }
 
 }  // namespace engine

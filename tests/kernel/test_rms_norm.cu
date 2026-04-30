@@ -54,7 +54,7 @@ TEST_F(RmsNormTest, SingleRow) {
     cudaMemcpy(in_d, input_h.data(), rows * dim * sizeof(half), cudaMemcpyHostToDevice);
     cudaMemcpy(w_d, weight_h.data(), dim * sizeof(half), cudaMemcpyHostToDevice);
 
-    launch_rms_norm(in_d, w_d, out_d, rows, dim, 1e-5f, stream_);
+    ASSERT_TRUE(launch_rms_norm(in_d, w_d, out_d, rows, dim, 1e-5f, stream_));
     cudaStreamSynchronize(stream_);
 
     std::vector<half> out_h(rows * dim);
@@ -88,7 +88,7 @@ TEST_F(RmsNormTest, MultipleRows) {
     cudaMemcpy(in_d, input_h.data(), rows * dim * sizeof(half), cudaMemcpyHostToDevice);
     cudaMemcpy(w_d, weight_h.data(), dim * sizeof(half), cudaMemcpyHostToDevice);
 
-    launch_rms_norm(in_d, w_d, out_d, rows, dim, 1e-5f, stream_);
+    ASSERT_TRUE(launch_rms_norm(in_d, w_d, out_d, rows, dim, 1e-5f, stream_));
     cudaStreamSynchronize(stream_);
 
     std::vector<half> out_h(rows * dim);

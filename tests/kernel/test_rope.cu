@@ -94,7 +94,7 @@ TEST_F(RopeTest, SingleTokenNoGQA) {
     cudaMemcpy(k_d, k_h.data(), total_k * sizeof(half), cudaMemcpyHostToDevice);
     cudaMemcpy(pos_d, pos_h.data(), pos_h.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
 
-    launch_rope(q_d, k_d, pos_d, cache_d, tokens, heads, heads, dim, rotary_dim, max_pos, stream_);
+    ASSERT_TRUE(launch_rope(q_d, k_d, pos_d, cache_d, tokens, heads, heads, dim, rotary_dim, max_pos, stream_));
     cudaStreamSynchronize(stream_);
 
     std::vector<half> q_out(total_q), k_out(total_k);
@@ -137,7 +137,7 @@ TEST_F(RopeTest, GQA) {
     cudaMemcpy(k_d, k_h.data(), total_k * sizeof(half), cudaMemcpyHostToDevice);
     cudaMemcpy(pos_d, pos_h.data(), pos_h.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
 
-    launch_rope(q_d, k_d, pos_d, cache_d, tokens, q_heads, kv_heads, dim, rotary_dim, max_pos, stream_);
+    ASSERT_TRUE(launch_rope(q_d, k_d, pos_d, cache_d, tokens, q_heads, kv_heads, dim, rotary_dim, max_pos, stream_));
     cudaStreamSynchronize(stream_);
 
     std::vector<half> q_out(total_q), k_out(total_k);

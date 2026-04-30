@@ -68,14 +68,14 @@ __global__ void silu_mul_scalar_kernel(const half* __restrict__ gate, const half
 
 }  // namespace
 
-void launch_silu_mul(const half* gate, const half* up, half* output, int64_t n,
+Result<void> launch_silu_mul(const half* gate, const half* up, half* output, int64_t n,
                      cudaStream_t stream) {
     if (n <= 0) {
-        return;
+        return {};
     }
 
     if (gate == nullptr || up == nullptr || output == nullptr) {
-        return;
+        return {};
     }
 
     constexpr int kBlockSize = 256;
@@ -93,7 +93,7 @@ void launch_silu_mul(const half* gate, const half* up, half* output, int64_t n,
         silu_mul_scalar_kernel<<<grid, kBlockSize, 0, stream>>>(gate, up, output, n);
     }
 
-    CCINFER_CUDA_CHECK(cudaGetLastError());
+    return cuda_check(cudaGetLastError());
 }
 
 }  // namespace engine

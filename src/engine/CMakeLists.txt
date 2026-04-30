@@ -14,6 +14,8 @@ target_include_directories(engine
         ${CUDAToolkit_INCLUDE_DIRS}
 )
 
+target_compile_options(engine PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-std=c++23>)
+
 target_link_libraries(engine
     PUBLIC
         nlohmann_json::nlohmann_json

@@ -44,7 +44,7 @@ TEST_F(SiluMulTest, EvenElements) {
     cudaMemcpy(gate_d, gate_h.data(), n * sizeof(half), cudaMemcpyHostToDevice);
     cudaMemcpy(up_d, up_h.data(), n * sizeof(half), cudaMemcpyHostToDevice);
 
-    launch_silu_mul(gate_d, up_d, out_d, n, stream_);
+    ASSERT_TRUE(launch_silu_mul(gate_d, up_d, out_d, n, stream_));
     cudaStreamSynchronize(stream_);
 
     std::vector<half> out_h(n);
@@ -71,7 +71,7 @@ TEST_F(SiluMulTest, OddElements) {
     cudaMemcpy(gate_d, gate_h.data(), n * sizeof(half), cudaMemcpyHostToDevice);
     cudaMemcpy(up_d, up_h.data(), n * sizeof(half), cudaMemcpyHostToDevice);
 
-    launch_silu_mul(gate_d, up_d, out_d, n, stream_);
+    ASSERT_TRUE(launch_silu_mul(gate_d, up_d, out_d, n, stream_));
     cudaStreamSynchronize(stream_);
 
     std::vector<half> out_h(n);

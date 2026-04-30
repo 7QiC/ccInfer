@@ -1,36 +1,42 @@
 #pragma once
 
 #include <cstdio>
-#include <cstdlib>
-#include <source_location>
 
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 
+#include "common/result.h"
+#include "common/error_code.h"
+
 namespace ccinfer {
 namespace engine {
 
-inline void cuda_check_impl(cudaError_t err, const std::source_location& loc) {
-    if (err != cudaSuccess) {
-        fprintf(stderr, "[%s:%d] CUDA error: %s\n", loc.file_name(), (int)loc.line(),
-                cudaGetErrorString(err));
-        abort();
+inline ErrorCode map_cuda_error(cudaError_t err) {
+    switch (err) {
+        case cudaErrorMemoryAllocation:
+            return ErrorCode::CudaOutOfMemory;
+        case cudaErrorInvalidValue:
+            return ErrorCode::CudaInvalidValue;
+        default:
+            return ErrorCode::CudaLaunchFailed;
     }
 }
 
-inline void cublas_check_impl(cublasStatus_t status, const std::source_location& loc) {
-    if (status != CUBLAS_STATUS_SUCCESS) {
-        fprintf(stderr, "[%s:%d] cuBLAS error: %d\n", loc.file_name(), (int)loc.line(),
-                (int)status);
-        abort();
+inline Result<void> cuda_check(cudaError_t err) {
+    if (err != cudaSuccess) {
+        fprintf(stderr, "CUDA error: %s\n", cudaGetErrorString(err));
+        return std::unexpected(map_cuda_error(err));
     }
+    return {};
+}
+
+inline Result<void> cublas_check(cublasStatus_t status) {
+    if (status != CUBLAS_STATUS_SUCCESS) {
+        fprintf(stderr, "cuBLAS error: %d\n", static_cast<int>(status));
+        return std::unexpected(ErrorCode::CudaLaunchFailed);
+    }
+    return {};
 }
 
 }  // namespace engine
 }  // namespace ccinfer
-
-#define CCINFER_CUDA_CHECK(call) \
-    ccinfer::engine::cuda_check_impl((call), std::source_location::current())
-
-#define CCINFER_CUBLAS_CHECK(call) \
-    ccinfer::engine::cublas_check_impl((call), std::source_location::current())
