@@ -1,7 +1,7 @@
+#include <cstdint>
+
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
-
-#include <cstdint>
 
 #include "backend/cuda/cuda_utils.h"
 

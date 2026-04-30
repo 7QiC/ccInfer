@@ -33,6 +33,6 @@ TEST(SmokeTest, AllocateAndZero) {
 TEST(SmokeTest, TensorSmoke) {
     float data[6] = {};
     auto t = Tensor<>::make(data, DType::kFloat32, {2, 3});
-    EXPECT_EQ(t.rank, 2);
+    EXPECT_EQ(t.rank_, 2);
     EXPECT_EQ(t.numel(), 6);
 }

@@ -1,10 +1,10 @@
 #pragma once
 
 #include <cstdint>
+
 #include <memory>
 
 #include "backend/params.h"
-#include "core/tensor.h"
 #include "result.h"
 
 namespace ccinfer {

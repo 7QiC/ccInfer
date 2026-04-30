@@ -1,5 +1,5 @@
 # Set before project() for CUDA architecture detection
-set(CMAKE_CUDA_ARCHITECTURES 89 CACHE STRING "CUDA compute architectures")
+set(CMAKE_CUDA_ARCHITECTURES 89)
 
 cmake_minimum_required(VERSION 3.20)
 project(ccInfer VERSION 0.1.0 LANGUAGES CXX CUDA)

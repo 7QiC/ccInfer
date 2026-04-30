@@ -21,16 +21,16 @@ TEST(ModelConfigTest, FromLlamaJson) {
 
     auto cfg = ModelConfig::from_json(j);
     ASSERT_TRUE(cfg.has_value());
-    EXPECT_EQ(cfg->arch, ModelArch::Llama);
-    EXPECT_EQ(cfg->n_layers, 16);
-    EXPECT_EQ(cfg->n_q_heads, 16);
-    EXPECT_EQ(cfg->n_kv_heads, 4);
-    EXPECT_EQ(cfg->d_model, 2048);
-    EXPECT_EQ(cfg->d_ff, 5632);
-    EXPECT_EQ(cfg->vocab_size, 128256);
-    EXPECT_EQ(cfg->max_seq_len, 32768);
-    EXPECT_EQ(cfg->rope_theta, 500000.0f);
-    EXPECT_FLOAT_EQ(cfg->rms_norm_eps, 1e-5f);
+    EXPECT_EQ(cfg->arch_, ModelArch::Llama);
+    EXPECT_EQ(cfg->n_layers_, 16);
+    EXPECT_EQ(cfg->n_q_heads_, 16);
+    EXPECT_EQ(cfg->n_kv_heads_, 4);
+    EXPECT_EQ(cfg->d_model_, 2048);
+    EXPECT_EQ(cfg->d_ff_, 5632);
+    EXPECT_EQ(cfg->vocab_size_, 128256);
+    EXPECT_EQ(cfg->max_seq_len_, 32768);
+    EXPECT_EQ(cfg->rope_theta_, 500000.0f);
+    EXPECT_FLOAT_EQ(cfg->rms_norm_eps_, 1e-5f);
 }
 
 TEST(ModelConfigTest, UnknownArchitecture) {
@@ -41,7 +41,7 @@ TEST(ModelConfigTest, UnknownArchitecture) {
 
     auto cfg = ModelConfig::from_json(j);
     ASSERT_TRUE(cfg.has_value());
-    EXPECT_EQ(cfg->arch, ModelArch::Unknown);
+    EXPECT_EQ(cfg->arch_, ModelArch::Unknown);
 }
 
 TEST(ModelConfigTest, MissingRequiredFields) {

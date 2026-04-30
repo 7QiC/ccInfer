@@ -20,24 +20,24 @@ CudaBackend::~CudaBackend() {
 }
 
 Result<void> CudaBackend::gemm(const GemmParams& p) {
-    auto s = static_cast<cudaStream_t>(p.stream);
+    auto s = static_cast<cudaStream_t>(p.stream_);
     CCINFER_CUBLAS_CHECK(cublasSetStream(cublas_handle_, s));
 
     half alpha = __float2half(1.0f);
     half beta = __float2half(0.0f);
 
-    CCINFER_CUBLAS_CHECK(cublasGemmEx(cublas_handle_, p.trans_a ? CUBLAS_OP_T : CUBLAS_OP_N,
-                                      p.trans_b ? CUBLAS_OP_T : CUBLAS_OP_N, p.n, p.m, p.k, &alpha,
-                                      p.B, CUDA_R_16F, p.ldb, p.A, CUDA_R_16F, p.lda, &beta, p.C,
-                                      CUDA_R_16F, p.ldc, CUBLAS_COMPUTE_16F,
+    CCINFER_CUBLAS_CHECK(cublasGemmEx(cublas_handle_, p.trans_a_ ? CUBLAS_OP_T : CUBLAS_OP_N,
+                                      p.trans_b_ ? CUBLAS_OP_T : CUBLAS_OP_N, p.n_, p.m_, p.k_, &alpha,
+                                      p.b_, CUDA_R_16F, p.ldb_, p.a_, CUDA_R_16F, p.lda_, &beta, p.c_,
+                                      CUDA_R_16F, p.ldc_, CUBLAS_COMPUTE_16F,
                                       CUBLAS_GEMM_DEFAULT_TENSOR_OP));
     return {};
 }
 
 Result<void> CudaBackend::rms_norm(const RmsNormParams& p) {
-    launch_rms_norm(static_cast<const half*>(p.input), static_cast<const half*>(p.weight),
-                    static_cast<half*>(p.output), p.rows, p.dim, p.eps,
-                    static_cast<cudaStream_t>(p.stream));
+    launch_rms_norm(static_cast<const half*>(p.input_), static_cast<const half*>(p.weight_),
+                    static_cast<half*>(p.output_), p.rows_, p.dim_, p.eps_,
+                    static_cast<cudaStream_t>(p.stream_));
     return {};
 }
 Result<void> CudaBackend::rope(const RopeParams&) { return {}; }

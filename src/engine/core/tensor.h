@@ -1,9 +1,10 @@
 #pragma once
 
-#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+
+#include <array>
 #include <initializer_list>
 
 #include "dtype.h"
@@ -13,72 +14,70 @@ namespace engine {
 
 template <int MaxRank = 5>
 struct Tensor {
-    void* data = nullptr;
-    DType dtype = DType::kFloat32;
-    int rank = 0;
-    std::array<int64_t, MaxRank> shape{};
-    std::array<int64_t, MaxRank> stride{};
+    void* data_ = nullptr;
+    DType dtype_ = DType::kFloat32;
+    int rank_ = 0;
+    std::array<int64_t, MaxRank> shape_{};
+    std::array<int64_t, MaxRank> stride_{};
 
     static Tensor make(void* data, DType dtype, std::initializer_list<int64_t> shape) {
         assert(static_cast<int>(shape.size()) <= MaxRank);
         Tensor t;
-        t.data = data;
-        t.dtype = dtype;
-        t.rank = static_cast<int>(shape.size());
+        t.data_ = data;
+        t.dtype_ = dtype;
+        t.rank_ = static_cast<int>(shape.size());
         int i = 0;
-        for (auto s : shape) t.shape[i++] = s;
+        for (auto s : shape) t.shape_[i++] = s;
         int64_t st = 1;
-        for (int d = t.rank - 1; d >= 0; d--) {
-            t.stride[d] = st;
-            st *= t.shape[d];
+        for (int d = t.rank_ - 1; d >= 0; d--) {
+            t.stride_[d] = st;
+            st *= t.shape_[d];
         }
         return t;
     }
 
     [[nodiscard]] int64_t numel() const noexcept {
         int64_t n = 1;
-        for (int i = 0; i < rank; i++) n *= shape[i];
+        for (int i = 0; i < rank_; i++) n *= shape_[i];
         return n;
     }
 
     [[nodiscard]] size_t nbytes() const noexcept {
-        return static_cast<size_t>(numel()) * dtype_size(dtype);
+        return static_cast<size_t>(numel()) * dtype_size(dtype_);
     }
 
     [[nodiscard]] bool is_contiguous() const noexcept {
         int64_t expected = 1;
-        for (int d = rank - 1; d >= 0; --d) {
-            if (stride[d] != expected) {
-                return false;
-            }
-            expected *= shape[d];
+        for (int d = rank_ - 1; d >= 0; --d) {
+            if (stride_[d] != expected) return false;
+            expected *= shape_[d];
         }
         return true;
     }
 
     [[nodiscard]] Tensor slice(int dim, int64_t start, int64_t end) const {
-        assert(dim >= 0 && dim < rank);
-        assert(start >= 0 && end >= start && end <= shape[dim]);
+        assert(dim >= 0 && dim < rank_);
+        assert(start >= 0 && end >= start && end <= shape_[dim]);
 
         Tensor t = *this;
-        t.shape[dim] = end - start;
-        t.data = static_cast<char*>(t.data) + start * stride[dim] * dtype_size(dtype);
+        t.shape_[dim] = end - start;
+        t.data_ = static_cast<char*>(t.data_) + start * stride_[dim] * dtype_size(dtype_);
         return t;
     }
 
     [[nodiscard]] Tensor select(int dim, int64_t idx) const {
-        assert(dim >= 0 && dim < rank);
-        assert(idx >= 0 && idx < shape[dim]);
+        assert(dim >= 0 && dim < rank_);
+        assert(idx >= 0 && idx < shape_[dim]);
 
         Tensor t = *this;
-        t.data = static_cast<char*>(t.data) + idx * stride[dim] * dtype_size(dtype);
-        for (int i = dim; i < t.rank - 1; i++) {
-            t.shape[i] = t.shape[i + 1];
-            t.stride[i] = t.stride[i + 1];
+        t.data_ = static_cast<char*>(t.data_) + idx * stride_[dim] * dtype_size(dtype_);
+        for (int i = dim; i < t.rank_ - 1; i++) {
+            t.shape_[i] = t.shape_[i + 1];
+            t.stride_[i] = t.stride_[i + 1];
         }
-        t.shape[t.rank - 1] = 0;
-        t.stride[t.rank - 1] = 0;
-        t.rank--;
+        t.shape_[t.rank_ - 1] = 0;
+        t.stride_[t.rank_ - 1] = 0;
+        t.rank_--;
         return t;
     }
 };

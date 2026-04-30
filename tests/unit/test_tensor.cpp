@@ -8,19 +8,19 @@ using namespace ccinfer::engine;
 TEST(TensorTest, MakeAndShape) {
     float data[24] = {};
     auto t = Tensor<>::make(data, DType::kFloat32, {2, 3, 4});
-    EXPECT_EQ(t.rank, 3);
-    EXPECT_EQ(t.shape[0], 2);
-    EXPECT_EQ(t.shape[1], 3);
-    EXPECT_EQ(t.shape[2], 4);
+    EXPECT_EQ(t.rank_, 3);
+    EXPECT_EQ(t.shape_[0], 2);
+    EXPECT_EQ(t.shape_[1], 3);
+    EXPECT_EQ(t.shape_[2], 4);
     EXPECT_EQ(t.numel(), 24);
 }
 
 TEST(TensorTest, DefaultStrideRowMajor) {
     float data[24] = {};
     auto t = Tensor<>::make(data, DType::kFloat32, {2, 3, 4});
-    EXPECT_EQ(t.stride[2], 1);
-    EXPECT_EQ(t.stride[1], 4);
-    EXPECT_EQ(t.stride[0], 12);
+    EXPECT_EQ(t.stride_[2], 1);
+    EXPECT_EQ(t.stride_[1], 4);
+    EXPECT_EQ(t.stride_[0], 12);
 }
 
 TEST(TensorTest, Nbytes) {
@@ -37,19 +37,19 @@ TEST(TensorTest, Slice) {
     float data[24] = {};
     auto t = Tensor<>::make(data, DType::kFloat32, {2, 3, 4});
     auto s = t.slice(0, 1, 2);
-    EXPECT_EQ(s.rank, 3);
-    EXPECT_EQ(s.shape[0], 1);
-    EXPECT_EQ(s.shape[1], 3);
-    EXPECT_EQ(s.shape[2], 4);
-    EXPECT_EQ(static_cast<float*>(s.data), data + 12);
+    EXPECT_EQ(s.rank_, 3);
+    EXPECT_EQ(s.shape_[0], 1);
+    EXPECT_EQ(s.shape_[1], 3);
+    EXPECT_EQ(s.shape_[2], 4);
+    EXPECT_EQ(static_cast<float*>(s.data_), data + 12);
 }
 
 TEST(TensorTest, Select) {
     float data[24] = {};
     auto t = Tensor<>::make(data, DType::kFloat32, {2, 3, 4});
     auto s = t.select(0, 1);
-    EXPECT_EQ(s.rank, 2);
-    EXPECT_EQ(s.shape[0], 3);
-    EXPECT_EQ(s.shape[1], 4);
-    EXPECT_EQ(static_cast<float*>(s.data), data + 12);
+    EXPECT_EQ(s.rank_, 2);
+    EXPECT_EQ(s.shape_[0], 3);
+    EXPECT_EQ(s.shape_[1], 4);
+    EXPECT_EQ(static_cast<float*>(s.data_), data + 12);
 }

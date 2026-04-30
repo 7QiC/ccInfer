@@ -1,8 +1,9 @@
 #pragma once
 
+#include <cstddef>
+
 #include <cuda_runtime.h>
 
-#include <cstddef>
 #include <utility>
 
 namespace ccinfer {
