@@ -6,10 +6,7 @@
 
 #include "common/result.h"
 #include "cuda_utils.h"
-#include "engine/kernel/attention/naive_attn.h"
-#include "engine/kernel/mlp/silu_mul.h"
-#include "engine/kernel/norm/rms_norm.h"
-#include "engine/kernel/pos/rope.h"
+#include "engine/kernel/cuda_kernels.h"
 
 namespace ccinfer {
 namespace engine {
@@ -93,7 +90,7 @@ Result<void> CudaBackend::silu_mul(const SiluMulParams& p) {
 Result<void> CudaBackend::naive_attention(const NaiveAttnParams& p) {
     cudaStream_t s = p.stream_ ? static_cast<cudaStream_t>(p.stream_) : stream_;
 
-    return ::ccinfer::engine::naive_attention(
+    return launch_naive_attention(
         static_cast<const __nv_bfloat16*>(p.q_), static_cast<const __nv_bfloat16*>(p.k_),
         static_cast<const __nv_bfloat16*>(p.v_), static_cast<__nv_bfloat16*>(p.output_),
         p.num_tokens_, p.num_q_heads_, p.num_kv_heads_, p.head_dim_, s);

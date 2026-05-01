@@ -5,7 +5,7 @@
 #include <cmath>
 #include <vector>
 
-#include "kernel/norm/rms_norm.h"
+#include "engine/kernel/cuda_kernels.h"
 
 using namespace ccinfer;
 using namespace ccinfer::engine;

@@ -2,10 +2,14 @@ add_library(engine STATIC
     backend/cuda/cuda_backend.cpp
     kernel/norm/rms_norm.cu
     kernel/pos/rope.cu
-    kernel/pos/rope_cache.cpp
+    model/rope/rope_cache.cpp
     kernel/mlp/silu_mul.cu
-    model/loader.cpp
     kernel/attention/naive_attn.cu
+    kernel/elementwise/elementwise.cu
+    model/loader.cpp
+    model/registry.cpp
+    model/llama/llama_model.cpp
+    runner/model_runner.cpp
 )
 
 target_include_directories(engine

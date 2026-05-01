@@ -6,104 +6,14 @@
 #include <cstdint>
 
 #include "engine/backend/cuda/cuda_utils.h"
-#include "engine/kernel/attention/naive_attn.h"
+#include "engine/kernel/cuda_common.cuh"
+#include "engine/kernel/cuda_kernels.h"
 
 namespace ccinfer {
 namespace engine {
 
 namespace {
 
-constexpr int kWarpSize = 32;
-
-// -----------------------------------------------------------------------------
-// Warp / block reductions
-// -----------------------------------------------------------------------------
-
-__inline__ __device__ float warp_reduce_sum(float val) {
-#pragma unroll
-    for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
-        val += __shfl_down_sync(0xffffffff, val, offset);
-    }
-    return val;
-}
-
-__inline__ __device__ float warp_reduce_max(float val) {
-#pragma unroll
-    for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
-        val = fmaxf(val, __shfl_down_sync(0xffffffff, val, offset));
-    }
-    return val;
-}
-
-template <int kBlockSize>
-__inline__ __device__ float block_reduce_sum(float val) {
-    static_assert(kBlockSize % kWarpSize == 0);
-
-    constexpr int kNumWarps = kBlockSize / kWarpSize;
-    __shared__ float warp_sums[kNumWarps];
-
-    const int lane = threadIdx.x & (kWarpSize - 1);
-    const int warp_id = threadIdx.x / kWarpSize;
-
-    val = warp_reduce_sum(val);
-
-    if (lane == 0) {
-        warp_sums[warp_id] = val;
-    }
-
-    __syncthreads();
-
-    float block_sum = 0.0f;
-
-    if (warp_id == 0) {
-        block_sum = (lane < kNumWarps) ? warp_sums[lane] : 0.0f;
-        block_sum = warp_reduce_sum(block_sum);
-
-        if (lane == 0) {
-            warp_sums[0] = block_sum;
-        }
-    }
-
-    __syncthreads();
-
-    return warp_sums[0];
-}
-
-template <int kBlockSize>
-__inline__ __device__ float block_reduce_max(float val) {
-    static_assert(kBlockSize % kWarpSize == 0);
-
-    constexpr int kNumWarps = kBlockSize / kWarpSize;
-    __shared__ float warp_max[kNumWarps];
-
-    const int lane = threadIdx.x & (kWarpSize - 1);
-    const int warp_id = threadIdx.x / kWarpSize;
-
-    val = warp_reduce_max(val);
-
-    if (lane == 0) {
-        warp_max[warp_id] = val;
-    }
-
-    __syncthreads();
-
-    float block_max = -FLT_MAX;
-
-    if (warp_id == 0) {
-        block_max = (lane < kNumWarps) ? warp_max[lane] : -FLT_MAX;
-        block_max = warp_reduce_max(block_max);
-
-        if (lane == 0) {
-            warp_max[0] = block_max;
-        }
-    }
-
-    __syncthreads();
-
-    return warp_max[0];
-}
-
-// -----------------------------------------------------------------------------
 // Token-major naive attention kernel.
 //
 // Public layout:
@@ -230,7 +140,7 @@ __global__ void naive_attention_token_major_kernel(const __nv_bfloat16* __restri
 
 }  // namespace
 
-Result<void> naive_attention(const __nv_bfloat16* q, const __nv_bfloat16* k, const __nv_bfloat16* v,
+Result<void> launch_naive_attention(const __nv_bfloat16* q, const __nv_bfloat16* k, const __nv_bfloat16* v,
                              __nv_bfloat16* output, int num_tokens, int n_q_heads, int n_kv_heads,
                              int head_dim, cudaStream_t stream) {
     if (q == nullptr || k == nullptr || v == nullptr || output == nullptr) {

@@ -1,4 +1,4 @@
-#include "engine/kernel/pos/rope_cache.h"
+#include "engine/model/rope/rope_cache.h"
 
 #include <cmath>
 #include <vector>

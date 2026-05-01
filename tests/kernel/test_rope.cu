@@ -5,8 +5,8 @@
 #include <cmath>
 #include <vector>
 
-#include "kernel/pos/rope.h"
-#include "kernel/pos/rope_cache.h"
+#include "engine/kernel/cuda_kernels.h"
+#include "engine/model/rope/rope_cache.h"
 
 using namespace ccinfer;
 using namespace ccinfer::engine;

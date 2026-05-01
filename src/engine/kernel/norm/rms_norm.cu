@@ -4,43 +4,14 @@
 #include <cstdint>
 
 #include "engine/backend/cuda/cuda_utils.h"
-#include "engine/kernel/norm/rms_norm.h"
+#include "engine/kernel/common.h"
+#include "engine/kernel/cuda_common.cuh"
+#include "engine/kernel/cuda_kernels.h"
 
 namespace ccinfer {
 namespace engine {
 
 namespace {
-
-constexpr int kWarpSize = 32;
-
-__inline__ __device__ float warp_reduce_sum(float val) {
-#pragma unroll
-    for (int offset = kWarpSize / 2; offset > 0; offset >>= 1)
-        val += __shfl_down_sync(0xffffffff, val, offset);
-    return val;
-}
-
-template <int kBlockSize>
-__inline__ __device__ float block_reduce_sum(float val) {
-    static_assert(kBlockSize % kWarpSize == 0);
-    constexpr int kNumWarps = kBlockSize / kWarpSize;
-    __shared__ float warp_sums[kNumWarps];
-
-    const int lane = threadIdx.x & (kWarpSize - 1);
-    const int warp_id = threadIdx.x / kWarpSize;
-    val = warp_reduce_sum(val);
-    if (lane == 0) warp_sums[warp_id] = val;
-    __syncthreads();
-
-    float block_sum = 0.0f;
-    if (warp_id == 0) {
-        block_sum = (lane < kNumWarps) ? warp_sums[lane] : 0.0f;
-        block_sum = warp_reduce_sum(block_sum);
-        if (lane == 0) warp_sums[0] = block_sum;
-    }
-    __syncthreads();
-    return warp_sums[0];
-}
 
 template <int kBlockSize>
 __global__ void rms_norm_bf162_kernel(const __nv_bfloat16* __restrict__ input,
@@ -101,8 +72,6 @@ __global__ void rms_norm_scalar_kernel(const __nv_bfloat16* __restrict__ input,
         out_row[i] = __float2bfloat16_rn(x * inv_rms * w);
     }
 }
-
-inline bool is_aligned_4(const void* ptr) { return (reinterpret_cast<uintptr_t>(ptr) & 0x3) == 0; }
 
 }  // namespace
 

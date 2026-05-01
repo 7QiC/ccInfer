@@ -5,7 +5,7 @@
 #include <cmath>
 #include <vector>
 
-#include "engine/kernel/attention/naive_attn.h"
+#include "engine/kernel/cuda_kernels.h"
 
 using namespace ccinfer;
 using namespace ccinfer::engine;
@@ -102,7 +102,7 @@ TEST_F(NaiveAttnTest, SingleHeadSmallSeq) {
     cudaMemcpy(k_d, k_h.data(), nelts * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
     cudaMemcpy(v_d, v_h.data(), nelts * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
 
-    ASSERT_TRUE(naive_attention(q_d, k_d, v_d, out_d, tokens, heads, heads, dim, stream_));
+    ASSERT_TRUE(launch_naive_attention(q_d, k_d, v_d, out_d, tokens, heads, heads, dim, stream_));
     cudaStreamSynchronize(stream_);
 
     std::vector<__nv_bfloat16> out_h(nelts);
@@ -134,7 +134,7 @@ TEST_F(NaiveAttnTest, MultiHeadGQA) {
     cudaMemcpy(k_d, k_h.data(), n_kv * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
     cudaMemcpy(v_d, v_h.data(), n_kv * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
 
-    ASSERT_TRUE(naive_attention(q_d, k_d, v_d, out_d, tokens, q_heads, kv_heads, dim, stream_));
+    ASSERT_TRUE(launch_naive_attention(q_d, k_d, v_d, out_d, tokens, q_heads, kv_heads, dim, stream_));
     cudaStreamSynchronize(stream_);
 
     std::vector<__nv_bfloat16> out_h(n_q);

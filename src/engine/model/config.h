@@ -29,6 +29,15 @@ struct ModelConfig {
 
     DType weight_dtype_ = DType::kFloat16;
 
+    const char* arch_name() const noexcept {
+        switch (arch_) {
+            case ModelArch::Llama:
+                return "llama";
+            default:
+                return "unknown";
+        }
+    }
+
     static Result<ModelConfig> from_json(const nlohmann::json& j) {
         ModelConfig cfg;
 

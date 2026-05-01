@@ -4,16 +4,13 @@
 #include <cstdint>
 
 #include "engine/backend/cuda/cuda_utils.h"
-#include "engine/kernel/pos/rope.h"
+#include "engine/kernel/common.h"
+#include "engine/kernel/cuda_kernels.h"
 
 namespace ccinfer {
 namespace engine {
 
 namespace {
-
-inline bool is_aligned_4(const void* p) { return (reinterpret_cast<uintptr_t>(p) & 0x3u) == 0; }
-inline bool is_aligned_8(const void* p) { return (reinterpret_cast<uintptr_t>(p) & 0x7u) == 0; }
-inline int ceil_div(int a, int b) { return (a + b - 1) / b; }
 
 // Scalar split-half RoPE with bf16
 __global__ void rope_split_half_scalar_kernel(__nv_bfloat16* __restrict__ q,

@@ -4,15 +4,13 @@
 #include <cstdint>
 
 #include "engine/backend/cuda/cuda_utils.h"
-#include "engine/kernel/mlp/silu_mul.h"
+#include "engine/kernel/common.h"
+#include "engine/kernel/cuda_kernels.h"
 
 namespace ccinfer {
 namespace engine {
 
 namespace {
-
-inline bool is_aligned_4(const void* p) { return (reinterpret_cast<uintptr_t>(p) & 0x3u) == 0; }
-inline int ceil_div_i64(int64_t a, int b) { return static_cast<int>((a + b - 1) / b); }
 
 __global__ void silu_mul_bf162_kernel(const __nv_bfloat16* __restrict__ gate,
                                       const __nv_bfloat16* __restrict__ up,
