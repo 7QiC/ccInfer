@@ -1,7 +1,5 @@
 #pragma once
 
-#include <cuda_runtime.h>
-
 #include <cstdint>
 
 namespace ccinfer {
@@ -84,7 +82,7 @@ struct RopeParams {
     void* k_ = nullptr;
 
     const int32_t* positions_ = nullptr;
-    const float2* rope_cache_ = nullptr;
+    const void* rope_cache_ = nullptr;
 
     int num_tokens_ = 0;
     int num_q_heads_ = 0;
