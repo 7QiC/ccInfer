@@ -38,3 +38,7 @@ gtest_discover_tests(test_naive_attn)
 add_executable(test_tokenizer unit/test_tokenizer.cpp)
 target_link_libraries(test_tokenizer PRIVATE engine gtest_main)
 gtest_discover_tests(test_tokenizer)
+
+add_executable(test_sampler unit/test_sampler.cpp)
+target_link_libraries(test_sampler PRIVATE engine gtest_main)
+gtest_discover_tests(test_sampler)

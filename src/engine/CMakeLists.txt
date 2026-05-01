@@ -11,6 +11,7 @@ add_library(engine STATIC
     model/llama/llama_model.cpp
     runner/model_runner.cpp
     tokenizer/byte_level_bpe_tokenizer.cpp
+    sampling/sampler.cpp
 )
 
 target_include_directories(engine
