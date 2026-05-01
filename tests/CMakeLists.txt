@@ -34,3 +34,7 @@ gtest_discover_tests(test_silu_mul)
 add_executable(test_naive_attn kernel/test_naive_attn.cu)
 target_link_libraries(test_naive_attn PRIVATE engine gtest_main CUDA::cudart CUDA::cublas)
 gtest_discover_tests(test_naive_attn)
+
+add_executable(test_tokenizer unit/test_tokenizer.cpp)
+target_link_libraries(test_tokenizer PRIVATE engine gtest_main)
+gtest_discover_tests(test_tokenizer)
