@@ -103,5 +103,39 @@ Result<void> launch_split_qkv(const __nv_bfloat16* qkv, __nv_bfloat16* q, __nv_b
     return cuda_check(cudaGetLastError());
 }
 
+// Gather embedding rows: input_embeds[t, d] = embed_table[token_ids[t], d]
+__global__ void embed_kernel(const __nv_bfloat16* embed_table, const int32_t* token_ids,
+                             __nv_bfloat16* input_embeds, int num_tokens, int d_model) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = num_tokens * d_model;
+    if (i >= total) return;
+
+    const int t = i / d_model;
+    const int d = i % d_model;
+    const int64_t row = static_cast<int64_t>(token_ids[t]);
+
+    input_embeds[i] = embed_table[row * d_model + d];
+}
+
+Result<void> launch_embed(const __nv_bfloat16* embed_table, const int32_t* token_ids,
+                          __nv_bfloat16* input_embeds, int num_tokens, int d_model,
+                          cudaStream_t stream) {
+    if (embed_table == nullptr || token_ids == nullptr || input_embeds == nullptr) {
+        return std::unexpected(ErrorCode::InvalidArgument);
+    }
+    if (num_tokens <= 0 || d_model <= 0) {
+        return std::unexpected(ErrorCode::InvalidArgument);
+    }
+
+    const int total = num_tokens * d_model;
+    constexpr int kBlockSize = 256;
+    const int grid = (total + kBlockSize - 1) / kBlockSize;
+
+    embed_kernel<<<grid, kBlockSize, 0, stream>>>(embed_table, token_ids, input_embeds, num_tokens,
+                                                   d_model);
+
+    return cuda_check(cudaGetLastError());
+}
+
 }  // namespace engine
 }  // namespace ccinfer

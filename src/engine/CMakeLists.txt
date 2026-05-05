@@ -8,7 +8,8 @@ add_library(engine STATIC
     kernel/elementwise/elementwise.cu
     model/loader.cpp
     model/registry.cpp
-    model/llama/llama_model.cpp
+    model/qwen3/qwen3_model.cpp
+    model/qwen3/qwen3_weights.cpp
     runner/model_runner.cpp
     tokenizer/byte_level_bpe_tokenizer.cpp
     sampling/sampler.cpp

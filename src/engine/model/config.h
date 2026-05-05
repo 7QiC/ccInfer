@@ -10,7 +10,7 @@
 namespace ccinfer {
 namespace engine {
 
-enum class ModelArch : uint8_t { Llama, Unknown };
+enum class ModelArch : uint8_t { Llama, Qwen3, Unknown };
 
 struct ModelConfig {
     ModelArch arch_ = ModelArch::Unknown;
@@ -33,6 +33,8 @@ struct ModelConfig {
         switch (arch_) {
             case ModelArch::Llama:
                 return "llama";
+            case ModelArch::Qwen3:
+                return "qwen3";
             default:
                 return "unknown";
         }
@@ -46,6 +48,8 @@ struct ModelConfig {
             std::string arch = j["architectures"][0].get<std::string>();
             if (arch.find("Llama") != std::string::npos) {
                 cfg.arch_ = ModelArch::Llama;
+            } else if (arch.find("Qwen") != std::string::npos) {
+                cfg.arch_ = ModelArch::Qwen3;
             } else {
                 cfg.arch_ = ModelArch::Unknown;
             }

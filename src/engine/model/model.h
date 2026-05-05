@@ -11,13 +11,13 @@ struct ModelConfig;
 class DeviceBackend;
 
 struct ForwardInput {
-    const void* input_embeds = nullptr;  // [T, D]
-    int num_tokens = 0;
-    const int32_t* positions = nullptr;  // optional; nullptr means generate 0..T-1
+    const void* input_embeds_ = nullptr;  // [T, D]
+    int num_tokens_ = 0;
+    const int32_t* positions_ = nullptr;  // optional; nullptr means generate 0..T-1
 };
 
 struct ForwardOutput {
-    void* logits = nullptr;  // [T, vocab]
+    void* logits_ = nullptr;  // [T, vocab]
 };
 
 class Model {

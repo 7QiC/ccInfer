@@ -16,6 +16,8 @@ public:
     virtual Result<void> rms_norm(const RmsNormParams& p) = 0;
     virtual Result<void> rope(const RopeParams& p) = 0;
     virtual Result<void> silu_mul(const SiluMulParams& p) = 0;
+    virtual Result<void> element_add(const ElementAddParams& p) = 0;
+    virtual Result<void> split_qkv(const SplitQkvParams& p) = 0;
     virtual Result<void> naive_attention(const NaiveAttnParams& p) = 0;
     virtual Result<void> prefill_attention(const PrefillAttnParams& p) = 0;
     virtual Result<void> decode_attention(const DecodeAttnParams& p) = 0;

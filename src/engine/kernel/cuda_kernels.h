@@ -48,5 +48,12 @@ Result<void> launch_split_qkv(const __nv_bfloat16* qkv, __nv_bfloat16* q, __nv_b
                               __nv_bfloat16* v, int T, int nq, int nkv, int hd,
                               cudaStream_t stream);
 
+// ---------------------------------------------------------------------------
+// Embedding gather
+// ---------------------------------------------------------------------------
+Result<void> launch_embed(const __nv_bfloat16* embed_table, const int32_t* token_ids,
+                           __nv_bfloat16* input_embeds, int num_tokens, int d_model,
+                           cudaStream_t stream);
+
 }  // namespace engine
 }  // namespace ccinfer

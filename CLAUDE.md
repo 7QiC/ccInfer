@@ -20,6 +20,12 @@ Requires: CUDA Toolkit 11.8+, GCC 13+, CMake 3.20+, Boost 1.83+, nlohmann-json, 
 - `tests/unit/`  — Unit tests (GTest)
 - `tests/kernel` — Kernel tests
 
+## Principles
+
+- **Never lower standards to pass tests.** If a test doesn't pass, find and fix the root cause — don't relax tolerances, weaken assertions, or bypass checks.
+- **Never sacrifice performance for convenience.** No host-side fallbacks that defeat GPU parallelism, no unnecessary allocations or copies.
+- **Keep code clean and consistent.** Match existing patterns, avoid clutter, delete dead code. This applies to all files including CMakeLists.txt.
+
 ## Code Style
 
 - **C++23** with `ccinfer` namespace
@@ -30,4 +36,3 @@ Requires: CUDA Toolkit 11.8+, GCC 13+, CMake 3.20+, Boost 1.83+, nlohmann-json, 
 - **Error handling:** `Result<T>` = `std::expected<T, ErrorCode>`, no exceptions in hot paths
 - **CUDA:** Device memory via `DeviceBuffer<T>` RAII
 - **Tests:** GTest, test file per module
-- **Format:** `.clang-format`, use clang-format before commit

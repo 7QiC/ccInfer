@@ -1,5 +1,10 @@
 #include "engine/model/registry.h"
 
+#include <utility>
+
+#include "common/error_code.h"
+#include "engine/model/qwen3/qwen3_model.h"
+
 namespace ccinfer {
 namespace engine {
 
@@ -9,22 +14,23 @@ ModelRegistry& ModelRegistry::instance() {
 }
 
 void ModelRegistry::register_model(std::string arch, ModelCreator creator) {
-    creators_.emplace(std::move(arch), creator);
+    creators_[std::move(arch)] = creator;
 }
 
 Result<std::unique_ptr<Model>> ModelRegistry::create(const ModelConfig& config,
-                                                     ModelWeights weights) const {
+                                                     const WeightLoader& loader) const {
     auto it = creators_.find(config.arch_name());
     if (it == creators_.end()) {
         return std::unexpected(ErrorCode::ModelUnsupportedArch);
     }
 
-    return it->second(config, std::move(weights));
+    return it->second(config, loader);
 }
 
 void register_builtin_models() {
-    // Registered in llama_model.cpp via static initializer.
-    // This function is a hook for explicit registration if needed.
+    auto& r = ModelRegistry::instance();
+
+    r.register_model("qwen3", &Qwen3Model::create);
 }
 
 }  // namespace engine

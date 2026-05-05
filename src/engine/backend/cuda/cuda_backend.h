@@ -17,7 +17,8 @@ public:
     Result<void> rms_norm(const RmsNormParams& p) override;
     Result<void> rope(const RopeParams& p) override;
     Result<void> silu_mul(const SiluMulParams& p) override;
-
+    Result<void> element_add(const ElementAddParams& p) override;
+    Result<void> split_qkv(const SplitQkvParams& p) override;
     Result<void> naive_attention(const NaiveAttnParams& p) override;
     Result<void> prefill_attention(const PrefillAttnParams&) override { return {}; }
     Result<void> decode_attention(const DecodeAttnParams&) override { return {}; }

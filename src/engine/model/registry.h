@@ -7,12 +7,14 @@
 #include "common/result.h"
 #include "engine/model/config.h"
 #include "engine/model/model.h"
-#include "engine/model/weights.h"
 
 namespace ccinfer {
 namespace engine {
 
-using ModelCreator = Result<std::unique_ptr<Model>> (*)(ModelConfig config, ModelWeights weights);
+class WeightLoader;
+
+using ModelCreator = Result<std::unique_ptr<Model>> (*)(const ModelConfig& config,
+                                                        const WeightLoader& loader);
 
 class ModelRegistry {
 public:
@@ -20,7 +22,8 @@ public:
 
     void register_model(std::string arch, ModelCreator creator);
 
-    Result<std::unique_ptr<Model>> create(const ModelConfig& config, ModelWeights weights) const;
+    Result<std::unique_ptr<Model>> create(const ModelConfig& config,
+                                          const WeightLoader& loader) const;
 
 private:
     ModelRegistry() = default;

@@ -153,8 +153,9 @@ TEST_F(RopeTest, GQA) {
 }
 
 TEST_F(RopeTest, RopeCacheClass) {
-    RopeCache cache;
-    cache.init(16, 32, 10000.0f);
+    auto cache_result = RopeCache::create(16, 32, 10000.0f);
+    ASSERT_TRUE(cache_result);
+    auto& cache = *cache_result;
     EXPECT_EQ(cache.max_position(), 16);
     EXPECT_EQ(cache.rotary_dim(), 32);
     EXPECT_EQ(cache.half_rotary_dim(), 16);

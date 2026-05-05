@@ -1,4 +1,4 @@
-#include "engine/model/llama/llama_model.h"
+#include "engine/model/llama2/llama_model.h"
 
 #include <cuda_runtime.h>
 
@@ -10,7 +10,6 @@
 #include "engine/backend/cuda/cuda_utils.h"
 #include "engine/core/device_buffer.h"
 #include "engine/kernel/cuda_kernels.h"
-#include "engine/model/registry.h"
 
 namespace ccinfer {
 namespace engine {
@@ -24,15 +23,15 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
                                  DeviceBackend& backend, void* stream) {
     cudaStream_t s = static_cast<cudaStream_t>(stream);
 
-    if (input.input_embeds == nullptr || output.logits == nullptr) {
+    if (input.input_embeds_ == nullptr || output.logits_ == nullptr) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
 
-    if (input.num_tokens <= 0) {
+    if (input.num_tokens_ <= 0) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
 
-    const int T = input.num_tokens;
+    const int T = input.num_tokens_;
     const int D = config_.d_model_;
     const int nq = config_.n_q_heads_;
     const int nkv = config_.n_kv_heads_;
@@ -44,10 +43,6 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
 
     if (D <= 0 || nq <= 0 || nkv <= 0 || hd <= 0 || d_ff <= 0 || V <= 0 || n_layers <= 0) {
         return std::unexpected(ErrorCode::ModelConfigInvalid);
-    }
-
-    if (nq * hd != D) {
-        return std::unexpected(ErrorCode::ModelShapeMismatch);
     }
 
     if (nq % nkv != 0) {
@@ -104,7 +99,7 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
     // hidden_a = input_embeds
     {
         auto r = cuda_check(cudaMemcpyAsync(
-            hidden_a.get(), input.input_embeds,
+            hidden_a.get(), input.input_embeds_,
             static_cast<size_t>(T) * D * sizeof(__nv_bfloat16), cudaMemcpyDeviceToDevice, s));
 
         if (!r) {
@@ -155,8 +150,10 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
         }
 
         // qkv_out [T, Q|K|V] -> q/k/v token-major buffers
-        r = launch_split_qkv(qkv_out.get(), q_buf.get(), k_buf.get(), v_buf.get(), T, nq, nkv, hd,
-                             s);
+        r = backend.split_qkv(SplitQkvParams{
+            .qkv_ = qkv_out.get(), .q_ = q_buf.get(), .k_ = k_buf.get(), .v_ = v_buf.get(),
+            .num_tokens_ = T, .num_q_heads_ = nq, .num_kv_heads_ = nkv, .head_dim_ = hd, .stream_ = s,
+        });
         if (!r) {
             return r;
         }
@@ -215,7 +212,9 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
         }
 
         // next_hidden += hidden
-        r = launch_element_add(next_hidden, hidden, static_cast<int64_t>(T) * D, s);
+        r = backend.element_add(ElementAddParams{
+            .dst_ = next_hidden, .src_ = hidden, .n_ = static_cast<int64_t>(T) * D, .stream_ = s,
+        });
         if (!r) {
             return r;
         }
@@ -306,7 +305,9 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
         }
 
         // next_hidden += hidden
-        r = launch_element_add(next_hidden, hidden, static_cast<int64_t>(T) * D, s);
+        r = backend.element_add(ElementAddParams{
+            .dst_ = next_hidden, .src_ = hidden, .n_ = static_cast<int64_t>(T) * D, .stream_ = s,
+        });
         if (!r) {
             return r;
         }
@@ -332,7 +333,7 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
     r = backend.gemm(GemmParams{
         .a_ = weights_.lm_head_.get(),
         .b_ = normed.get(),
-        .c_ = output.logits,
+        .c_ = output.logits_,
         .m_ = V,
         .n_ = T,
         .k_ = D,
@@ -349,20 +350,6 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
 
     return {};
 }
-
-// Registration
-namespace {
-
-Result<std::unique_ptr<Model>> create_llama(ModelConfig config, ModelWeights weights) {
-    return std::make_unique<LlamaModel>(std::move(config), std::move(weights));
-}
-
-const bool kLlamaRegistered = []() {
-    ModelRegistry::instance().register_model("llama", create_llama);
-    return true;
-}();
-
-}  // namespace
 
 }  // namespace engine
 }  // namespace ccinfer

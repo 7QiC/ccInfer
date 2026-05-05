@@ -243,5 +243,30 @@ struct WriteKVCacheParams {
     void* stream_ = nullptr;
 };
 
+// -----------------------------------------------------------------------------
+// Element-wise add (residual connection)
+// -----------------------------------------------------------------------------
+struct ElementAddParams {
+    void* dst_ = nullptr;
+    const void* src_ = nullptr;
+    int64_t n_ = 0;
+    void* stream_ = nullptr;
+};
+
+// -----------------------------------------------------------------------------
+// Split fused QKV output into separate Q, K, V buffers
+// -----------------------------------------------------------------------------
+struct SplitQkvParams {
+    const void* qkv_ = nullptr;
+    void* q_ = nullptr;
+    void* k_ = nullptr;
+    void* v_ = nullptr;
+    int num_tokens_ = 0;
+    int num_q_heads_ = 0;
+    int num_kv_heads_ = 0;
+    int head_dim_ = 0;
+    void* stream_ = nullptr;
+};
+
 }  // namespace engine
 }  // namespace ccinfer

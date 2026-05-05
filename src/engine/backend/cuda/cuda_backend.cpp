@@ -87,6 +87,23 @@ Result<void> CudaBackend::silu_mul(const SiluMulParams& p) {
                            static_cast<__nv_bfloat16*>(p.output_), p.n_, s);
 }
 
+Result<void> CudaBackend::element_add(const ElementAddParams& p) {
+    cudaStream_t s = p.stream_ ? static_cast<cudaStream_t>(p.stream_) : stream_;
+
+    return launch_element_add(static_cast<__nv_bfloat16*>(p.dst_),
+                              static_cast<const __nv_bfloat16*>(p.src_), p.n_, s);
+}
+
+Result<void> CudaBackend::split_qkv(const SplitQkvParams& p) {
+    cudaStream_t s = p.stream_ ? static_cast<cudaStream_t>(p.stream_) : stream_;
+
+    return launch_split_qkv(static_cast<const __nv_bfloat16*>(p.qkv_),
+                            static_cast<__nv_bfloat16*>(p.q_),
+                            static_cast<__nv_bfloat16*>(p.k_),
+                            static_cast<__nv_bfloat16*>(p.v_), p.num_tokens_, p.num_q_heads_,
+                            p.num_kv_heads_, p.head_dim_, s);
+}
+
 Result<void> CudaBackend::naive_attention(const NaiveAttnParams& p) {
     cudaStream_t s = p.stream_ ? static_cast<cudaStream_t>(p.stream_) : stream_;
 
