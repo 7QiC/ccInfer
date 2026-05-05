@@ -19,6 +19,7 @@ target_include_directories(engine
     PUBLIC
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${Boost_INCLUDE_DIRS}
     PRIVATE
         ${CUDAToolkit_INCLUDE_DIRS}
 )
