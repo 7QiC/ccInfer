@@ -22,6 +22,10 @@ enum class ErrorCode : uint16_t {
     ModelUnsupportedArch,
     ModelUnsupportedDType,
 
+    KVBlockExhausted,
+    KVBlockDoubleFree,
+    KVInvalidBlockTable,
+
     RequestTooLong,
     RequestCancelled,
     RequestTimeout,
@@ -57,6 +61,13 @@ inline constexpr std::string_view error_message(ErrorCode c) noexcept {
             return "unsupported model architecture";
         case ErrorCode::ModelUnsupportedDType:
             return "unsupported model dtype";
+
+        case ErrorCode::KVBlockExhausted:
+            return "KV cache block exhausted";
+        case ErrorCode::KVBlockDoubleFree:
+            return "KV cache block double-free";
+        case ErrorCode::KVInvalidBlockTable:
+            return "invalid KV cache block table";
 
         case ErrorCode::RequestTooLong:
             return "request too long";
