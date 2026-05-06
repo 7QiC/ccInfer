@@ -27,6 +27,10 @@ add_executable(test_decode_attn kernel/test_decode_attn.cu)
 target_link_libraries(test_decode_attn PRIVATE engine gtest_main CUDA::cudart)
 gtest_discover_tests(test_decode_attn)
 
+add_executable(test_kv_cache_forward integration/test_kv_cache_forward.cpp)
+target_link_libraries(test_kv_cache_forward PRIVATE engine gtest_main CUDA::cudart CUDA::cublas)
+gtest_discover_tests(test_kv_cache_forward)
+
 add_executable(test_device_buffer unit/test_device_buffer.cpp)
 target_link_libraries(test_device_buffer PRIVATE engine gtest_main CUDA::cudart)
 gtest_discover_tests(test_device_buffer)
