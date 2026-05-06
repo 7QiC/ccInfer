@@ -11,6 +11,10 @@ add_executable(test_kv_cache_storage unit/test_kv_cache_storage.cpp)
 target_link_libraries(test_kv_cache_storage PRIVATE engine gtest_main CUDA::cudart)
 gtest_discover_tests(test_kv_cache_storage)
 
+add_executable(test_kv_cache_manager unit/test_kv_cache_manager.cpp)
+target_link_libraries(test_kv_cache_manager PRIVATE engine gtest_main CUDA::cudart)
+gtest_discover_tests(test_kv_cache_manager)
+
 add_executable(test_device_buffer unit/test_device_buffer.cpp)
 target_link_libraries(test_device_buffer PRIVATE engine gtest_main CUDA::cudart)
 gtest_discover_tests(test_device_buffer)
