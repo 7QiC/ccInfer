@@ -7,6 +7,8 @@
 #include <cstdint>
 
 #include "engine/backend/cuda/cuda_utils.h"
+#include "engine/kernel/attention/attn_common.cuh"
+#include "engine/kernel/cuda_common.cuh"
 #include "engine/kernel/cuda_kernels.h"
 
 namespace ccinfer {
@@ -36,112 +38,6 @@ namespace {
 //       * tiled score buffering
 //       * online softmax
 //       * no full-score materialization
-
-__host__ __device__ constexpr std::size_t align_up(std::size_t x, std::size_t align) {
-    return (x + align - 1) & ~(align - 1);
-}
-
-__device__ __forceinline__ float warp_reduce_sum(float v) {
-    for (int offset = 16; offset > 0; offset >>= 1) {
-        v += __shfl_down_sync(0xffffffff, v, offset);
-    }
-    return v;
-}
-
-__device__ __forceinline__ float warp_reduce_max(float v) {
-    for (int offset = 16; offset > 0; offset >>= 1) {
-        v = fmaxf(v, __shfl_down_sync(0xffffffff, v, offset));
-    }
-    return v;
-}
-
-template <int kThreadsPerCTA>
-__device__ __forceinline__ float block_reduce_sum(float v) {
-    static_assert(kThreadsPerCTA % 32 == 0, "kThreadsPerCTA must be a multiple of 32");
-    static_assert(kThreadsPerCTA <= 1024, "kThreadsPerCTA must be <= 1024");
-
-    __shared__ float shared[32];
-
-    const int lane = threadIdx.x & 31;
-    const int warp_id = threadIdx.x >> 5;
-
-    v = warp_reduce_sum(v);
-
-    if (lane == 0) {
-        shared[warp_id] = v;
-    }
-    __syncthreads();
-
-    constexpr int kNumWarps = kThreadsPerCTA / 32;
-    v = (threadIdx.x < kNumWarps) ? shared[lane] : 0.0f;
-
-    if (warp_id == 0) {
-        v = warp_reduce_sum(v);
-    }
-
-    if (threadIdx.x == 0) {
-        shared[0] = v;
-    }
-    __syncthreads();
-
-    return shared[0];
-}
-
-template <int kThreadsPerCTA>
-__device__ __forceinline__ float block_reduce_max(float v) {
-    static_assert(kThreadsPerCTA % 32 == 0, "kThreadsPerCTA must be a multiple of 32");
-    static_assert(kThreadsPerCTA <= 1024, "kThreadsPerCTA must be <= 1024");
-
-    __shared__ float shared[32];
-
-    const int lane = threadIdx.x & 31;
-    const int warp_id = threadIdx.x >> 5;
-
-    v = warp_reduce_max(v);
-
-    if (lane == 0) {
-        shared[warp_id] = v;
-    }
-    __syncthreads();
-
-    constexpr int kNumWarps = kThreadsPerCTA / 32;
-    v = (threadIdx.x < kNumWarps) ? shared[lane] : -FLT_MAX;
-
-    if (warp_id == 0) {
-        v = warp_reduce_max(v);
-    }
-
-    if (threadIdx.x == 0) {
-        shared[0] = v;
-    }
-    __syncthreads();
-
-    return shared[0];
-}
-
-__device__ __forceinline__ bool get_kv_cache_base_offset(int ctx_pos, int kv_head, int head_dim,
-                                                         int num_kv_heads, int cache_block_size,
-                                                         int max_blocks_per_req,
-                                                         const int32_t* __restrict__ req_blocks,
-                                                         int64_t* out_base_offset) {
-    const int logical_block = ctx_pos / cache_block_size;
-    const int offset_in_block = ctx_pos - logical_block * cache_block_size;
-
-    if (logical_block < 0 || logical_block >= max_blocks_per_req) {
-        return false;
-    }
-
-    const int physical_block = req_blocks[logical_block];
-    if (physical_block < 0) {
-        return false;
-    }
-
-    const int64_t slot = static_cast<int64_t>(physical_block) * cache_block_size + offset_in_block;
-
-    *out_base_offset = (slot * num_kv_heads + kv_head) * static_cast<int64_t>(head_dim);
-
-    return true;
-}
 
 template <int kThreadsPerCTA, int kTileTokens>
 __global__ void decode_attention_kernel(const __nv_bfloat16* __restrict__ q,

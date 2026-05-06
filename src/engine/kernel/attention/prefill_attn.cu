@@ -6,6 +6,8 @@
 #include <cstdint>
 
 #include "engine/backend/cuda/cuda_utils.h"
+#include "engine/kernel/attention/attn_common.cuh"
+#include "engine/kernel/cuda_common.cuh"
 #include "engine/kernel/cuda_kernels.h"
 
 namespace ccinfer {
@@ -36,110 +38,6 @@ namespace {
 //   - no full-score materialization
 //   - paged KV cache addressing
 //   - causal prefill masking
-
-template <int kNumThreads>
-__device__ __forceinline__ float warp_reduce_sum(float v) {
-    for (int offset = 16; offset > 0; offset >>= 1) {
-        v += __shfl_down_sync(0xffffffff, v, offset);
-    }
-    return v;
-}
-
-template <int kNumThreads>
-__device__ __forceinline__ float warp_reduce_max(float v) {
-    for (int offset = 16; offset > 0; offset >>= 1) {
-        v = fmaxf(v, __shfl_down_sync(0xffffffff, v, offset));
-    }
-    return v;
-}
-
-template <int kNumThreads>
-__device__ __forceinline__ float block_reduce_sum(float v) {
-    static_assert(kNumThreads % 32 == 0, "kNumThreads must be a multiple of 32");
-    static_assert(kNumThreads <= 1024, "kNumThreads must be <= 1024");
-
-    __shared__ float shared[32];
-
-    const int lane = threadIdx.x & 31;
-    const int wid = threadIdx.x >> 5;
-
-    v = warp_reduce_sum<kNumThreads>(v);
-
-    if (lane == 0) {
-        shared[wid] = v;
-    }
-    __syncthreads();
-
-    constexpr int kNumWarps = (kNumThreads + 31) / 32;
-    v = (threadIdx.x < kNumWarps) ? shared[lane] : 0.0f;
-
-    if (wid == 0) {
-        v = warp_reduce_sum<kNumThreads>(v);
-    }
-
-    if (threadIdx.x == 0) {
-        shared[0] = v;
-    }
-    __syncthreads();
-
-    return shared[0];
-}
-
-template <int kNumThreads>
-__device__ __forceinline__ float block_reduce_max(float v) {
-    static_assert(kNumThreads % 32 == 0, "kNumThreads must be a multiple of 32");
-    static_assert(kNumThreads <= 1024, "kNumThreads must be <= 1024");
-
-    __shared__ float shared[32];
-
-    const int lane = threadIdx.x & 31;
-    const int wid = threadIdx.x >> 5;
-
-    v = warp_reduce_max<kNumThreads>(v);
-
-    if (lane == 0) {
-        shared[wid] = v;
-    }
-    __syncthreads();
-
-    constexpr int kNumWarps = (kNumThreads + 31) / 32;
-    v = (threadIdx.x < kNumWarps) ? shared[lane] : -FLT_MAX;
-
-    if (wid == 0) {
-        v = warp_reduce_max<kNumThreads>(v);
-    }
-
-    if (threadIdx.x == 0) {
-        shared[0] = v;
-    }
-    __syncthreads();
-
-    return shared[0];
-}
-
-__device__ __forceinline__ bool get_kv_cache_base_offset(int ctx_pos, int kv_head, int head_dim,
-                                                         int num_kv_heads, int cache_block_size,
-                                                         int max_blocks_per_req,
-                                                         const int32_t* __restrict__ req_blocks,
-                                                         int64_t* out_base_offset) {
-    const int logical_block = ctx_pos / cache_block_size;
-    const int offset_in_block = ctx_pos - logical_block * cache_block_size;
-
-    if (logical_block < 0 || logical_block >= max_blocks_per_req) {
-        return false;
-    }
-
-    const int physical_block = req_blocks[logical_block];
-    if (physical_block < 0) {
-        return false;
-    }
-
-    const int64_t slot = static_cast<int64_t>(physical_block) * cache_block_size + offset_in_block;
-
-    *out_base_offset = (slot * num_kv_heads + kv_head) * static_cast<int64_t>(head_dim);
-
-    return true;
-}
 
 template <int kNumThreads, int kTileTokens>
 __global__ void prefill_attention_kernel(

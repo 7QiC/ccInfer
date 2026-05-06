@@ -1,9 +1,14 @@
 #pragma once
 
 #include <cfloat>
+#include <cstddef>
 
 namespace ccinfer {
 namespace engine {
+
+__host__ __device__ constexpr std::size_t align_up(std::size_t x, std::size_t align) {
+    return (x + align - 1) & ~(align - 1);
+}
 
 constexpr int kWarpSize = 32;
 
