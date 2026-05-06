@@ -127,8 +127,17 @@ Result<void> CudaBackend::prefill_attention(const PrefillAttnParams& p) {
         p.head_dim_, p.cache_block_size_, s);
 }
 
-Result<void> CudaBackend::decode_attention(const DecodeAttnParams& /*p*/) {
-    return {};  // Task 7
+Result<void> CudaBackend::decode_attention(const DecodeAttnParams& p) {
+    cudaStream_t s = p.stream_ ? static_cast<cudaStream_t>(p.stream_) : stream_;
+
+    return launch_decode_attention(
+        static_cast<const __nv_bfloat16*>(p.q_),
+        static_cast<const __nv_bfloat16*>(p.k_cache_),
+        static_cast<const __nv_bfloat16*>(p.v_cache_),
+        p.block_table_, p.context_lens_,
+        static_cast<__nv_bfloat16*>(p.output_),
+        p.batch_size_, p.max_blocks_per_req_, p.num_q_heads_, p.num_kv_heads_,
+        p.head_dim_, p.cache_block_size_, s);
 }
 
 Result<void> CudaBackend::write_kv_cache(const WriteKVCacheParams& p) {

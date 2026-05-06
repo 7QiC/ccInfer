@@ -7,6 +7,7 @@ add_library(engine STATIC
     kernel/attention/naive_attn.cu
     kernel/attention/write_kv_cache.cu
     kernel/attention/prefill_attn.cu
+    kernel/attention/decode_attn.cu
     cache/kv_cache_manager.cpp
     kernel/elementwise/elementwise.cu
     model/loader.cpp

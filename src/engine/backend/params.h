@@ -186,29 +186,28 @@ struct PrefillAttnParams {
 };
 
 // -----------------------------------------------------------------------------
-// Decode attention
+// Decode attention — PagedAttention with online softmax.
 //
-// Future PagedAttention decode backend.
+// Q layout:  [batch_size, num_q_heads, head_dim]  (1 token per request)
+// Output:    [batch_size, num_q_heads, head_dim]
 //
-// Tentative layout:
-//
-//   q:      [num_decode_tokens, num_q_heads, head_dim]
-//   output: [num_decode_tokens, num_q_heads, head_dim]
-//
-// K/V are read from paged KV cache using block_table_ and context_lens_.
-// -----------------------------------------------------------------------------
+// K/V read from paged KV cache via block_table_ and context_lens_.
 struct DecodeAttnParams {
     const void* q_ = nullptr;
-
     const void* k_cache_ = nullptr;
     const void* v_cache_ = nullptr;
 
-    const int32_t* block_table_ = nullptr;
-    const int32_t* context_lens_ = nullptr;
+    const int32_t* block_table_ = nullptr;  // [batch, max_blocks_per_req]
+    const int32_t* context_lens_ = nullptr; // [batch]
 
     void* output_ = nullptr;
 
-    int layer_ = 0;
+    int batch_size_ = 0;
+    int max_blocks_per_req_ = 0;
+    int num_q_heads_ = 0;
+    int num_kv_heads_ = 0;
+    int head_dim_ = 0;
+    int cache_block_size_ = 0;
 
     void* stream_ = nullptr;
 };

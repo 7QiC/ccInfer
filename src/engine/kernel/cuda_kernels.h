@@ -60,6 +60,16 @@ Result<void> launch_prefill_attention(const __nv_bfloat16* q, const __nv_bfloat1
                                       int head_dim, int cache_block_size, cudaStream_t stream);
 
 // ---------------------------------------------------------------------------
+// Decode attention
+// ---------------------------------------------------------------------------
+Result<void> launch_decode_attention(const __nv_bfloat16* q, const __nv_bfloat16* k_cache,
+                                     const __nv_bfloat16* v_cache, const int32_t* block_table,
+                                     const int32_t* context_lens, __nv_bfloat16* output,
+                                     int batch_size, int max_blocks_per_req, int num_q_heads,
+                                     int num_kv_heads, int head_dim, int cache_block_size,
+                                     cudaStream_t stream);
+
+// ---------------------------------------------------------------------------
 // Write KV cache
 // ---------------------------------------------------------------------------
 Result<void> launch_write_kv_cache(const __nv_bfloat16* k_new, const __nv_bfloat16* v_new,
