@@ -3,46 +3,37 @@
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 
+#include <cmath>
 #include <cstdlib>
 #include <vector>
 
-#include "engine/backend/params.h"
 #include "engine/cache/block.h"
 #include "engine/cache/kv_cache_manager.h"
+#include "engine/cache/kv_cache_storage.h"
 #include "engine/kernel/cuda_kernels.h"
-#include "engine/model/config.h"
 
 namespace ccinfer {
 namespace engine {
 namespace {
-
-ModelConfig make_test_config() {
-    ModelConfig cfg;
-    cfg.n_layers_ = 2;
-    cfg.n_q_heads_ = 8;
-    cfg.n_kv_heads_ = 4;
-    cfg.d_model_ = 512;
-    cfg.head_dim_ = 64;
-    cfg.d_ff_ = 2048;
-    cfg.vocab_size_ = 32000;
-    return cfg;
-}
 
 // Full lifecycle test: alloc → write → prefill → decode → release
 TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     constexpr int kNumTokens = 32;
     constexpr int kDecodeBatch = 2;
     constexpr int kMaxBlocks = 16;
-
-    auto cfg = make_test_config();
-    const int nq = cfg.n_q_heads_;
-    const int nkv = cfg.n_kv_heads_;
-    const int hd = cfg.head_dim_;
+    constexpr int kNumLayers = 1;
+    constexpr int nq = 8;
+    constexpr int nkv = 4;
+    constexpr int hd = 64;
     const int block_size = kKVBlockSize;
 
-    // 1. Init KVCacheManager
+    // 1. Init GPU storage and CPU block manager separately
+    KVCacheStorage<__nv_bfloat16> storage;
+    auto r_storage = storage.init(kNumLayers, kMaxBlocks, block_size, nkv, hd);
+    ASSERT_TRUE(r_storage.has_value());
+
     KVCacheManager mgr;
-    auto init_r = mgr.init(cfg, kMaxBlocks);
+    auto init_r = mgr.init(kMaxBlocks);
     ASSERT_TRUE(init_r.has_value());
     EXPECT_EQ(mgr.num_free_blocks(), kMaxBlocks);
 
@@ -94,7 +85,7 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     // 3. write_kv_cache for each layer (use layer 0 for this test)
     {
         auto r = launch_write_kv_cache(d_k_new, d_v_new,
-                                       mgr.k_cache(0), mgr.v_cache(0),
+                                       storage.k_layer(0), storage.v_layer(0),
                                        d_slot_mapping, kNumTokens, nkv, hd,
                                        kMaxBlocks * block_size, stream);
         ASSERT_TRUE(r.has_value());
@@ -119,7 +110,7 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     // 5. prefill_attention and compare with naive_attention
     {
         // Paged prefill: reads K/V through block_table
-        auto r = launch_prefill_attention(d_q, mgr.k_cache(0), mgr.v_cache(0),
+        auto r = launch_prefill_attention(d_q, storage.k_layer(0), storage.v_layer(0),
                                           d_block_table, d_query_start_loc, d_context_lens,
                                           d_out_prefill, 1, kNumTokens, num_blocks,
                                           nq, nkv, hd, block_size, stream);
@@ -185,7 +176,7 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
                         kDecodeBatch * sizeof(int32_t), cudaMemcpyHostToDevice, stream);
 
         // Paged decode
-        auto r = launch_decode_attention(d_decode_q, mgr.k_cache(0), mgr.v_cache(0),
+        auto r = launch_decode_attention(d_decode_q, storage.k_layer(0), storage.v_layer(0),
                                          d_dec_block_table, d_dec_context_lens,
                                          d_decode_out, kDecodeBatch, num_blocks,
                                          nq, nkv, hd, block_size, stream);

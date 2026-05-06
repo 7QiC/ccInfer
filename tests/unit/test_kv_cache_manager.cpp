@@ -2,28 +2,15 @@
 
 #include "engine/cache/block.h"
 #include "engine/cache/kv_cache_manager.h"
-#include "engine/model/config.h"
 
 namespace ccinfer {
 namespace engine {
 namespace {
 
-ModelConfig make_test_config() {
-    ModelConfig cfg;
-    cfg.n_layers_ = 4;
-    cfg.n_q_heads_ = 8;
-    cfg.n_kv_heads_ = 8;
-    cfg.d_model_ = 1024;
-    cfg.head_dim_ = 128;
-    cfg.d_ff_ = 4096;
-    cfg.vocab_size_ = 32000;
-    return cfg;
-}
-
 class KVCacheManagerTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        auto r = mgr_.init(make_test_config(), 64);
+        auto r = mgr_.init(64);
         ASSERT_TRUE(r.has_value());
     }
     KVCacheManager mgr_;
@@ -31,8 +18,7 @@ protected:
 
 TEST_F(KVCacheManagerTest, InitState) {
     EXPECT_EQ(mgr_.num_free_blocks(), 64);
-    EXPECT_EQ(mgr_.num_layers(), 4);
-    EXPECT_EQ(mgr_.block_size(), kKVBlockSize);
+    EXPECT_EQ(mgr_.max_blocks(), 64);
 }
 
 TEST_F(KVCacheManagerTest, AllocateSingleBlock) {
@@ -56,19 +42,16 @@ TEST_F(KVCacheManagerTest, AllocateMultipleBlocks) {
     EXPECT_EQ(r->block_table.size(), 3);
     EXPECT_EQ(mgr_.num_free_blocks(), 61);
 
-    // Block 0: tokens 0..15
     int32_t b0 = r->block_table[0];
     for (int i = 0; i < 16; ++i) {
         EXPECT_EQ(r->slot_mapping[i], b0 * kKVBlockSize + i);
     }
 
-    // Block 1: tokens 16..31
     int32_t b1 = r->block_table[1];
     for (int i = 0; i < 16; ++i) {
         EXPECT_EQ(r->slot_mapping[16 + i], b1 * kKVBlockSize + i);
     }
 
-    // Block 2: tokens 32..39 (partial)
     int32_t b2 = r->block_table[2];
     for (int i = 0; i < 8; ++i) {
         EXPECT_EQ(r->slot_mapping[32 + i], b2 * kKVBlockSize + i);
@@ -108,13 +91,6 @@ TEST_F(KVCacheManagerTest, Exhaustion) {
     auto r = mgr_.prepare_blocks({1});
     EXPECT_FALSE(r.has_value());
     EXPECT_EQ(r.error(), ErrorCode::KVBlockExhausted);
-}
-
-TEST_F(KVCacheManagerTest, CachePointersNonNull) {
-    EXPECT_NE(mgr_.k_cache(0), nullptr);
-    EXPECT_NE(mgr_.v_cache(0), nullptr);
-    EXPECT_NE(mgr_.k_cache(0), mgr_.k_cache(1));
-    EXPECT_NE(mgr_.v_cache(0), mgr_.v_cache(1));
 }
 
 }  // namespace

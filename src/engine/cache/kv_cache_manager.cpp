@@ -5,15 +5,10 @@
 namespace ccinfer {
 namespace engine {
 
-Result<void> KVCacheManager::init(const ModelConfig& config, int max_blocks) {
-    if (max_blocks <= 0 || config.n_layers_ <= 0 || config.n_kv_heads_ <= 0 ||
-        config.head_dim_ <= 0) {
+Result<void> KVCacheManager::init(int max_blocks) {
+    if (max_blocks <= 0) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
-
-    auto r = storage_.init(config.n_layers_, max_blocks, kKVBlockSize,
-                           config.n_kv_heads_, config.head_dim_);
-    if (!r) return r;
 
     max_blocks_ = max_blocks;
     metadata_.resize(max_blocks);
