@@ -58,7 +58,13 @@ static void rope_cpu(__nv_bfloat16* q, __nv_bfloat16* k, const int32_t* position
 class RopeTest : public ::testing::Test {
 protected:
     void SetUp() override { cudaStreamCreate(&stream_); }
-    void TearDown() override { cudaStreamDestroy(stream_); }
+    void TearDown() override {
+        auto sync_err = cudaStreamSynchronize(stream_);
+        ASSERT_EQ(sync_err, cudaSuccess);
+        auto last_err = cudaGetLastError();
+        ASSERT_EQ(last_err, cudaSuccess);
+        cudaStreamDestroy(stream_);
+    }
     cudaStream_t stream_{};
 };
 

@@ -87,6 +87,10 @@ TEST(WriteKVCacheKernelTest, WriteAndReadbackNonContiguousSlots) {
                n_kv_heads * head_dim * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost);
     EXPECT_FLOAT_EQ(__bfloat162float(k_unused[0]), 0.0f);
 
+    auto sync_err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(sync_err, cudaSuccess);
+    auto last_err = cudaGetLastError();
+    ASSERT_EQ(last_err, cudaSuccess);
     cudaStreamDestroy(stream);
     cudaFree(d_k_new); cudaFree(d_v_new);
     cudaFree(d_k_cache); cudaFree(d_v_cache);
@@ -102,6 +106,10 @@ TEST(WriteKVCacheKernelTest, NullPointerReturnsError) {
     EXPECT_FALSE(r.has_value());
     EXPECT_EQ(r.error(), ErrorCode::InvalidArgument);
 
+    auto sync_err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(sync_err, cudaSuccess);
+    auto last_err = cudaGetLastError();
+    ASSERT_EQ(last_err, cudaSuccess);
     cudaStreamDestroy(stream);
 }
 

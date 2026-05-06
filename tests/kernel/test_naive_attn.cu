@@ -79,7 +79,13 @@ void fill_random(__nv_bfloat16* data, int n, unsigned int seed) {
 class NaiveAttnTest : public ::testing::Test {
 protected:
     void SetUp() override { cudaStreamCreate(&stream_); }
-    void TearDown() override { cudaStreamDestroy(stream_); }
+    void TearDown() override {
+        auto sync_err = cudaStreamSynchronize(stream_);
+        ASSERT_EQ(sync_err, cudaSuccess);
+        auto last_err = cudaGetLastError();
+        ASSERT_EQ(last_err, cudaSuccess);
+        cudaStreamDestroy(stream_);
+    }
     cudaStream_t stream_{};
 };
 

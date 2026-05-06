@@ -97,6 +97,10 @@ TEST(PrefillAttnKernelTest, SingleRequestMatchesNaive) {
     cudaFree(d_out_prefill); cudaFree(d_out_naive);
     cudaFree(d_query_start_loc); cudaFree(d_context_lens);
     cudaFree(d_block_table);
+    auto sync_err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(sync_err, cudaSuccess);
+    auto last_err = cudaGetLastError();
+    ASSERT_EQ(last_err, cudaSuccess);
     cudaStreamDestroy(stream);
 }
 
@@ -109,6 +113,10 @@ TEST(PrefillAttnKernelTest, RejectsNullPointers) {
     EXPECT_FALSE(r.has_value());
     EXPECT_EQ(r.error(), ErrorCode::InvalidArgument);
 
+    auto sync_err = cudaStreamSynchronize(stream);
+    ASSERT_EQ(sync_err, cudaSuccess);
+    auto last_err = cudaGetLastError();
+    ASSERT_EQ(last_err, cudaSuccess);
     cudaStreamDestroy(stream);
 }
 
