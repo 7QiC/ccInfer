@@ -19,6 +19,10 @@ add_executable(test_write_kv_cache kernel/test_write_kv_cache.cu)
 target_link_libraries(test_write_kv_cache PRIVATE engine gtest_main CUDA::cudart)
 gtest_discover_tests(test_write_kv_cache)
 
+add_executable(test_prefill_attn kernel/test_prefill_attn.cu)
+target_link_libraries(test_prefill_attn PRIVATE engine gtest_main CUDA::cudart CUDA::cublas)
+gtest_discover_tests(test_prefill_attn)
+
 add_executable(test_device_buffer unit/test_device_buffer.cpp)
 target_link_libraries(test_device_buffer PRIVATE engine gtest_main CUDA::cudart)
 gtest_discover_tests(test_device_buffer)

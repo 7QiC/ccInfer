@@ -153,38 +153,34 @@ struct NaiveAttnParams {
 };
 
 // -----------------------------------------------------------------------------
-// Prefill attention
+// Prefill attention — FlashAttention-style tiling over paged KV cache.
 //
-// Future high-performance prefill backend.
+// Q layout:  [total_tokens, num_q_heads, head_dim]
+// Output:    [total_tokens, num_q_heads, head_dim]
 //
-// Intended for FlashAttention-style / varlen prefill attention.
+// K/V are read exclusively from the KV cache (k_cache_/v_cache_).
+// Caller must write new K/V into cache via write_kv_cache before calling.
 //
-// Tentative layout:
-//
-//   q:      [total_query_tokens, num_q_heads,  head_dim]
-//   output: [total_query_tokens, num_q_heads,  head_dim]
-//
-// K/V may come from either:
-//   1. freshly computed k/v for current prefill tokens, or
-//   2. KV cache blocks for prefix / previous context.
-//
-// These params are placeholders for Phase 3.
-// -----------------------------------------------------------------------------
+// query_start_loc_[i] = start index in Q for request i (has batch_size_+1 elements)
+// context_lens_[i]   = total KV context for request i (prefix + new tokens)
+// block_table_: [batch_size_, max_blocks_per_req_] flattened, -1 for unused slots
 struct PrefillAttnParams {
     const void* q_ = nullptr;
-
     const void* k_cache_ = nullptr;
     const void* v_cache_ = nullptr;
 
-    const int32_t* block_table_ = nullptr;
-    const int32_t* slot_mapping_ = nullptr;
-    const int32_t* query_start_loc_ = nullptr;
-    const int32_t* seq_lens_ = nullptr;
-    const int32_t* context_lens_ = nullptr;
+    const int32_t* block_table_ = nullptr;     // [batch, max_blocks_per_req]
+    const int32_t* query_start_loc_ = nullptr; // [batch + 1]
+    const int32_t* context_lens_ = nullptr;    // [batch]
 
     void* output_ = nullptr;
 
-    int layer_ = 0;
+    int batch_size_ = 0;
+    int max_blocks_per_req_ = 0;
+    int num_q_heads_ = 0;
+    int num_kv_heads_ = 0;
+    int head_dim_ = 0;
+    int cache_block_size_ = 0;
 
     void* stream_ = nullptr;
 };
@@ -217,28 +213,22 @@ struct DecodeAttnParams {
     void* stream_ = nullptr;
 };
 
-// -----------------------------------------------------------------------------
-// Write KV cache
+// Write KV cache — scatter newly computed K/V into paged KV cache.
 //
-// Writes freshly computed K/V into paged KV cache.
-//
-// Tentative layout:
-//
-//   k_new: [total_tokens, num_kv_heads, head_dim]
-//   v_new: [total_tokens, num_kv_heads, head_dim]
-//
-// slot_mapping_ maps each token to its physical KV-cache slot.
-// -----------------------------------------------------------------------------
+//   k_new/v_new: [total_tokens, num_kv_heads, head_dim]
+//   k_cache/v_cache: [max_slots, num_kv_heads, head_dim] per layer
+//   slot_mapping_[t] = physical slot for token t
 struct WriteKVCacheParams {
     const void* k_new_ = nullptr;
     const void* v_new_ = nullptr;
-
     void* k_cache_ = nullptr;
     void* v_cache_ = nullptr;
-
     const int32_t* slot_mapping_ = nullptr;
 
     int total_tokens_ = 0;
+    int num_kv_heads_ = 0;
+    int head_dim_ = 0;
+    int max_slots_ = 0;
 
     void* stream_ = nullptr;
 };

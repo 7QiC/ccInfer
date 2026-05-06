@@ -20,9 +20,9 @@ public:
     Result<void> element_add(const ElementAddParams& p) override;
     Result<void> split_qkv(const SplitQkvParams& p) override;
     Result<void> naive_attention(const NaiveAttnParams& p) override;
-    Result<void> prefill_attention(const PrefillAttnParams&) override { return {}; }
-    Result<void> decode_attention(const DecodeAttnParams&) override { return {}; }
-    Result<void> write_kv_cache(const WriteKVCacheParams&) override { return {}; }
+    Result<void> prefill_attention(const PrefillAttnParams& p) override;
+    Result<void> decode_attention(const DecodeAttnParams& p) override;
+    Result<void> write_kv_cache(const WriteKVCacheParams& p) override;
 
 private:
     cublasHandle_t cublas_handle_;

@@ -113,6 +113,36 @@ Result<void> CudaBackend::naive_attention(const NaiveAttnParams& p) {
         p.num_tokens_, p.num_q_heads_, p.num_kv_heads_, p.head_dim_, s);
 }
 
+Result<void> CudaBackend::prefill_attention(const PrefillAttnParams& p) {
+    cudaStream_t s = p.stream_ ? static_cast<cudaStream_t>(p.stream_) : stream_;
+
+    return launch_prefill_attention(
+        static_cast<const __nv_bfloat16*>(p.q_),
+        static_cast<const __nv_bfloat16*>(p.k_cache_),
+        static_cast<const __nv_bfloat16*>(p.v_cache_),
+        p.block_table_, p.query_start_loc_, p.context_lens_,
+        static_cast<__nv_bfloat16*>(p.output_),
+        p.batch_size_, p.query_start_loc_[p.batch_size_],
+        p.max_blocks_per_req_, p.num_q_heads_, p.num_kv_heads_,
+        p.head_dim_, p.cache_block_size_, s);
+}
+
+Result<void> CudaBackend::decode_attention(const DecodeAttnParams& /*p*/) {
+    return {};  // Task 7
+}
+
+Result<void> CudaBackend::write_kv_cache(const WriteKVCacheParams& p) {
+    cudaStream_t s = p.stream_ ? static_cast<cudaStream_t>(p.stream_) : stream_;
+
+    return launch_write_kv_cache(
+        static_cast<const __nv_bfloat16*>(p.k_new_),
+        static_cast<const __nv_bfloat16*>(p.v_new_),
+        static_cast<__nv_bfloat16*>(p.k_cache_),
+        static_cast<__nv_bfloat16*>(p.v_cache_),
+        p.slot_mapping_, p.total_tokens_, p.num_kv_heads_, p.head_dim_,
+        p.max_slots_, s);
+}
+
 std::unique_ptr<DeviceBackend> DeviceBackend::create() { return std::make_unique<CudaBackend>(); }
 
 }  // namespace engine
