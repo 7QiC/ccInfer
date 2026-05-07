@@ -1,16 +1,19 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "common/types.h"
-#include "engine/cache/block.h"
 #include "engine/backend/device_buffer.h"
+#include "engine/cache/block.h"
 
 namespace ccinfer {
 namespace engine {
 
 class DeviceBackend;
+class KVCacheStorageBase;
+class Model;
 
 // ---------------------------------------------------------------------------
 // SequenceState — per-sequence state owned by the DeviceWorker.
@@ -28,33 +31,30 @@ struct SequenceState {
 
 // ---------------------------------------------------------------------------
 // PhysicalBatch — GPU-ready data for ModelRunner::execute.
-// DeviceBuffer implies CUDA allocation, but the struct itself has no raw
-// CUDA types in its interface.
 // ---------------------------------------------------------------------------
 struct PhysicalBatch {
     int num_tokens = 0;
-    DeviceBuffer<int32_t> token_ids;       // [num_tokens]
-    DeviceBuffer<int32_t> positions;        // [num_tokens]
-    DeviceBuffer<int32_t> slot_mapping;     // [num_tokens]
+    std::unique_ptr<DeviceBuffer> token_ids;      // [num_tokens]
+    std::unique_ptr<DeviceBuffer> positions;       // [num_tokens]
+    std::unique_ptr<DeviceBuffer> slot_mapping;    // [num_tokens]
 
     int batch_size = 0;
     int max_blocks_per_seq = 0;
-    DeviceBuffer<int32_t> block_table;      // [batch_size, max_blocks_per_seq]
+    std::unique_ptr<DeviceBuffer> block_table;     // [batch_size, max_blocks_per_seq]
 
-    DeviceBuffer<int32_t> query_start_loc;  // [batch_size + 1]
-    DeviceBuffer<int32_t> context_lens;     // [batch_size]
+    std::unique_ptr<DeviceBuffer> query_start_loc; // [batch_size + 1]
+    std::unique_ptr<DeviceBuffer> context_lens;    // [batch_size]
 
-    std::vector<int> item_indices;          // maps physical seq → WorkItem index
+    std::vector<size_t> item_indices;                 // maps physical seq → WorkItem index
 };
 
 // ---------------------------------------------------------------------------
 // ExecutionContext — passed from DeviceWorker to ModelRunner.
-// Opaque pointers; each worker casts to its native types.
 // ---------------------------------------------------------------------------
 struct ExecutionContext {
     DeviceBackend* backend = nullptr;
-    void* kv_storage = nullptr;
-    void* kv_mgr = nullptr;
+    Model* model = nullptr;
+    KVCacheStorageBase* kv_storage = nullptr;
     int block_size = kKVBlockSize;
 };
 

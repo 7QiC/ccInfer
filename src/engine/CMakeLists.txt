@@ -16,7 +16,7 @@ add_library(engine STATIC
     model/qwen3/qwen3_model.cpp
     model/qwen3/qwen3_weights.cpp
     model/llama2/llama2_weights.cpp
-    runner/model_runner.cpp
+    model/model_runner.cpp
     tokenizer/byte_level_bpe_tokenizer.cpp
     sampling/sampler.cpp
 )

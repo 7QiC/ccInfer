@@ -25,6 +25,7 @@ Requires: CUDA Toolkit 11.8+, GCC 13+, CMake 3.20+, Boost 1.83+, nlohmann-json, 
 - **Never lower standards to pass tests.** If a test doesn't pass, find and fix the root cause — don't relax tolerances, weaken assertions, or bypass checks.
 - **Never sacrifice performance for convenience.** No host-side fallbacks that defeat GPU parallelism, no unnecessary allocations or copies.
 - **Keep code clean and consistent.** Match existing patterns, avoid clutter, delete dead code. This applies to all files including CMakeLists.txt.
+- **High cohesion, low coupling.** Keep related functionality together within a module; modules communicate through abstract interfaces. Avoid circular dependencies and implicit coupling.
 
 ## Code Style
 

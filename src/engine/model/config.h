@@ -4,7 +4,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
-#include "common/dtype.h"
+#include "engine/common/dtype.h"
 #include "common/result.h"
 
 namespace ccinfer {

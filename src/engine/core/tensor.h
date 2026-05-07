@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <initializer_list>
 
-#include "common/dtype.h"
+#include "engine/common/dtype.h"
 
 namespace ccinfer {
 namespace engine {

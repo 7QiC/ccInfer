@@ -10,7 +10,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "common/dtype.h"
+#include "engine/common/dtype.h"
 #include "common/result.h"
 #include "engine/backend/backend.h"
 #include "engine/backend/cuda/cuda_utils.h"

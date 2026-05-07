@@ -6,7 +6,7 @@
 #include "engine/backend/cuda/cuda_backend.h"
 #include "engine/backend/device_buffer.h"
 #include "core/tensor.h"
-#include "common/dtype.h"
+#include "engine/common/dtype.h"
 #include "engine/model/config.h"
 #include "common/result.h"
 

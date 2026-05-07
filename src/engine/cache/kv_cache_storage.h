@@ -4,15 +4,19 @@
 #include <memory>
 
 #include "common/result.h"
+#include "engine/backend/backend.h"
 #include "engine/backend/device_buffer.h"
 
 namespace ccinfer {
 namespace engine {
 
-class DeviceBackend;
+class KVCacheStorageBase {
+public:
+    virtual ~KVCacheStorageBase() = default;
+};
 
 template <typename DType>
-class KVCacheStorage {
+class KVCacheStorage final : public KVCacheStorageBase {
 public:
     KVCacheStorage() = default;
 
