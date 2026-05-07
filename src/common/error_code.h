@@ -30,6 +30,9 @@ enum class ErrorCode : uint16_t {
     RequestCancelled,
     RequestTimeout,
     ServerShuttingDown,
+
+    MaxSequencesReached,
+    BatchTranslationFailed,
 };
 
 inline constexpr std::string_view error_message(ErrorCode c) noexcept {
@@ -77,6 +80,11 @@ inline constexpr std::string_view error_message(ErrorCode c) noexcept {
             return "request timed out";
         case ErrorCode::ServerShuttingDown:
             return "server shutting down";
+
+        case ErrorCode::MaxSequencesReached:
+            return "maximum concurrent sequences reached";
+        case ErrorCode::BatchTranslationFailed:
+            return "WorkItem to PhysicalBatch translation failed";
     }
 
     return "unknown error";
