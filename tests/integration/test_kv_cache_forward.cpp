@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <vector>
 
+#include "engine/backend/cuda/cuda_backend.h"
 #include "engine/cache/block.h"
 #include "engine/cache/kv_cache_manager.h"
 #include "engine/cache/kv_cache_storage.h"
@@ -28,8 +29,9 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     const int block_size = kKVBlockSize;
 
     // 1. Init GPU storage and CPU block manager separately
+    CudaBackend backend;
     KVCacheStorage<__nv_bfloat16> storage;
-    auto r_storage = storage.init(kNumLayers, kMaxBlocks, block_size, nkv, hd);
+    auto r_storage = storage.init(backend, kNumLayers, kMaxBlocks, block_size, nkv, hd);
     ASSERT_TRUE(r_storage.has_value());
 
     KVCacheManager mgr;

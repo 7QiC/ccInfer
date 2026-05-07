@@ -8,16 +8,29 @@
 
 #include "engine/backend/backend.h"
 #include "engine/backend/cuda/cuda_utils.h"
-#include "engine/core/device_buffer.h"
+#include "engine/backend/device_buffer.h"
 #include "engine/kernel/cuda_kernels.h"
 
 namespace ccinfer {
 namespace engine {
 
-LlamaModel::LlamaModel(ModelConfig config, ModelWeights weights)
-    : config_(std::move(config)), weights_(std::move(weights)) {
-    rope_cache_.init(config_.max_seq_len_, config_.head_dim_, config_.rope_theta_);
+Result<std::unique_ptr<Model>> LlamaModel::create(const ModelConfig& config,
+                                                   const WeightLoader& loader,
+                                                   DeviceBackend& backend) {
+    auto weights = LlamaWeights::load(backend, config, loader);
+    if (!weights) return std::unexpected(weights.error());
+
+    auto rope_cache = RopeCache::create(config.max_seq_len_, config.head_dim_, config.rope_theta_,
+                                        backend);
+    if (!rope_cache) return std::unexpected(rope_cache.error());
+
+    return std::make_unique<LlamaModel>(config, std::move(*weights), std::move(*rope_cache));
 }
+
+LlamaModel::LlamaModel(ModelConfig config, LlamaWeights weights, RopeCache rope_cache)
+    : config_(std::move(config)),
+      weights_(std::move(weights)),
+      rope_cache_(std::move(rope_cache)) {}
 
 Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& output,
                                  DeviceBackend& backend, void* stream) {
@@ -61,7 +74,7 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
     const int attn_dim = nq * hd;
 
     // positions: [T]
-    DeviceBuffer<int32_t> pos_buf(static_cast<size_t>(T));
+    auto pos_buf = backend.allocate_buffer(static_cast<size_t>(T) * sizeof(int32_t));
 
     {
         std::vector<int32_t> pos_host(static_cast<size_t>(T));
@@ -69,7 +82,7 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
             pos_host[static_cast<size_t>(i)] = i;
         }
 
-        auto r = cuda_check(cudaMemcpy(pos_buf.get(), pos_host.data(),
+        auto r = cuda_check(cudaMemcpy(pos_buf->data(), pos_host.data(),
                                        static_cast<size_t>(T) * sizeof(int32_t),
                                        cudaMemcpyHostToDevice));
 
@@ -79,27 +92,27 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
     }
 
     // Workspaces
-    DeviceBuffer<__nv_bfloat16> hidden_a(static_cast<size_t>(T) * D);
-    DeviceBuffer<__nv_bfloat16> hidden_b(static_cast<size_t>(T) * D);
+    auto hidden_a = backend.allocate_buffer(static_cast<size_t>(T) * D * sizeof(__nv_bfloat16));
+    auto hidden_b = backend.allocate_buffer(static_cast<size_t>(T) * D * sizeof(__nv_bfloat16));
 
-    DeviceBuffer<__nv_bfloat16> normed(static_cast<size_t>(T) * D);
+    auto normed = backend.allocate_buffer(static_cast<size_t>(T) * D * sizeof(__nv_bfloat16));
 
-    DeviceBuffer<__nv_bfloat16> qkv_out(static_cast<size_t>(T) * qkv_dim);
+    auto qkv_out = backend.allocate_buffer(static_cast<size_t>(T) * qkv_dim * sizeof(__nv_bfloat16));
 
-    DeviceBuffer<__nv_bfloat16> q_buf(static_cast<size_t>(T) * nq * hd);
-    DeviceBuffer<__nv_bfloat16> k_buf(static_cast<size_t>(T) * nkv * hd);
-    DeviceBuffer<__nv_bfloat16> v_buf(static_cast<size_t>(T) * nkv * hd);
+    auto q_buf = backend.allocate_buffer(static_cast<size_t>(T) * nq * hd * sizeof(__nv_bfloat16));
+    auto k_buf = backend.allocate_buffer(static_cast<size_t>(T) * nkv * hd * sizeof(__nv_bfloat16));
+    auto v_buf = backend.allocate_buffer(static_cast<size_t>(T) * nkv * hd * sizeof(__nv_bfloat16));
 
-    DeviceBuffer<__nv_bfloat16> attn_out(static_cast<size_t>(T) * attn_dim);
+    auto attn_out = backend.allocate_buffer(static_cast<size_t>(T) * attn_dim * sizeof(__nv_bfloat16));
 
-    DeviceBuffer<__nv_bfloat16> gate(static_cast<size_t>(T) * d_ff);
-    DeviceBuffer<__nv_bfloat16> up(static_cast<size_t>(T) * d_ff);
-    DeviceBuffer<__nv_bfloat16> ffn_act(static_cast<size_t>(T) * d_ff);
+    auto gate = backend.allocate_buffer(static_cast<size_t>(T) * d_ff * sizeof(__nv_bfloat16));
+    auto up = backend.allocate_buffer(static_cast<size_t>(T) * d_ff * sizeof(__nv_bfloat16));
+    auto ffn_act = backend.allocate_buffer(static_cast<size_t>(T) * d_ff * sizeof(__nv_bfloat16));
 
     // hidden_a = input_embeds
     {
         auto r = cuda_check(cudaMemcpyAsync(
-            hidden_a.get(), input.input_embeds_,
+            hidden_a->data(), input.input_embeds_,
             static_cast<size_t>(T) * D * sizeof(__nv_bfloat16), cudaMemcpyDeviceToDevice, s));
 
         if (!r) {
@@ -107,20 +120,20 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
         }
     }
 
-    __nv_bfloat16* hidden = hidden_a.get();
-    __nv_bfloat16* next_hidden = hidden_b.get();
+    auto* hidden = static_cast<__nv_bfloat16*>(hidden_a->data());
+    auto* next_hidden = static_cast<__nv_bfloat16*>(hidden_b->data());
 
     // Transformer layers
     for (int l = 0; l < n_layers; ++l) {
-        const LayerWeights& lw = weights_.layers_[static_cast<size_t>(l)];
+        const LlamaLayerWeights& lw = weights_.layers_[static_cast<size_t>(l)];
 
         Result<void> r{};
 
         // Attention block: normed = RMSNorm(hidden)
         r = backend.rms_norm(RmsNormParams{
             .input_ = hidden,
-            .weight_ = lw.rms_attn_.get(),
-            .output_ = normed.get(),
+            .weight_ = lw.rms_attn_->data(),
+            .output_ = normed->data(),
             .rows_ = T,
             .dim_ = D,
             .eps_ = eps,
@@ -132,9 +145,9 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
 
         // qkv_out[T, qkv_dim] = normed[T, D] @ qkv_weight[qkv_dim, D]^T
         r = backend.gemm(GemmParams{
-            .a_ = lw.qkv_.get(),
-            .b_ = normed.get(),
-            .c_ = qkv_out.get(),
+            .a_ = lw.qkv_->data(),
+            .b_ = normed->data(),
+            .c_ = qkv_out->data(),
             .m_ = qkv_dim,
             .n_ = T,
             .k_ = D,
@@ -151,7 +164,7 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
 
         // qkv_out [T, Q|K|V] -> q/k/v token-major buffers
         r = backend.split_qkv(SplitQkvParams{
-            .qkv_ = qkv_out.get(), .q_ = q_buf.get(), .k_ = k_buf.get(), .v_ = v_buf.get(),
+            .qkv_ = qkv_out->data(), .q_ = q_buf->data(), .k_ = k_buf->data(), .v_ = v_buf->data(),
             .num_tokens_ = T, .num_q_heads_ = nq, .num_kv_heads_ = nkv, .head_dim_ = hd, .stream_ = s,
         });
         if (!r) {
@@ -160,9 +173,9 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
 
         // Apply RoPE to Q and K in-place
         r = backend.rope(RopeParams{
-            .q_ = q_buf.get(),
-            .k_ = k_buf.get(),
-            .positions_ = pos_buf.get(),
+            .q_ = q_buf->data(),
+            .k_ = k_buf->data(),
+            .positions_ = static_cast<const int32_t*>(pos_buf->data()),
             .rope_cache_ = rope_cache_.data(),
             .num_tokens_ = T,
             .num_q_heads_ = nq,
@@ -178,10 +191,10 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
 
         // attn_out [T, nq, hd] = causal_attention(q, k, v)
         r = backend.naive_attention(NaiveAttnParams{
-            .q_ = q_buf.get(),
-            .k_ = k_buf.get(),
-            .v_ = v_buf.get(),
-            .output_ = attn_out.get(),
+            .q_ = q_buf->data(),
+            .k_ = k_buf->data(),
+            .v_ = v_buf->data(),
+            .output_ = attn_out->data(),
             .num_tokens_ = T,
             .num_q_heads_ = nq,
             .num_kv_heads_ = nkv,
@@ -194,8 +207,8 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
 
         // next_hidden[T, D] = attn_out[T, D] @ o_proj[D, D]^T
         r = backend.gemm(GemmParams{
-            .a_ = lw.o_.get(),
-            .b_ = attn_out.get(),
+            .a_ = lw.o_->data(),
+            .b_ = attn_out->data(),
             .c_ = next_hidden,
             .m_ = D,
             .n_ = T,
@@ -224,8 +237,8 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
         // FFN block: normed = RMSNorm(hidden)
         r = backend.rms_norm(RmsNormParams{
             .input_ = hidden,
-            .weight_ = lw.rms_ffn_.get(),
-            .output_ = normed.get(),
+            .weight_ = lw.rms_ffn_->data(),
+            .output_ = normed->data(),
             .rows_ = T,
             .dim_ = D,
             .eps_ = eps,
@@ -237,9 +250,9 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
 
         // gate[T, d_ff] = normed[T, D] @ gate_weight[d_ff, D]^T
         r = backend.gemm(GemmParams{
-            .a_ = lw.gate_.get(),
-            .b_ = normed.get(),
-            .c_ = gate.get(),
+            .a_ = lw.gate_->data(),
+            .b_ = normed->data(),
+            .c_ = gate->data(),
             .m_ = d_ff,
             .n_ = T,
             .k_ = D,
@@ -256,9 +269,9 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
 
         // up[T, d_ff] = normed[T, D] @ up_weight[d_ff, D]^T
         r = backend.gemm(GemmParams{
-            .a_ = lw.up_.get(),
-            .b_ = normed.get(),
-            .c_ = up.get(),
+            .a_ = lw.up_->data(),
+            .b_ = normed->data(),
+            .c_ = up->data(),
             .m_ = d_ff,
             .n_ = T,
             .k_ = D,
@@ -275,9 +288,9 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
 
         // ffn_act = SiLU(gate) * up
         r = backend.silu_mul(SiluMulParams{
-            .gate_ = gate.get(),
-            .up_ = up.get(),
-            .output_ = ffn_act.get(),
+            .gate_ = gate->data(),
+            .up_ = up->data(),
+            .output_ = ffn_act->data(),
             .n_ = static_cast<int64_t>(T) * d_ff,
             .stream_ = s,
         });
@@ -287,8 +300,8 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
 
         // next_hidden[T, D] = ffn_act[T, d_ff] @ down_weight[D, d_ff]^T
         r = backend.gemm(GemmParams{
-            .a_ = lw.down_.get(),
-            .b_ = ffn_act.get(),
+            .a_ = lw.down_->data(),
+            .b_ = ffn_act->data(),
             .c_ = next_hidden,
             .m_ = D,
             .n_ = T,
@@ -318,8 +331,8 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
     // Final RMSNorm
     auto r = backend.rms_norm(RmsNormParams{
         .input_ = hidden,
-        .weight_ = weights_.rms_final_.get(),
-        .output_ = normed.get(),
+        .weight_ = weights_.rms_final_->data(),
+        .output_ = normed->data(),
         .rows_ = T,
         .dim_ = D,
         .eps_ = eps,
@@ -331,8 +344,8 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
 
     // LM head: output_logits[T, V] = normed[T, D] @ lm_head[V, D]^T
     r = backend.gemm(GemmParams{
-        .a_ = weights_.lm_head_.get(),
-        .b_ = normed.get(),
+        .a_ = weights_.lm_head_->data(),
+        .b_ = normed->data(),
         .c_ = output.logits_,
         .m_ = V,
         .n_ = T,

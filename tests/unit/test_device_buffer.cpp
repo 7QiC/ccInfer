@@ -3,47 +3,55 @@
 
 #include <vector>
 
-#include "core/device_buffer.h"
+#include "engine/backend/cuda/cuda_backend.h"
+#include "engine/backend/device_buffer.h"
 
 using namespace ccinfer;
 using namespace ccinfer::engine;
 
 TEST(DeviceBufferTest, DefaultConstruction) {
-    DeviceBuffer<float> buf;
+    std::unique_ptr<DeviceBuffer> buf;
     EXPECT_EQ(buf.get(), nullptr);
-    EXPECT_TRUE(buf.empty());
+    EXPECT_TRUE(!buf);
 }
 
 TEST(DeviceBufferTest, AllocateAndZero) {
-    DeviceBuffer<float> buf(1024);
-    EXPECT_NE(buf.get(), nullptr);
-    EXPECT_FALSE(buf.empty());
-    EXPECT_EQ(buf.size(), 1024);
+    CudaBackend backend;
+    auto buf = backend.allocate_buffer(1024 * sizeof(float));
+    ASSERT_NE(buf, nullptr);
+    EXPECT_NE(buf->data(), nullptr);
+    EXPECT_FALSE(!buf);
+    EXPECT_EQ(buf->bytes() / sizeof(float), 1024);
 
-    cudaMemset(buf.get(), 0, 1024 * sizeof(float));
+    cudaMemset(buf->data(), 0, buf->bytes());
     std::vector<float> host(1024, 1.0f);
-    cudaMemcpy(host.data(), buf.get(), 1024 * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(host.data(), buf->data(), buf->bytes(), cudaMemcpyDeviceToHost);
     for (size_t i = 0; i < 1024; i++) {
         EXPECT_EQ(host[i], 0.0f);
     }
 }
 
 TEST(DeviceBufferTest, MoveConstruction) {
-    DeviceBuffer<float> a(512);
-    float* ptr = a.get();
-    DeviceBuffer<float> b = std::move(a);
+    CudaBackend backend;
+    auto a = backend.allocate_buffer(512 * sizeof(float));
+    void* ptr = a->data();
+    EXPECT_NE(ptr, nullptr);
+
+    auto b = std::move(a);
     EXPECT_EQ(a.get(), nullptr);
-    EXPECT_TRUE(a.empty());
-    EXPECT_EQ(b.get(), ptr);
-    EXPECT_EQ(b.size(), 512);
+    EXPECT_EQ(b->data(), ptr);
+    EXPECT_EQ(b->bytes(), 512 * sizeof(float));
 }
 
 TEST(DeviceBufferTest, MoveAssignment) {
-    DeviceBuffer<float> a(256);
-    DeviceBuffer<float> b(128);
-    float* ptr_a = a.get();
+    CudaBackend backend;
+    auto a = backend.allocate_buffer(256 * sizeof(float));
+    auto b = backend.allocate_buffer(128 * sizeof(float));
+    void* ptr_a = a->data();
+    EXPECT_NE(ptr_a, nullptr);
+
     b = std::move(a);
     EXPECT_EQ(a.get(), nullptr);
-    EXPECT_EQ(b.get(), ptr_a);
-    EXPECT_EQ(b.size(), 256);
+    EXPECT_EQ(b->data(), ptr_a);
+    EXPECT_EQ(b->bytes() / sizeof(float), 256);
 }

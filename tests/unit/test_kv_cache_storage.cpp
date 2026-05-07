@@ -5,6 +5,7 @@
 
 #include <vector>
 
+#include "engine/backend/cuda/cuda_backend.h"
 #include "engine/cache/block.h"
 #include "engine/cache/kv_cache_storage.h"
 
@@ -13,8 +14,9 @@ namespace engine {
 namespace {
 
 TEST(KVCacheStorageTest, InitSucceeds) {
+    CudaBackend backend;
     KVCacheStorage<__nv_bfloat16> storage;
-    auto r = storage.init(4, 100, kKVBlockSize, 8, 128);
+    auto r = storage.init(backend, 4, 100, kKVBlockSize, 8, 128);
     ASSERT_TRUE(r.has_value());
 
     EXPECT_NE(storage.k_data(), nullptr);
@@ -25,8 +27,9 @@ TEST(KVCacheStorageTest, InitSucceeds) {
 }
 
 TEST(KVCacheStorageTest, LayerPointersDiffer) {
+    CudaBackend backend;
     KVCacheStorage<__nv_bfloat16> storage;
-    auto r = storage.init(2, 10, kKVBlockSize, 4, 64);
+    auto r = storage.init(backend, 2, 10, kKVBlockSize, 4, 64);
     ASSERT_TRUE(r.has_value());
 
     auto* k0 = storage.k_layer(0);
@@ -39,8 +42,9 @@ TEST(KVCacheStorageTest, LayerPointersDiffer) {
 }
 
 TEST(KVCacheStorageTest, ZeroInitialized) {
+    CudaBackend backend;
     KVCacheStorage<__nv_bfloat16> storage;
-    auto r = storage.init(1, 4, kKVBlockSize, 2, 32);
+    auto r = storage.init(backend, 1, 4, kKVBlockSize, 2, 32);
     ASSERT_TRUE(r.has_value());
 
     int64_t layer_elems = static_cast<int64_t>(4) * kKVBlockSize * 2 * 32;

@@ -1,16 +1,21 @@
 #pragma once
 
-#include "engine/model/rope/rope_cache.h"
-#include "engine/model/config.h"
+#include <memory>
+
+#include "engine/model/llama2/llama2_weights.h"
 #include "engine/model/model.h"
-#include "engine/model/weights.h"
+#include "engine/model/rope/rope_cache.h"
 
 namespace ccinfer {
 namespace engine {
 
 class LlamaModel final : public Model {
 public:
-    LlamaModel(ModelConfig config, ModelWeights weights);
+    static Result<std::unique_ptr<Model>> create(const ModelConfig& config,
+                                                  const WeightLoader& loader,
+                                                  DeviceBackend& backend);
+
+    LlamaModel(ModelConfig config, LlamaWeights weights, RopeCache rope_cache);
 
     Result<void> forward(const ForwardInput& input, ForwardOutput& output, DeviceBackend& backend,
                          void* stream) override;
@@ -20,7 +25,7 @@ public:
 
 private:
     ModelConfig config_;
-    ModelWeights weights_;
+    LlamaWeights weights_;
     RopeCache rope_cache_;
 };
 

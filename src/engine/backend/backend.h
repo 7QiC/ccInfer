@@ -3,6 +3,7 @@
 #include <memory>
 
 #include "common/result.h"
+#include "engine/backend/device_buffer.h"
 #include "engine/backend/params.h"
 
 namespace ccinfer {
@@ -22,6 +23,8 @@ public:
     virtual Result<void> prefill_attention(const PrefillAttnParams& p) = 0;
     virtual Result<void> decode_attention(const DecodeAttnParams& p) = 0;
     virtual Result<void> write_kv_cache(const WriteKVCacheParams& p) = 0;
+
+    virtual std::unique_ptr<DeviceBuffer> allocate_buffer(size_t bytes) = 0;
 
     static std::unique_ptr<DeviceBackend> create();
 };

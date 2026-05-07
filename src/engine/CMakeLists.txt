@@ -1,5 +1,6 @@
 add_library(engine STATIC
     backend/cuda/cuda_backend.cpp
+    backend/cuda/cuda_buffer.cpp
     kernel/norm/rms_norm.cu
     kernel/pos/rope.cu
     model/rope/rope_cache.cpp
@@ -14,6 +15,7 @@ add_library(engine STATIC
     model/registry.cpp
     model/qwen3/qwen3_model.cpp
     model/qwen3/qwen3_weights.cpp
+    model/llama2/llama2_weights.cpp
     runner/model_runner.cpp
     tokenizer/byte_level_bpe_tokenizer.cpp
     sampling/sampler.cpp

@@ -5,14 +5,16 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 #include "common/dtype.h"
 #include "common/result.h"
+#include "engine/backend/backend.h"
 #include "engine/backend/cuda/cuda_utils.h"
-#include "engine/core/device_buffer.h"
+#include "engine/backend/device_buffer.h"
 
 namespace ccinfer {
 namespace engine {
@@ -60,8 +62,10 @@ public:
     Result<TensorInfo> info(const std::string& name) const;
 
     template <typename T>
-    Result<DeviceBuffer<T>> load(const std::string& name,
-                                 const std::vector<int64_t>& expected_shape) const;
+    Result<std::unique_ptr<DeviceBuffer>> load(
+        DeviceBackend& backend,
+        const std::string& name,
+        const std::vector<int64_t>& expected_shape) const;
 
 private:
     explicit WeightLoader(std::string path);
@@ -80,7 +84,8 @@ private:
 
 // Template implementation.
 template <typename T>
-Result<DeviceBuffer<T>> WeightLoader::load(
+Result<std::unique_ptr<DeviceBuffer>> WeightLoader::load(
+    DeviceBackend& backend,
     const std::string& name, const std::vector<int64_t>& expected_shape) const {
     if (data_ == nullptr || size_ == 0) {
         return std::unexpected(ErrorCode::ModelLoadFailed);
@@ -104,7 +109,7 @@ Result<DeviceBuffer<T>> WeightLoader::load(
     int64_t numel = 1;
     for (int64_t s : info.shape_) {
         if (s < 0) return std::unexpected(ErrorCode::ModelShapeMismatch);
-        if (s == 0) return DeviceBuffer<T>{};
+        if (s == 0) return nullptr;
         if (numel > std::numeric_limits<int64_t>::max() / s) {
             return std::unexpected(ErrorCode::ModelShapeMismatch);
         }
@@ -123,9 +128,9 @@ Result<DeviceBuffer<T>> WeightLoader::load(
     }
 
     const uint8_t* src = data_ + data_start + info.offset_;
-    DeviceBuffer<T> buf(static_cast<size_t>(numel));
+    auto buf = backend.allocate_buffer(static_cast<size_t>(numel) * sizeof(T));
 
-    auto r = cuda_check(cudaMemcpy(buf.get(), src, static_cast<size_t>(info.size_bytes_),
+    auto r = cuda_check(cudaMemcpy(buf->data(), src, static_cast<size_t>(info.size_bytes_),
                                    cudaMemcpyHostToDevice));
     if (!r) return std::unexpected(r.error());
 

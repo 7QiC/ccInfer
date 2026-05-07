@@ -1,9 +1,10 @@
-#include "engine/model/qwen3/qwen3_weights.h"
+#include "engine/model/llama2/llama2_weights.h"
 
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 
 #include <memory>
+#include <string>
 
 namespace ccinfer {
 namespace engine {
@@ -35,9 +36,9 @@ void merge_qkv(std::unique_ptr<DeviceBuffer>& qkv,
 
 }  // namespace
 
-Result<Qwen3Weights> Qwen3Weights::load(DeviceBackend& backend,
-                                         const ModelConfig& config,
-                                         const WeightLoader& loader) {
+Result<LlamaWeights> LlamaWeights::load(DeviceBackend& backend,
+                                        const ModelConfig& config,
+                                        const WeightLoader& loader) {
     if (config.d_model_ <= 0 || config.n_q_heads_ <= 0 || config.n_kv_heads_ <= 0 ||
         config.head_dim_ <= 0 || config.n_layers_ <= 0 || config.d_ff_ <= 0 ||
         config.vocab_size_ <= 0) {
@@ -56,7 +57,7 @@ Result<Qwen3Weights> Qwen3Weights::load(DeviceBackend& backend,
     const int d_ff = config.d_ff_;
     const int vocab = config.vocab_size_;
 
-    Qwen3Weights w;
+    LlamaWeights w;
 
     {
         auto r = loader.load<__nv_bfloat16>(backend, "model.embed_tokens.weight", {vocab, D});
@@ -81,7 +82,7 @@ Result<Qwen3Weights> Qwen3Weights::load(DeviceBackend& backend,
     for (int i = 0; i < n_layers; ++i) {
         const std::string p = "model.layers." + std::to_string(i);
 
-        Qwen3LayerWeights lw;
+        LlamaLayerWeights lw;
 
         {
             auto r = loader.load<__nv_bfloat16>(backend, p + ".self_attn.o_proj.weight",
@@ -127,13 +128,6 @@ Result<Qwen3Weights> Qwen3Weights::load(DeviceBackend& backend,
         }
 
         merge_qkv(lw.qkv_, *q, *k, *v, backend);
-
-        // QK norm (Qwen3-specific).
-        auto qn = loader.load<__nv_bfloat16>(backend, p + ".self_attn.q_norm.weight", {hd});
-        if (qn) lw.q_norm_ = std::move(*qn);
-
-        auto kn = loader.load<__nv_bfloat16>(backend, p + ".self_attn.k_norm.weight", {hd});
-        if (kn) lw.k_norm_ = std::move(*kn);
 
         w.layers_.push_back(std::move(lw));
     }

@@ -1,4 +1,5 @@
 #include "engine/backend/cuda/cuda_backend.h"
+#include "engine/backend/cuda/cuda_buffer.h"
 
 #include <cuda_bf16.h>
 
@@ -150,6 +151,10 @@ Result<void> CudaBackend::write_kv_cache(const WriteKVCacheParams& p) {
         static_cast<__nv_bfloat16*>(p.v_cache_),
         p.slot_mapping_, p.total_tokens_, p.num_kv_heads_, p.head_dim_,
         p.max_slots_, s);
+}
+
+std::unique_ptr<DeviceBuffer> CudaBackend::allocate_buffer(size_t bytes) {
+    return std::make_unique<CudaBuffer>(bytes);
 }
 
 std::unique_ptr<DeviceBackend> DeviceBackend::create() { return std::make_unique<CudaBackend>(); }

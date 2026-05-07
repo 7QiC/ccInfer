@@ -3,7 +3,8 @@
 
 #include <vector>
 
-#include "core/device_buffer.h"
+#include "engine/backend/cuda/cuda_backend.h"
+#include "engine/backend/device_buffer.h"
 #include "core/tensor.h"
 #include "common/dtype.h"
 #include "engine/model/config.h"
@@ -19,12 +20,13 @@ TEST(SmokeTest, GPUAccessible) {
 }
 
 TEST(SmokeTest, AllocateAndZero) {
-    DeviceBuffer<float> buf(256);
-    ASSERT_NE(buf.get(), nullptr);
+    CudaBackend backend;
+    auto buf = backend.allocate_buffer(256 * sizeof(float));
+    ASSERT_NE(buf->data(), nullptr);
 
-    cudaMemset(buf.get(), 0, 256 * sizeof(float));
+    cudaMemset(buf->data(), 0, 256 * sizeof(float));
     std::vector<float> host(256, 42.0f);
-    cudaMemcpy(host.data(), buf.get(), 256 * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(host.data(), buf->data(), 256 * sizeof(float), cudaMemcpyDeviceToHost);
     for (size_t i = 0; i < 256; i++) {
         EXPECT_EQ(host[i], 0.0f);
     }

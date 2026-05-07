@@ -15,7 +15,7 @@ namespace engine {
 
 class DeviceBackend;
 
-struct Qwen3LayerWeights {
+struct LlamaLayerWeights {
     std::unique_ptr<DeviceBuffer> qkv_;
     std::unique_ptr<DeviceBuffer> o_;
     std::unique_ptr<DeviceBuffer> gate_;
@@ -23,17 +23,15 @@ struct Qwen3LayerWeights {
     std::unique_ptr<DeviceBuffer> down_;
     std::unique_ptr<DeviceBuffer> rms_attn_;
     std::unique_ptr<DeviceBuffer> rms_ffn_;
-    std::unique_ptr<DeviceBuffer> q_norm_;
-    std::unique_ptr<DeviceBuffer> k_norm_;
 };
 
-struct Qwen3Weights {
+struct LlamaWeights {
     std::unique_ptr<DeviceBuffer> embed_;
     std::unique_ptr<DeviceBuffer> lm_head_;
     std::unique_ptr<DeviceBuffer> rms_final_;
-    std::vector<Qwen3LayerWeights> layers_;
+    std::vector<LlamaLayerWeights> layers_;
 
-    static Result<Qwen3Weights> load(DeviceBackend& backend,
+    static Result<LlamaWeights> load(DeviceBackend& backend,
                                      const ModelConfig& config,
                                      const WeightLoader& loader);
 };

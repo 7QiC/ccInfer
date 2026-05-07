@@ -8,8 +8,8 @@
 #include <string>
 #include <vector>
 
-#include "engine/backend/backend.h"
-#include "engine/core/device_buffer.h"
+#include "engine/backend/cuda/cuda_backend.h"
+#include "engine/backend/device_buffer.h"
 #include "engine/kernel/cuda_kernels.h"
 #include "engine/model/config.h"
 #include "engine/model/loader.h"
@@ -64,7 +64,7 @@ protected:
         ASSERT_TRUE(loader_result);
         loader_ = std::make_unique<WeightLoader>(std::move(*loader_result));
 
-        backend_ = DeviceBackend::create();
+        backend_ = std::make_unique<CudaBackend>();
         register_builtin_models();
     }
 
@@ -94,27 +94,29 @@ TEST_F(LogitsMatchTest, SingleToken) {
     const int D = config_.d_model_;
     const int V = config_.vocab_size_;
 
-    auto embed = loader_->load<__nv_bfloat16>("model.embed_tokens.weight", {V, D});
+    auto embed = loader_->load<__nv_bfloat16>(*backend_, "model.embed_tokens.weight", {V, D});
     ASSERT_TRUE(embed);
 
-    DeviceBuffer<int32_t> token_ids_dev(static_cast<size_t>(T));
-    cudaMemcpy(token_ids_dev.get(), token_ids.data(), T * sizeof(int32_t), cudaMemcpyHostToDevice);
+    auto token_ids_dev = backend_->allocate_buffer(static_cast<size_t>(T) * sizeof(int32_t));
+    cudaMemcpy(token_ids_dev->data(), token_ids.data(), T * sizeof(int32_t), cudaMemcpyHostToDevice);
 
-    DeviceBuffer<__nv_bfloat16> input_embeds(static_cast<size_t>(T) * D);
-    auto r = launch_embed(embed->get(), token_ids_dev.get(), input_embeds.get(), T, D, stream_);
+    auto input_embeds = backend_->allocate_buffer(static_cast<size_t>(T) * D * sizeof(__nv_bfloat16));
+    auto r = launch_embed(static_cast<__nv_bfloat16*>((*embed)->data()),
+                          static_cast<int32_t*>(token_ids_dev->data()),
+                          static_cast<__nv_bfloat16*>(input_embeds->data()), T, D, stream_);
     ASSERT_TRUE(r);
 
-    auto model = ModelRegistry::instance().create(config_, *loader_);
+    auto model = ModelRegistry::instance().create(config_, *loader_, *backend_);
     ASSERT_TRUE(model);
 
-    DeviceBuffer<__nv_bfloat16> output_logits(static_cast<size_t>(T) * V);
+    auto output_logits = backend_->allocate_buffer(static_cast<size_t>(T) * V * sizeof(__nv_bfloat16));
 
     ForwardInput fwd_in{};
-    fwd_in.input_embeds_ = input_embeds.get();
+    fwd_in.input_embeds_ = static_cast<__nv_bfloat16*>(input_embeds->data());
     fwd_in.num_tokens_ = T;
 
     ForwardOutput fwd_out{};
-    fwd_out.logits_ = output_logits.get();
+    fwd_out.logits_ = static_cast<__nv_bfloat16*>(output_logits->data());
 
     auto fwd_result = (*model)->forward(fwd_in, fwd_out, *backend_, stream_);
     ASSERT_TRUE(fwd_result);
@@ -123,7 +125,7 @@ TEST_F(LogitsMatchTest, SingleToken) {
     std::vector<float> logits(static_cast<size_t>(V));
     std::vector<__nv_bfloat16> logits_bf16(static_cast<size_t>(V));
     cudaMemcpy(logits_bf16.data(),
-               output_logits.get() + static_cast<int64_t>(T - 1) * V,
+               static_cast<__nv_bfloat16*>(output_logits->data()) + static_cast<int64_t>(T - 1) * V,
                V * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost);
     for (int i = 0; i < V; ++i) logits[static_cast<size_t>(i)] = __bfloat162float(logits_bf16[static_cast<size_t>(i)]);
 
@@ -159,28 +161,30 @@ TEST_F(LogitsMatchTest, CompareWithReference) {
     const int V = config_.vocab_size_;
 
     // Load embed temporarily for lookup, then create model.
-    auto embed = loader_->load<__nv_bfloat16>("model.embed_tokens.weight", {V, D});
+    auto embed = loader_->load<__nv_bfloat16>(*backend_, "model.embed_tokens.weight", {V, D});
     ASSERT_TRUE(embed);
 
-    DeviceBuffer<int32_t> token_ids_dev(static_cast<size_t>(T));
-    cudaMemcpy(token_ids_dev.get(), token_ids.data(), T * sizeof(int32_t), cudaMemcpyHostToDevice);
+    auto token_ids_dev = backend_->allocate_buffer(static_cast<size_t>(T) * sizeof(int32_t));
+    cudaMemcpy(token_ids_dev->data(), token_ids.data(), T * sizeof(int32_t), cudaMemcpyHostToDevice);
 
-    DeviceBuffer<__nv_bfloat16> input_embeds(static_cast<size_t>(T) * D);
-    auto r = launch_embed(embed->get(), token_ids_dev.get(), input_embeds.get(), T, D, stream_);
+    auto input_embeds = backend_->allocate_buffer(static_cast<size_t>(T) * D * sizeof(__nv_bfloat16));
+    auto r = launch_embed(static_cast<__nv_bfloat16*>((*embed)->data()),
+                          static_cast<int32_t*>(token_ids_dev->data()),
+                          static_cast<__nv_bfloat16*>(input_embeds->data()), T, D, stream_);
     ASSERT_TRUE(r);
 
     // Create model via registry — weights are loaded inside.
-    auto model = ModelRegistry::instance().create(config_, *loader_);
+    auto model = ModelRegistry::instance().create(config_, *loader_, *backend_);
     ASSERT_TRUE(model);
 
-    DeviceBuffer<__nv_bfloat16> output_logits(static_cast<size_t>(T) * V);
+    auto output_logits = backend_->allocate_buffer(static_cast<size_t>(T) * V * sizeof(__nv_bfloat16));
 
     ForwardInput fwd_in{};
-    fwd_in.input_embeds_ = input_embeds.get();
+    fwd_in.input_embeds_ = static_cast<__nv_bfloat16*>(input_embeds->data());
     fwd_in.num_tokens_ = T;
 
     ForwardOutput fwd_out{};
-    fwd_out.logits_ = output_logits.get();
+    fwd_out.logits_ = static_cast<__nv_bfloat16*>(output_logits->data());
 
     auto fwd_result = (*model)->forward(fwd_in, fwd_out, *backend_, stream_);
     ASSERT_TRUE(fwd_result);
@@ -190,7 +194,7 @@ TEST_F(LogitsMatchTest, CompareWithReference) {
     std::vector<float> logits(static_cast<size_t>(V));
     std::vector<__nv_bfloat16> logits_bf16(static_cast<size_t>(V));
     cudaMemcpy(logits_bf16.data(),
-               output_logits.get() + static_cast<int64_t>(T - 1) * V,
+               static_cast<__nv_bfloat16*>(output_logits->data()) + static_cast<int64_t>(T - 1) * V,
                V * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost);
 
     for (int i = 0; i < V; ++i) {
@@ -257,27 +261,29 @@ TEST_F(LogitsMatchTest, TopKAgreement) {
     const int D = config_.d_model_;
     const int V = config_.vocab_size_;
 
-    auto embed = loader_->load<__nv_bfloat16>("model.embed_tokens.weight", {V, D});
+    auto embed = loader_->load<__nv_bfloat16>(*backend_, "model.embed_tokens.weight", {V, D});
     ASSERT_TRUE(embed);
 
-    DeviceBuffer<int32_t> token_ids_dev(static_cast<size_t>(T));
-    cudaMemcpy(token_ids_dev.get(), token_ids.data(), T * sizeof(int32_t), cudaMemcpyHostToDevice);
+    auto token_ids_dev = backend_->allocate_buffer(static_cast<size_t>(T) * sizeof(int32_t));
+    cudaMemcpy(token_ids_dev->data(), token_ids.data(), T * sizeof(int32_t), cudaMemcpyHostToDevice);
 
-    DeviceBuffer<__nv_bfloat16> input_embeds(static_cast<size_t>(T) * D);
-    auto r = launch_embed(embed->get(), token_ids_dev.get(), input_embeds.get(), T, D, stream_);
+    auto input_embeds = backend_->allocate_buffer(static_cast<size_t>(T) * D * sizeof(__nv_bfloat16));
+    auto r = launch_embed(static_cast<__nv_bfloat16*>((*embed)->data()),
+                          static_cast<int32_t*>(token_ids_dev->data()),
+                          static_cast<__nv_bfloat16*>(input_embeds->data()), T, D, stream_);
     ASSERT_TRUE(r);
 
-    auto model = ModelRegistry::instance().create(config_, *loader_);
+    auto model = ModelRegistry::instance().create(config_, *loader_, *backend_);
     ASSERT_TRUE(model);
 
-    DeviceBuffer<__nv_bfloat16> output_logits(static_cast<size_t>(T) * V);
+    auto output_logits = backend_->allocate_buffer(static_cast<size_t>(T) * V * sizeof(__nv_bfloat16));
 
     ForwardInput fwd_in{};
-    fwd_in.input_embeds_ = input_embeds.get();
+    fwd_in.input_embeds_ = static_cast<__nv_bfloat16*>(input_embeds->data());
     fwd_in.num_tokens_ = T;
 
     ForwardOutput fwd_out{};
-    fwd_out.logits_ = output_logits.get();
+    fwd_out.logits_ = static_cast<__nv_bfloat16*>(output_logits->data());
 
     auto fwd_result = (*model)->forward(fwd_in, fwd_out, *backend_, stream_);
     ASSERT_TRUE(fwd_result);
@@ -287,7 +293,7 @@ TEST_F(LogitsMatchTest, TopKAgreement) {
     std::vector<float> logits(static_cast<size_t>(V));
     std::vector<__nv_bfloat16> logits_bf16(static_cast<size_t>(V));
     cudaMemcpy(logits_bf16.data(),
-               output_logits.get() + static_cast<int64_t>(T - 1) * V,
+               static_cast<__nv_bfloat16*>(output_logits->data()) + static_cast<int64_t>(T - 1) * V,
                V * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost);
 
     for (int i = 0; i < V; ++i) {

@@ -2,18 +2,23 @@
 
 #include <cuda_runtime.h>
 
+#include <memory>
+
 #include "common/result.h"
-#include "engine/core/device_buffer.h"
+#include "engine/backend/device_buffer.h"
 
 namespace ccinfer {
 namespace engine {
 
+class DeviceBackend;
+
 class RopeCache {
 public:
-    static Result<RopeCache> create(int max_position, int rotary_dim, float rope_theta);
+    static Result<RopeCache> create(int max_position, int rotary_dim, float rope_theta,
+                                    DeviceBackend& backend);
 
-    const float2* data() const noexcept { return cache_.data(); }
-    float2* data() noexcept { return cache_.data(); }
+    const float2* data() const noexcept { return buffer_data<float2>(*cache_); }
+    float2* data() noexcept { return buffer_data<float2>(*cache_); }
 
     int max_position() const noexcept { return max_position_; }
     int rotary_dim() const noexcept { return rotary_dim_; }
@@ -30,7 +35,7 @@ private:
     int rotary_dim_ = 0;
     float rope_theta_ = 10000.0f;
 
-    DeviceBuffer<float2> cache_;
+    std::unique_ptr<DeviceBuffer> cache_;
 };
 
 }  // namespace engine

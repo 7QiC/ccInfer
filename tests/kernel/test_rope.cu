@@ -5,6 +5,7 @@
 #include <cmath>
 #include <vector>
 
+#include "engine/backend/cuda/cuda_backend.h"
 #include "engine/kernel/cuda_kernels.h"
 #include "engine/model/rope/rope_cache.h"
 
@@ -81,7 +82,7 @@ TEST_F(RopeTest, SingleTokenNoGQA) {
     // Input data
     int total_q = tokens * heads * dim;
     int total_k = tokens * heads * dim;
-    std::vector<__nv_bfloat16> q_h(total_q), k_h(total_k), q_expected(total_q), k_expected(total_k);
+    std::vector<__nv_bfloat16> q_h(total_q), k_h(total_q), q_expected(total_q), k_expected(total_k);
     std::vector<int32_t> pos_h = {3};
     for (int i = 0; i < total_q; i++) {
         q_h[i] = __float2bfloat16((float)(i % 5));
@@ -159,7 +160,8 @@ TEST_F(RopeTest, GQA) {
 }
 
 TEST_F(RopeTest, RopeCacheClass) {
-    auto cache_result = RopeCache::create(16, 32, 10000.0f);
+    CudaBackend backend;
+    auto cache_result = RopeCache::create(16, 32, 10000.0f, backend);
     ASSERT_TRUE(cache_result);
     auto& cache = *cache_result;
     EXPECT_EQ(cache.max_position(), 16);

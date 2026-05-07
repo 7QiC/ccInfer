@@ -24,6 +24,8 @@ public:
     Result<void> decode_attention(const DecodeAttnParams& p) override;
     Result<void> write_kv_cache(const WriteKVCacheParams& p) override;
 
+    std::unique_ptr<DeviceBuffer> allocate_buffer(size_t bytes) override;
+
 private:
     cublasHandle_t cublas_handle_;
     cudaStream_t stream_;
