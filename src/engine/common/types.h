@@ -12,7 +12,6 @@ namespace ccinfer {
 namespace engine {
 
 class DeviceBackend;
-class KVCacheStorageBase;
 class Model;
 
 // ---------------------------------------------------------------------------
@@ -46,16 +45,6 @@ struct PhysicalBatch {
     std::unique_ptr<DeviceBuffer> context_lens;    // [batch_size]
 
     std::vector<size_t> item_indices;                 // maps physical seq → WorkItem index
-};
-
-// ---------------------------------------------------------------------------
-// ExecutionContext — passed from DeviceWorker to ModelRunner.
-// ---------------------------------------------------------------------------
-struct ExecutionContext {
-    DeviceBackend* backend = nullptr;
-    Model* model = nullptr;
-    KVCacheStorageBase* kv_storage = nullptr;
-    int block_size = kKVBlockSize;
 };
 
 }  // namespace engine

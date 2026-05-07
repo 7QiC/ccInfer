@@ -10,13 +10,8 @@
 namespace ccinfer {
 namespace engine {
 
-class KVCacheStorageBase {
-public:
-    virtual ~KVCacheStorageBase() = default;
-};
-
 template <typename DType>
-class KVCacheStorage final : public KVCacheStorageBase {
+class KVCacheStorage {
 public:
     KVCacheStorage() = default;
 

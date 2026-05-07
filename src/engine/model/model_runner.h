@@ -8,15 +8,22 @@
 namespace ccinfer {
 namespace engine {
 
+class Model;
 struct PhysicalBatch;
-struct ExecutionContext;
+class DeviceBackend;
+template <typename DType>
+class KVCacheStorage;
 
 class ModelRunner {
 public:
-    // Stateless per-invocation. Model and backend come from ExecutionContext.
-    static Result<std::vector<std::vector<int32_t>>> execute(const PhysicalBatch& batch,
-                                                             const ExecutionContext& ctx);
+    template <typename Traits, typename KVDType>
+    static Result<std::vector<std::vector<int32_t>>> execute(Model& model,
+                                                             const PhysicalBatch& batch,
+                                                             DeviceBackend& backend,
+                                                             KVCacheStorage<KVDType>& kv_storage);
 };
 
 }  // namespace engine
 }  // namespace ccinfer
+
+#include "engine/model/model_runner.tpp"
