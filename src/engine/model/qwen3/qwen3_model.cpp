@@ -32,8 +32,7 @@ Qwen3Model::Qwen3Model(ModelConfig config, Qwen3Weights weights, RopeCache rope_
       rope_cache_(std::move(rope_cache)) {}
 
 Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& output,
-                                 DeviceBackend& backend, void* stream) {
-    cudaStream_t s = static_cast<cudaStream_t>(stream);
+                                 DeviceBackend& backend) {
 
     if (input.input_embeds_ == nullptr || output.logits_ == nullptr) {
         return std::unexpected(ErrorCode::InvalidArgument);
@@ -97,7 +96,7 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
     {
         auto r = cuda_check(cudaMemcpyAsync(
             hidden_a->data(), input.input_embeds_,
-            static_cast<size_t>(T) * D * sizeof(__nv_bfloat16), cudaMemcpyDeviceToDevice, s));
+            static_cast<size_t>(T) * D * sizeof(__nv_bfloat16), cudaMemcpyDeviceToDevice, static_cast<cudaStream_t>(backend.stream())));
         if (!r) return std::unexpected(r.error());
     }
 
@@ -111,7 +110,6 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
         // Attention: normed = RMSNorm(hidden)
         r = backend.rms_norm(RmsNormParams{
             .input_ = hidden, .weight_ = lw.rms_attn_->data(), .output_ = normed->data(),
-            .rows_ = T, .dim_ = D, .eps_ = eps, .stream_ = s,
         });
         if (!r) return r;
 
@@ -120,13 +118,11 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
             .a_ = lw.qkv_->data(), .b_ = normed->data(), .c_ = qkv_out->data(),
             .m_ = qkv_dim, .n_ = T, .k_ = D,
             .lda_ = D, .ldb_ = D, .ldc_ = qkv_dim,
-            .trans_a_ = true, .trans_b_ = false, .stream_ = s,
         });
         if (!r) return r;
 
         r = backend.split_qkv(SplitQkvParams{
             .qkv_ = qkv_out->data(), .q_ = q_buf->data(), .k_ = k_buf->data(), .v_ = v_buf->data(),
-            .num_tokens_ = T, .num_q_heads_ = nq, .num_kv_heads_ = nkv, .head_dim_ = hd, .stream_ = s,
         });
         if (!r) return r;
 
@@ -134,14 +130,12 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
         if (lw.q_norm_) {
             r = backend.rms_norm(RmsNormParams{
                 .input_ = q_buf->data(), .weight_ = lw.q_norm_->data(), .output_ = q_buf->data(),
-                .rows_ = T * nq, .dim_ = hd, .eps_ = eps, .stream_ = s,
             });
             if (!r) return r;
         }
         if (lw.k_norm_) {
             r = backend.rms_norm(RmsNormParams{
                 .input_ = k_buf->data(), .weight_ = lw.k_norm_->data(), .output_ = k_buf->data(),
-                .rows_ = T * nkv, .dim_ = hd, .eps_ = eps, .stream_ = s,
             });
             if (!r) return r;
         }
@@ -152,14 +146,12 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
             .positions_ = static_cast<const int32_t*>(pos_buf->data()),
             .rope_cache_ = rope_cache_.data(), .num_tokens_ = T, .num_q_heads_ = nq,
             .num_kv_heads_ = nkv, .head_dim_ = hd, .rotary_dim_ = hd,
-            .max_position_ = rope_cache_.max_position(), .stream_ = s,
         });
         if (!r) return r;
 
         // Attention
         r = backend.naive_attention(NaiveAttnParams{
             .q_ = q_buf->data(), .k_ = k_buf->data(), .v_ = v_buf->data(), .output_ = attn_out->data(),
-            .num_tokens_ = T, .num_q_heads_ = nq, .num_kv_heads_ = nkv, .head_dim_ = hd, .stream_ = s,
         });
         if (!r) return r;
 
@@ -168,12 +160,10 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
             .a_ = lw.o_->data(), .b_ = attn_out->data(), .c_ = next_hidden,
             .m_ = D, .n_ = T, .k_ = attn_dim,
             .lda_ = attn_dim, .ldb_ = attn_dim, .ldc_ = D,
-            .trans_a_ = true, .trans_b_ = false, .stream_ = s,
         });
         if (!r) return r;
 
         r = backend.element_add(ElementAddParams{
-            .dst_ = next_hidden, .src_ = hidden, .n_ = static_cast<int64_t>(T) * D, .stream_ = s,
         });
         if (!r) return r;
         std::swap(hidden, next_hidden);
@@ -181,7 +171,6 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
         // FFN: normed = RMSNorm(hidden)
         r = backend.rms_norm(RmsNormParams{
             .input_ = hidden, .weight_ = lw.rms_ffn_->data(), .output_ = normed->data(),
-            .rows_ = T, .dim_ = D, .eps_ = eps, .stream_ = s,
         });
         if (!r) return r;
 
@@ -189,7 +178,6 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
             .a_ = lw.gate_->data(), .b_ = normed->data(), .c_ = gate->data(),
             .m_ = d_ff, .n_ = T, .k_ = D,
             .lda_ = D, .ldb_ = D, .ldc_ = d_ff,
-            .trans_a_ = true, .trans_b_ = false, .stream_ = s,
         });
         if (!r) return r;
 
@@ -197,13 +185,11 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
             .a_ = lw.up_->data(), .b_ = normed->data(), .c_ = up->data(),
             .m_ = d_ff, .n_ = T, .k_ = D,
             .lda_ = D, .ldb_ = D, .ldc_ = d_ff,
-            .trans_a_ = true, .trans_b_ = false, .stream_ = s,
         });
         if (!r) return r;
 
         r = backend.silu_mul(SiluMulParams{
             .gate_ = gate->data(), .up_ = up->data(), .output_ = ffn_act->data(),
-            .n_ = static_cast<int64_t>(T) * d_ff, .stream_ = s,
         });
         if (!r) return r;
 
@@ -211,12 +197,10 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
             .a_ = lw.down_->data(), .b_ = ffn_act->data(), .c_ = next_hidden,
             .m_ = D, .n_ = T, .k_ = d_ff,
             .lda_ = d_ff, .ldb_ = d_ff, .ldc_ = D,
-            .trans_a_ = true, .trans_b_ = false, .stream_ = s,
         });
         if (!r) return r;
 
         r = backend.element_add(ElementAddParams{
-            .dst_ = next_hidden, .src_ = hidden, .n_ = static_cast<int64_t>(T) * D, .stream_ = s,
         });
         if (!r) return r;
         std::swap(hidden, next_hidden);
@@ -224,7 +208,6 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
 
     auto r = backend.rms_norm(RmsNormParams{
         .input_ = hidden, .weight_ = weights_.rms_final_->data(), .output_ = normed->data(),
-        .rows_ = T, .dim_ = D, .eps_ = eps, .stream_ = s,
     });
     if (!r) return r;
 
@@ -232,7 +215,6 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
         .a_ = weights_.lm_head_->data(), .b_ = normed->data(), .c_ = output.logits_,
         .m_ = V, .n_ = T, .k_ = D,
         .lda_ = D, .ldb_ = D, .ldc_ = V,
-        .trans_a_ = true, .trans_b_ = false, .stream_ = s,
     });
     if (!r) return r;
 

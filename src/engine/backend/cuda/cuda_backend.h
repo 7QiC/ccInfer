@@ -26,6 +26,8 @@ public:
 
     std::unique_ptr<DeviceBuffer> allocate_buffer(size_t bytes) override;
 
+    void* stream() override;
+
 private:
     cublasHandle_t cublas_handle_;
     cudaStream_t stream_;

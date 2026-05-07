@@ -1,5 +1,7 @@
 CompileFlags:
   Add:
+    - -std=c++23
+    - -stdlib=libstdc++
     - --cuda-path=/usr/local/cuda
     - --cuda-gpu-arch=sm_89
     - -I/usr/local/cuda/include

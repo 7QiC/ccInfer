@@ -33,8 +33,7 @@ LlamaModel::LlamaModel(ModelConfig config, LlamaWeights weights, RopeCache rope_
       rope_cache_(std::move(rope_cache)) {}
 
 Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& output,
-                                 DeviceBackend& backend, void* stream) {
-    cudaStream_t s = static_cast<cudaStream_t>(stream);
+                                 DeviceBackend& backend) {
 
     if (input.input_embeds_ == nullptr || output.logits_ == nullptr) {
         return std::unexpected(ErrorCode::InvalidArgument);
@@ -113,7 +112,7 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
     {
         auto r = cuda_check(cudaMemcpyAsync(
             hidden_a->data(), input.input_embeds_,
-            static_cast<size_t>(T) * D * sizeof(__nv_bfloat16), cudaMemcpyDeviceToDevice, s));
+            static_cast<size_t>(T) * D * sizeof(__nv_bfloat16), cudaMemcpyDeviceToDevice, static_cast<cudaStream_t>(backend.stream())));
 
         if (!r) {
             return std::unexpected(r.error());
@@ -137,7 +136,6 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
             .rows_ = T,
             .dim_ = D,
             .eps_ = eps,
-            .stream_ = s,
         });
         if (!r) {
             return r;
@@ -156,7 +154,6 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
             .ldc_ = qkv_dim,
             .trans_a_ = true,
             .trans_b_ = false,
-            .stream_ = s,
         });
         if (!r) {
             return r;
@@ -165,7 +162,6 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
         // qkv_out [T, Q|K|V] -> q/k/v token-major buffers
         r = backend.split_qkv(SplitQkvParams{
             .qkv_ = qkv_out->data(), .q_ = q_buf->data(), .k_ = k_buf->data(), .v_ = v_buf->data(),
-            .num_tokens_ = T, .num_q_heads_ = nq, .num_kv_heads_ = nkv, .head_dim_ = hd, .stream_ = s,
         });
         if (!r) {
             return r;
@@ -183,7 +179,6 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
             .head_dim_ = hd,
             .rotary_dim_ = hd,
             .max_position_ = rope_cache_.max_position(),
-            .stream_ = s,
         });
         if (!r) {
             return r;
@@ -199,7 +194,6 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
             .num_q_heads_ = nq,
             .num_kv_heads_ = nkv,
             .head_dim_ = hd,
-            .stream_ = s,
         });
         if (!r) {
             return r;
@@ -218,7 +212,6 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
             .ldc_ = D,
             .trans_a_ = true,
             .trans_b_ = false,
-            .stream_ = s,
         });
         if (!r) {
             return r;
@@ -226,7 +219,6 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
 
         // next_hidden += hidden
         r = backend.element_add(ElementAddParams{
-            .dst_ = next_hidden, .src_ = hidden, .n_ = static_cast<int64_t>(T) * D, .stream_ = s,
         });
         if (!r) {
             return r;
@@ -242,7 +234,6 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
             .rows_ = T,
             .dim_ = D,
             .eps_ = eps,
-            .stream_ = s,
         });
         if (!r) {
             return r;
@@ -261,7 +252,6 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
             .ldc_ = d_ff,
             .trans_a_ = true,
             .trans_b_ = false,
-            .stream_ = s,
         });
         if (!r) {
             return r;
@@ -280,7 +270,6 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
             .ldc_ = d_ff,
             .trans_a_ = true,
             .trans_b_ = false,
-            .stream_ = s,
         });
         if (!r) {
             return r;
@@ -292,7 +281,6 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
             .up_ = up->data(),
             .output_ = ffn_act->data(),
             .n_ = static_cast<int64_t>(T) * d_ff,
-            .stream_ = s,
         });
         if (!r) {
             return r;
@@ -311,7 +299,6 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
             .ldc_ = D,
             .trans_a_ = true,
             .trans_b_ = false,
-            .stream_ = s,
         });
         if (!r) {
             return r;
@@ -319,7 +306,6 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
 
         // next_hidden += hidden
         r = backend.element_add(ElementAddParams{
-            .dst_ = next_hidden, .src_ = hidden, .n_ = static_cast<int64_t>(T) * D, .stream_ = s,
         });
         if (!r) {
             return r;
@@ -336,7 +322,6 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
         .rows_ = T,
         .dim_ = D,
         .eps_ = eps,
-        .stream_ = s,
     });
     if (!r) {
         return r;
@@ -355,7 +340,6 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
         .ldc_ = V,
         .trans_a_ = true,
         .trans_b_ = false,
-        .stream_ = s,
     });
     if (!r) {
         return r;

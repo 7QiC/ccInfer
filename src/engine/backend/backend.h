@@ -26,6 +26,8 @@ public:
 
     virtual std::unique_ptr<DeviceBuffer> allocate_buffer(size_t bytes) = 0;
 
+    virtual void* stream() = 0;
+
     static std::unique_ptr<DeviceBackend> create();
 };
 

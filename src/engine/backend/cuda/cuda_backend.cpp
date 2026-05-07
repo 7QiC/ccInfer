@@ -39,8 +39,6 @@ CudaBackend::~CudaBackend() {
 }
 
 Result<void> CudaBackend::gemm(const GemmParams& p) {
-    cudaStream_t s = p.stream_ ? static_cast<cudaStream_t>(p.stream_) : stream_;
-
     if (p.a_ == nullptr || p.b_ == nullptr || p.c_ == nullptr) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
@@ -49,7 +47,7 @@ Result<void> CudaBackend::gemm(const GemmParams& p) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
 
-    if (auto r = cublas_check(cublasSetStream(cublas_handle_, s)); !r) {
+    if (auto r = cublas_check(cublasSetStream(cublas_handle_, stream_)); !r) {
         return r;
     }
 
@@ -64,59 +62,45 @@ Result<void> CudaBackend::gemm(const GemmParams& p) {
 }
 
 Result<void> CudaBackend::rms_norm(const RmsNormParams& p) {
-    cudaStream_t s = p.stream_ ? static_cast<cudaStream_t>(p.stream_) : stream_;
-
     return launch_rms_norm(static_cast<const __nv_bfloat16*>(p.input_),
                            static_cast<const __nv_bfloat16*>(p.weight_),
-                           static_cast<__nv_bfloat16*>(p.output_), p.rows_, p.dim_, p.eps_, s);
+                           static_cast<__nv_bfloat16*>(p.output_), p.rows_, p.dim_, p.eps_, stream_);
 }
 
 Result<void> CudaBackend::rope(const RopeParams& p) {
-    cudaStream_t s = p.stream_ ? static_cast<cudaStream_t>(p.stream_) : stream_;
-
     return launch_rope(static_cast<__nv_bfloat16*>(p.q_), static_cast<__nv_bfloat16*>(p.k_),
                        p.positions_, static_cast<const float2*>(p.rope_cache_), p.num_tokens_,
                        p.num_q_heads_, p.num_kv_heads_, p.head_dim_, p.rotary_dim_, p.max_position_,
-                       s);
+                       stream_);
 }
 
 Result<void> CudaBackend::silu_mul(const SiluMulParams& p) {
-    cudaStream_t s = p.stream_ ? static_cast<cudaStream_t>(p.stream_) : stream_;
-
     return launch_silu_mul(static_cast<const __nv_bfloat16*>(p.gate_),
                            static_cast<const __nv_bfloat16*>(p.up_),
-                           static_cast<__nv_bfloat16*>(p.output_), p.n_, s);
+                           static_cast<__nv_bfloat16*>(p.output_), p.n_, stream_);
 }
 
 Result<void> CudaBackend::element_add(const ElementAddParams& p) {
-    cudaStream_t s = p.stream_ ? static_cast<cudaStream_t>(p.stream_) : stream_;
-
     return launch_element_add(static_cast<__nv_bfloat16*>(p.dst_),
-                              static_cast<const __nv_bfloat16*>(p.src_), p.n_, s);
+                              static_cast<const __nv_bfloat16*>(p.src_), p.n_, stream_);
 }
 
 Result<void> CudaBackend::split_qkv(const SplitQkvParams& p) {
-    cudaStream_t s = p.stream_ ? static_cast<cudaStream_t>(p.stream_) : stream_;
-
     return launch_split_qkv(static_cast<const __nv_bfloat16*>(p.qkv_),
                             static_cast<__nv_bfloat16*>(p.q_),
                             static_cast<__nv_bfloat16*>(p.k_),
                             static_cast<__nv_bfloat16*>(p.v_), p.num_tokens_, p.num_q_heads_,
-                            p.num_kv_heads_, p.head_dim_, s);
+                            p.num_kv_heads_, p.head_dim_, stream_);
 }
 
 Result<void> CudaBackend::naive_attention(const NaiveAttnParams& p) {
-    cudaStream_t s = p.stream_ ? static_cast<cudaStream_t>(p.stream_) : stream_;
-
     return launch_naive_attention(
         static_cast<const __nv_bfloat16*>(p.q_), static_cast<const __nv_bfloat16*>(p.k_),
         static_cast<const __nv_bfloat16*>(p.v_), static_cast<__nv_bfloat16*>(p.output_),
-        p.num_tokens_, p.num_q_heads_, p.num_kv_heads_, p.head_dim_, s);
+        p.num_tokens_, p.num_q_heads_, p.num_kv_heads_, p.head_dim_, stream_);
 }
 
 Result<void> CudaBackend::prefill_attention(const PrefillAttnParams& p) {
-    cudaStream_t s = p.stream_ ? static_cast<cudaStream_t>(p.stream_) : stream_;
-
     return launch_prefill_attention(
         static_cast<const __nv_bfloat16*>(p.q_),
         static_cast<const __nv_bfloat16*>(p.k_cache_),
@@ -125,12 +109,10 @@ Result<void> CudaBackend::prefill_attention(const PrefillAttnParams& p) {
         static_cast<__nv_bfloat16*>(p.output_),
         p.batch_size_, p.query_start_loc_[p.batch_size_],
         p.max_blocks_per_req_, p.num_q_heads_, p.num_kv_heads_,
-        p.head_dim_, p.cache_block_size_, s);
+        p.head_dim_, p.cache_block_size_, stream_);
 }
 
 Result<void> CudaBackend::decode_attention(const DecodeAttnParams& p) {
-    cudaStream_t s = p.stream_ ? static_cast<cudaStream_t>(p.stream_) : stream_;
-
     return launch_decode_attention(
         static_cast<const __nv_bfloat16*>(p.q_),
         static_cast<const __nv_bfloat16*>(p.k_cache_),
@@ -138,24 +120,24 @@ Result<void> CudaBackend::decode_attention(const DecodeAttnParams& p) {
         p.block_table_, p.context_lens_,
         static_cast<__nv_bfloat16*>(p.output_),
         p.batch_size_, p.max_blocks_per_req_, p.num_q_heads_, p.num_kv_heads_,
-        p.head_dim_, p.cache_block_size_, s);
+        p.head_dim_, p.cache_block_size_, stream_);
 }
 
 Result<void> CudaBackend::write_kv_cache(const WriteKVCacheParams& p) {
-    cudaStream_t s = p.stream_ ? static_cast<cudaStream_t>(p.stream_) : stream_;
-
     return launch_write_kv_cache(
         static_cast<const __nv_bfloat16*>(p.k_new_),
         static_cast<const __nv_bfloat16*>(p.v_new_),
         static_cast<__nv_bfloat16*>(p.k_cache_),
         static_cast<__nv_bfloat16*>(p.v_cache_),
         p.slot_mapping_, p.total_tokens_, p.num_kv_heads_, p.head_dim_,
-        p.max_slots_, s);
+        p.max_slots_, stream_);
 }
 
 std::unique_ptr<DeviceBuffer> CudaBackend::allocate_buffer(size_t bytes) {
     return std::make_unique<CudaBuffer>(bytes);
 }
+
+void* CudaBackend::stream() { return stream_; }
 
 std::unique_ptr<DeviceBackend> DeviceBackend::create() { return std::make_unique<CudaBackend>(); }
 

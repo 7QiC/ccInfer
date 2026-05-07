@@ -34,8 +34,6 @@ struct GemmParams {
     bool trans_a_ = false;
     bool trans_b_ = false;
 
-    // Optional stream override. If nullptr, backend default stream is used.
-    void* stream_ = nullptr;
 };
 
 // -----------------------------------------------------------------------------
@@ -59,7 +57,6 @@ struct RmsNormParams {
     int dim_ = 0;
     float eps_ = 1e-6f;
 
-    void* stream_ = nullptr;
 };
 
 // -----------------------------------------------------------------------------
@@ -91,7 +88,6 @@ struct RopeParams {
     int rotary_dim_ = 0;
     int max_position_ = 0;
 
-    void* stream_ = nullptr;
 };
 
 // -----------------------------------------------------------------------------
@@ -115,7 +111,6 @@ struct SiluMulParams {
 
     int64_t n_ = 0;
 
-    void* stream_ = nullptr;
 };
 
 // -----------------------------------------------------------------------------
@@ -149,7 +144,6 @@ struct NaiveAttnParams {
     int num_kv_heads_ = 0;
     int head_dim_ = 0;
 
-    void* stream_ = nullptr;
 };
 
 // -----------------------------------------------------------------------------
@@ -182,7 +176,6 @@ struct PrefillAttnParams {
     int head_dim_ = 0;
     int cache_block_size_ = 0;
 
-    void* stream_ = nullptr;
 };
 
 // -----------------------------------------------------------------------------
@@ -209,7 +202,6 @@ struct DecodeAttnParams {
     int head_dim_ = 0;
     int cache_block_size_ = 0;
 
-    void* stream_ = nullptr;
 };
 
 // Write KV cache — scatter newly computed K/V into paged KV cache.
@@ -229,7 +221,6 @@ struct WriteKVCacheParams {
     int head_dim_ = 0;
     int max_slots_ = 0;
 
-    void* stream_ = nullptr;
 };
 
 // -----------------------------------------------------------------------------
@@ -239,7 +230,6 @@ struct ElementAddParams {
     void* dst_ = nullptr;
     const void* src_ = nullptr;
     int64_t n_ = 0;
-    void* stream_ = nullptr;
 };
 
 // -----------------------------------------------------------------------------
@@ -254,7 +244,6 @@ struct SplitQkvParams {
     int num_q_heads_ = 0;
     int num_kv_heads_ = 0;
     int head_dim_ = 0;
-    void* stream_ = nullptr;
 };
 
 }  // namespace engine

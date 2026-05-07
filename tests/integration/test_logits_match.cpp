@@ -118,7 +118,7 @@ TEST_F(LogitsMatchTest, SingleToken) {
     ForwardOutput fwd_out{};
     fwd_out.logits_ = static_cast<__nv_bfloat16*>(output_logits->data());
 
-    auto fwd_result = (*model)->forward(fwd_in, fwd_out, *backend_, stream_);
+    auto fwd_result = (*model)->forward(fwd_in, fwd_out, *backend_);
     ASSERT_TRUE(fwd_result);
     cudaStreamSynchronize(stream_);
 
@@ -186,7 +186,7 @@ TEST_F(LogitsMatchTest, CompareWithReference) {
     ForwardOutput fwd_out{};
     fwd_out.logits_ = static_cast<__nv_bfloat16*>(output_logits->data());
 
-    auto fwd_result = (*model)->forward(fwd_in, fwd_out, *backend_, stream_);
+    auto fwd_result = (*model)->forward(fwd_in, fwd_out, *backend_);
     ASSERT_TRUE(fwd_result);
 
     cudaStreamSynchronize(stream_);
@@ -285,7 +285,7 @@ TEST_F(LogitsMatchTest, TopKAgreement) {
     ForwardOutput fwd_out{};
     fwd_out.logits_ = static_cast<__nv_bfloat16*>(output_logits->data());
 
-    auto fwd_result = (*model)->forward(fwd_in, fwd_out, *backend_, stream_);
+    auto fwd_result = (*model)->forward(fwd_in, fwd_out, *backend_);
     ASSERT_TRUE(fwd_result);
 
     cudaStreamSynchronize(stream_);

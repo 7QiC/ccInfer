@@ -18,8 +18,8 @@ public:
 
     Qwen3Model(ModelConfig config, Qwen3Weights weights, RopeCache rope_cache);
 
-    Result<void> forward(const ForwardInput& input, ForwardOutput& output, DeviceBackend& backend,
-                         void* stream) override;
+    Result<void> forward(const ForwardInput& input, ForwardOutput& output,
+                         DeviceBackend& backend) override;
 
     const ModelConfig& config() const override { return config_; }
     const char* architecture() const override { return "qwen3"; }

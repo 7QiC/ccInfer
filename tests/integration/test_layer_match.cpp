@@ -198,7 +198,6 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
         // ---- Attention block ----
         ASSERT_TRUE(backend_.rms_norm(RmsNormParams{
             .input_ = hidden, .weight_ = static_cast<__nv_bfloat16*>((*rms_attn)->data()), .output_ = static_cast<__nv_bfloat16*>(normed->data()),
-            .rows_ = T, .dim_ = D, .eps_ = eps, .stream_ = stream_,
         }));
         if (is_first_layer)
             dump_bf16_to_f32("l0_attn_norm.bin", static_cast<__nv_bfloat16*>(normed->data()), static_cast<size_t>(T) * D);
@@ -207,12 +206,10 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
             .a_ = static_cast<__nv_bfloat16*>(qkv_merged->data()), .b_ = static_cast<__nv_bfloat16*>(normed->data()), .c_ = static_cast<__nv_bfloat16*>(qkv_out->data()),
             .m_ = qkv_dim, .n_ = T, .k_ = D,
             .lda_ = D, .ldb_ = D, .ldc_ = qkv_dim,
-            .trans_a_ = true, .trans_b_ = false, .stream_ = stream_,
         }));
 
         ASSERT_TRUE(backend_.split_qkv(SplitQkvParams{
             .qkv_ = static_cast<__nv_bfloat16*>(qkv_out->data()), .q_ = static_cast<__nv_bfloat16*>(q_buf->data()), .k_ = static_cast<__nv_bfloat16*>(k_buf->data()), .v_ = static_cast<__nv_bfloat16*>(v_buf->data()),
-            .num_tokens_ = T, .num_q_heads_ = nq, .num_kv_heads_ = nkv, .head_dim_ = hd, .stream_ = stream_,
         }));
         if (is_first_layer) {
             dump_bf16_to_f32("l0_q.bin", static_cast<__nv_bfloat16*>(q_buf->data()), static_cast<size_t>(T) * nq * hd);
@@ -223,13 +220,11 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
         if (q_norm_w) {
             ASSERT_TRUE(backend_.rms_norm(RmsNormParams{
                 .input_ = static_cast<__nv_bfloat16*>(q_buf->data()), .weight_ = static_cast<__nv_bfloat16*>(q_norm_w->data()), .output_ = static_cast<__nv_bfloat16*>(q_buf->data()),
-                .rows_ = T * nq, .dim_ = hd, .eps_ = eps, .stream_ = stream_,
             }));
         }
         if (k_norm_w) {
             ASSERT_TRUE(backend_.rms_norm(RmsNormParams{
                 .input_ = static_cast<__nv_bfloat16*>(k_buf->data()), .weight_ = static_cast<__nv_bfloat16*>(k_norm_w->data()), .output_ = static_cast<__nv_bfloat16*>(k_buf->data()),
-                .rows_ = T * nkv, .dim_ = hd, .eps_ = eps, .stream_ = stream_,
             }));
         }
         if (is_first_layer) {
@@ -241,25 +236,21 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
             .q_ = static_cast<__nv_bfloat16*>(q_buf->data()), .k_ = static_cast<__nv_bfloat16*>(k_buf->data()), .positions_ = static_cast<int32_t*>(pos_buf->data()),
             .rope_cache_ = rope_cache.data(), .num_tokens_ = T, .num_q_heads_ = nq,
             .num_kv_heads_ = nkv, .head_dim_ = hd, .rotary_dim_ = hd,
-            .max_position_ = rope_cache.max_position(), .stream_ = stream_,
         }));
 
         ASSERT_TRUE(backend_.naive_attention(NaiveAttnParams{
             .q_ = static_cast<__nv_bfloat16*>(q_buf->data()), .k_ = static_cast<__nv_bfloat16*>(k_buf->data()), .v_ = static_cast<__nv_bfloat16*>(v_buf->data()), .output_ = static_cast<__nv_bfloat16*>(attn_out->data()),
-            .num_tokens_ = T, .num_q_heads_ = nq, .num_kv_heads_ = nkv, .head_dim_ = hd, .stream_ = stream_,
         }));
 
         ASSERT_TRUE(backend_.gemm(GemmParams{
             .a_ = static_cast<__nv_bfloat16*>((*o_w)->data()), .b_ = static_cast<__nv_bfloat16*>(attn_out->data()), .c_ = next_hidden,
             .m_ = D, .n_ = T, .k_ = attn_dim,
             .lda_ = attn_dim, .ldb_ = attn_dim, .ldc_ = D,
-            .trans_a_ = true, .trans_b_ = false, .stream_ = stream_,
         }));
         if (is_first_layer)
             dump_bf16_to_f32("l0_o_proj.bin", next_hidden, static_cast<size_t>(T) * D);
 
         ASSERT_TRUE(backend_.element_add(ElementAddParams{
-            .dst_ = next_hidden, .src_ = hidden, .n_ = static_cast<int64_t>(T) * D, .stream_ = stream_,
         }));
         std::swap(hidden, next_hidden);
         if (is_first_layer)
@@ -268,7 +259,6 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
         // ---- FFN block ----
         ASSERT_TRUE(backend_.rms_norm(RmsNormParams{
             .input_ = hidden, .weight_ = static_cast<__nv_bfloat16*>((*rms_ffn)->data()), .output_ = static_cast<__nv_bfloat16*>(normed->data()),
-            .rows_ = T, .dim_ = D, .eps_ = eps, .stream_ = stream_,
         }));
         if (is_first_layer)
             dump_bf16_to_f32("l0_ffn_norm.bin", static_cast<__nv_bfloat16*>(normed->data()), static_cast<size_t>(T) * D);
@@ -277,7 +267,6 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
             .a_ = static_cast<__nv_bfloat16*>((*gate_w)->data()), .b_ = static_cast<__nv_bfloat16*>(normed->data()), .c_ = static_cast<__nv_bfloat16*>(gate->data()),
             .m_ = d_ff, .n_ = T, .k_ = D,
             .lda_ = D, .ldb_ = D, .ldc_ = d_ff,
-            .trans_a_ = true, .trans_b_ = false, .stream_ = stream_,
         }));
         if (is_first_layer)
             dump_bf16_to_f32("l0_gate.bin", static_cast<__nv_bfloat16*>(gate->data()), static_cast<size_t>(T) * d_ff);
@@ -286,14 +275,12 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
             .a_ = static_cast<__nv_bfloat16*>((*up_w)->data()), .b_ = static_cast<__nv_bfloat16*>(normed->data()), .c_ = static_cast<__nv_bfloat16*>(up->data()),
             .m_ = d_ff, .n_ = T, .k_ = D,
             .lda_ = D, .ldb_ = D, .ldc_ = d_ff,
-            .trans_a_ = true, .trans_b_ = false, .stream_ = stream_,
         }));
         if (is_first_layer)
             dump_bf16_to_f32("l0_up.bin", static_cast<__nv_bfloat16*>(up->data()), static_cast<size_t>(T) * d_ff);
 
         ASSERT_TRUE(backend_.silu_mul(SiluMulParams{
             .gate_ = static_cast<__nv_bfloat16*>(gate->data()), .up_ = static_cast<__nv_bfloat16*>(up->data()), .output_ = static_cast<__nv_bfloat16*>(ffn_act->data()),
-            .n_ = static_cast<int64_t>(T) * d_ff, .stream_ = stream_,
         }));
         if (is_first_layer)
             dump_bf16_to_f32("l0_silu_mul.bin", static_cast<__nv_bfloat16*>(ffn_act->data()), static_cast<size_t>(T) * d_ff);
@@ -302,13 +289,11 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
             .a_ = static_cast<__nv_bfloat16*>((*down_w)->data()), .b_ = static_cast<__nv_bfloat16*>(ffn_act->data()), .c_ = next_hidden,
             .m_ = D, .n_ = T, .k_ = d_ff,
             .lda_ = d_ff, .ldb_ = d_ff, .ldc_ = D,
-            .trans_a_ = true, .trans_b_ = false, .stream_ = stream_,
         }));
         if (is_first_layer)
             dump_bf16_to_f32("l0_down.bin", next_hidden, static_cast<size_t>(T) * D);
 
         ASSERT_TRUE(backend_.element_add(ElementAddParams{
-            .dst_ = next_hidden, .src_ = hidden, .n_ = static_cast<int64_t>(T) * D, .stream_ = stream_,
         }));
         std::swap(hidden, next_hidden);
 
@@ -324,7 +309,6 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
     // Final norm
     ASSERT_TRUE(backend_.rms_norm(RmsNormParams{
         .input_ = hidden, .weight_ = static_cast<__nv_bfloat16*>((*rms_final)->data()), .output_ = static_cast<__nv_bfloat16*>(normed->data()),
-        .rows_ = T, .dim_ = D, .eps_ = eps, .stream_ = stream_,
     }));
     cudaStreamSynchronize(stream_);
     cudaMemcpy(host_bf16.data(), normed->data(), T * D * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost);

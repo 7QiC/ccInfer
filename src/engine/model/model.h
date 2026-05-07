@@ -25,7 +25,7 @@ public:
     virtual ~Model() = default;
 
     virtual Result<void> forward(const ForwardInput& input, ForwardOutput& output,
-                                 DeviceBackend& backend, void* stream) = 0;
+                                 DeviceBackend& backend) = 0;
 
     virtual const ModelConfig& config() const = 0;
     virtual const char* architecture() const = 0;
