@@ -10,6 +10,8 @@
 namespace ccinfer {
 namespace engine {
 
+class DeviceBackend;
+
 // ---------------------------------------------------------------------------
 // SequenceState — per-sequence state owned by the DeviceWorker.
 // CUDA-free: uses only CPU-side types (BlockTable is CPU metadata).
@@ -43,6 +45,17 @@ struct PhysicalBatch {
     DeviceBuffer<int32_t> context_lens;     // [batch_size]
 
     std::vector<int> item_indices;          // maps physical seq → WorkItem index
+};
+
+// ---------------------------------------------------------------------------
+// ExecutionContext — passed from DeviceWorker to ModelRunner.
+// Opaque pointers; each worker casts to its native types.
+// ---------------------------------------------------------------------------
+struct ExecutionContext {
+    DeviceBackend* backend = nullptr;
+    void* kv_storage = nullptr;
+    void* kv_mgr = nullptr;
+    int block_size = kKVBlockSize;
 };
 
 }  // namespace engine
