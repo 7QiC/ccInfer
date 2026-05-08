@@ -19,7 +19,7 @@ void ModelRegistry::register_model(std::string arch, ModelCreator creator) {
 
 Result<std::unique_ptr<Model>> ModelRegistry::create(const ModelConfig& config,
                                                      const WeightLoader& loader,
-                                                     DeviceBackend& backend) const {
+                                                     DefaultBackend& backend) const {
     auto it = creators_.find(config.arch_name());
     if (it == creators_.end()) {
         return std::unexpected(ErrorCode::ModelUnsupportedArch);

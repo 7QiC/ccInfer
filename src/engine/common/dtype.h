@@ -7,6 +7,7 @@
 namespace ccinfer {
 
 enum class DType : uint8_t {
+    kUnknown,
     kFloat32,
     kFloat16,
     kBFloat16,

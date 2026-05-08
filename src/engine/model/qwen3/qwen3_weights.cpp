@@ -14,7 +14,7 @@ void merge_qkv(std::unique_ptr<DeviceBuffer>& qkv,
                std::unique_ptr<DeviceBuffer>& q,
                std::unique_ptr<DeviceBuffer>& k,
                std::unique_ptr<DeviceBuffer>& v,
-               DeviceBackend& backend) {
+               DefaultBackend& backend) {
     const size_t q_bytes = q->bytes();
     const size_t k_bytes = k->bytes();
     const size_t v_bytes = v->bytes();
@@ -23,19 +23,16 @@ void merge_qkv(std::unique_ptr<DeviceBuffer>& qkv,
     qkv = backend.allocate_buffer(total_bytes);
 
     auto* dst = static_cast<__nv_bfloat16*>(qkv->data());
-    cudaMemcpy(dst, static_cast<const __nv_bfloat16*>(q->data()), q_bytes,
-               cudaMemcpyDeviceToDevice);
-    cudaMemcpy(dst + q_bytes / sizeof(__nv_bfloat16),
-               static_cast<const __nv_bfloat16*>(k->data()), k_bytes,
-               cudaMemcpyDeviceToDevice);
-    cudaMemcpy(dst + (q_bytes + k_bytes) / sizeof(__nv_bfloat16),
-               static_cast<const __nv_bfloat16*>(v->data()), v_bytes,
-               cudaMemcpyDeviceToDevice);
+    backend.memcpy_d2d(dst, static_cast<const __nv_bfloat16*>(q->data()), q_bytes);
+    backend.memcpy_d2d(dst + q_bytes / sizeof(__nv_bfloat16),
+                       static_cast<const __nv_bfloat16*>(k->data()), k_bytes);
+    backend.memcpy_d2d(dst + (q_bytes + k_bytes) / sizeof(__nv_bfloat16),
+                       static_cast<const __nv_bfloat16*>(v->data()), v_bytes);
 }
 
 }  // namespace
 
-Result<Qwen3Weights> Qwen3Weights::load(DeviceBackend& backend,
+Result<Qwen3Weights> Qwen3Weights::load(DefaultBackend& backend,
                                          const ModelConfig& config,
                                          const WeightLoader& loader) {
     if (config.d_model_ <= 0 || config.n_q_heads_ <= 0 || config.n_kv_heads_ <= 0 ||

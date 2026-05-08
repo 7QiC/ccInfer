@@ -11,7 +11,6 @@
 namespace ccinfer {
 namespace engine {
 
-class DeviceBackend;
 class Model;
 
 // ---------------------------------------------------------------------------

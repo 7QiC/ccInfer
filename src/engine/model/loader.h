@@ -15,6 +15,7 @@
 #include "engine/backend/backend.h"
 #include "engine/backend/cuda/cuda_utils.h"
 #include "engine/backend/device_buffer.h"
+#include "engine/common/backend_def.h"
 
 namespace ccinfer {
 namespace engine {
@@ -63,7 +64,7 @@ public:
 
     template <typename T>
     Result<std::unique_ptr<DeviceBuffer>> load(
-        DeviceBackend& backend,
+        DefaultBackend& backend,
         const std::string& name,
         const std::vector<int64_t>& expected_shape) const;
 
@@ -85,7 +86,7 @@ private:
 // Template implementation.
 template <typename T>
 Result<std::unique_ptr<DeviceBuffer>> WeightLoader::load(
-    DeviceBackend& backend,
+    DefaultBackend& backend,
     const std::string& name, const std::vector<int64_t>& expected_shape) const {
     if (data_ == nullptr || size_ == 0) {
         return std::unexpected(ErrorCode::ModelLoadFailed);
@@ -130,8 +131,7 @@ Result<std::unique_ptr<DeviceBuffer>> WeightLoader::load(
     const uint8_t* src = data_ + data_start + info.offset_;
     auto buf = backend.allocate_buffer(static_cast<size_t>(numel) * sizeof(T));
 
-    auto r = cuda_check(cudaMemcpy(buf->data(), src, static_cast<size_t>(info.size_bytes_),
-                                   cudaMemcpyHostToDevice));
+    auto r = backend.memcpy_h2d(buf->data(), src, static_cast<size_t>(info.size_bytes_));
     if (!r) return std::unexpected(r.error());
 
     return buf;

@@ -143,18 +143,6 @@ __global__ void naive_attention_token_major_kernel(const __nv_bfloat16* __restri
 Result<void> launch_naive_attention(const __nv_bfloat16* q, const __nv_bfloat16* k, const __nv_bfloat16* v,
                              __nv_bfloat16* output, int num_tokens, int n_q_heads, int n_kv_heads,
                              int head_dim, cudaStream_t stream) {
-    if (q == nullptr || k == nullptr || v == nullptr || output == nullptr) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-
-    if (num_tokens <= 0 || n_q_heads <= 0 || n_kv_heads <= 0 || head_dim <= 0) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-
-    if (n_q_heads % n_kv_heads != 0) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-
     // Shared memory holds one FP32 score per token.
     // This kernel is intended for small/medium sequence correctness tests.
     const size_t shared_bytes = static_cast<size_t>(num_tokens) * sizeof(float);

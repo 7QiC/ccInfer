@@ -3,12 +3,12 @@
 #include <cstdint>
 
 #include "common/result.h"
+#include "engine/common/backend_def.h"
 
 namespace ccinfer {
 namespace engine {
 
 struct ModelConfig;
-class DeviceBackend;
 
 struct ForwardInput {
     const void* input_embeds_ = nullptr;  // [T, D]
@@ -25,7 +25,7 @@ public:
     virtual ~Model() = default;
 
     virtual Result<void> forward(const ForwardInput& input, ForwardOutput& output,
-                                 DeviceBackend& backend) = 0;
+                                 DefaultBackend& backend) = 0;
 
     virtual const ModelConfig& config() const = 0;
     virtual const char* architecture() const = 0;

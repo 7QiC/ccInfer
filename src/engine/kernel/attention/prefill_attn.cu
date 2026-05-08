@@ -252,20 +252,6 @@ Result<void> launch_prefill_attention(const __nv_bfloat16* q, const __nv_bfloat1
                                       __nv_bfloat16* output, int batch_size, int total_query_tokens,
                                       int max_blocks_per_req, int num_q_heads, int num_kv_heads,
                                       int head_dim, int cache_block_size, cudaStream_t stream) {
-    if (q == nullptr || k_cache == nullptr || v_cache == nullptr || block_table == nullptr ||
-        query_start_loc == nullptr || context_lens == nullptr || output == nullptr) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-
-    if (batch_size <= 0 || total_query_tokens <= 0 || max_blocks_per_req <= 0 || num_q_heads <= 0 ||
-        num_kv_heads <= 0 || head_dim <= 0 || cache_block_size <= 0) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-
-    if (num_q_heads % num_kv_heads != 0) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-
     constexpr int kNumThreads = 256;
     constexpr int kTileTokens = 64;
 

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <boost/system/error_code.hpp>
+
 #include <cstdint>
 #include <string_view>
 
@@ -90,4 +92,28 @@ inline constexpr std::string_view error_message(ErrorCode c) noexcept {
     return "unknown error";
 }
 
+class ErrorCategory : public boost::system::error_category {
+public:
+    const char* name() const noexcept override { return "ccinfer"; }
+    std::string message(int ev) const override {
+        return std::string(error_message(static_cast<ErrorCode>(ev)));
+    }
+};
+
+inline const boost::system::error_category& engine_error_category() {
+    static ErrorCategory instance;
+    return instance;
+}
+
+inline boost::system::error_code make_error_code(ErrorCode c) {
+    return {static_cast<int>(c), engine_error_category()};
+}
+
 }  // namespace ccinfer
+
+namespace boost {
+namespace system {
+template <>
+struct is_error_code_enum<ccinfer::ErrorCode> : std::true_type {};
+}  // namespace system
+}  // namespace boost

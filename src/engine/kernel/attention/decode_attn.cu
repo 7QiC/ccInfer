@@ -236,20 +236,6 @@ Result<void> launch_decode_attention(const __nv_bfloat16* q, const __nv_bfloat16
                                      int batch_size, int max_blocks_per_req, int num_q_heads,
                                      int num_kv_heads, int head_dim, int cache_block_size,
                                      cudaStream_t stream) {
-    if (q == nullptr || k_cache == nullptr || v_cache == nullptr || block_table == nullptr ||
-        context_lens == nullptr || output == nullptr) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-
-    if (batch_size <= 0 || max_blocks_per_req <= 0 || num_q_heads <= 0 || num_kv_heads <= 0 ||
-        head_dim <= 0 || cache_block_size <= 0) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-
-    if (num_q_heads % num_kv_heads != 0) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-
     constexpr int kThreadsPerCTA = 256;
     constexpr int kTileTokens = 64;
 

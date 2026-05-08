@@ -96,14 +96,6 @@ Result<void> launch_rope(__nv_bfloat16* q, __nv_bfloat16* k, const int32_t* posi
                          const float2* rope_cache, int num_tokens, int num_q_heads,
                          int num_kv_heads, int head_dim, int rotary_dim, int max_position,
                          cudaStream_t stream) {
-    if (num_tokens <= 0) return std::unexpected(ErrorCode::InvalidArgument);
-    if (!q || !k || !positions || !rope_cache) return std::unexpected(ErrorCode::InvalidArgument);
-    if (num_q_heads <= 0 || num_kv_heads <= 0 || head_dim <= 0)
-        return std::unexpected(ErrorCode::InvalidArgument);
-    if (rotary_dim <= 0 || rotary_dim > head_dim || (rotary_dim & 1))
-        return std::unexpected(ErrorCode::InvalidArgument);
-    if (max_position <= 0) return std::unexpected(ErrorCode::InvalidArgument);
-
     const int half_rotary_dim = rotary_dim / 2;
     const int total_heads = num_q_heads + num_kv_heads;
     constexpr int kThreads = 64;

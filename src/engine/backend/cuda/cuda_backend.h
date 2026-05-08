@@ -1,36 +1,71 @@
 #pragma once
 
+#include <cstddef>
+#include <memory>
+
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 
+#include "common/result.h"
 #include "engine/backend/backend.h"
+#include "engine/backend/device_buffer.h"
+#include "engine/backend/params.h"
 
 namespace ccinfer {
 namespace engine {
 
-class CudaBackend : public DeviceBackend {
+class CudaBackend final : public DeviceBackend<CudaBackend> {
 public:
     CudaBackend();
-    ~CudaBackend() override;
+    ~CudaBackend();
 
-    Result<void> gemm(const GemmParams& p) override;
-    Result<void> rms_norm(const RmsNormParams& p) override;
-    Result<void> rope(const RopeParams& p) override;
-    Result<void> silu_mul(const SiluMulParams& p) override;
-    Result<void> element_add(const ElementAddParams& p) override;
-    Result<void> split_qkv(const SplitQkvParams& p) override;
-    Result<void> naive_attention(const NaiveAttnParams& p) override;
-    Result<void> prefill_attention(const PrefillAttnParams& p) override;
-    Result<void> decode_attention(const DecodeAttnParams& p) override;
-    Result<void> write_kv_cache(const WriteKVCacheParams& p) override;
+    CudaBackend(const CudaBackend&) = delete;
+    CudaBackend& operator=(const CudaBackend&) = delete;
 
-    std::unique_ptr<DeviceBuffer> allocate_buffer(size_t bytes) override;
+    CudaBackend(CudaBackend&&) noexcept;
+    CudaBackend& operator=(CudaBackend&&) noexcept;
 
-    void* stream() override;
+    template <typename DType>
+    Result<void> gemm_impl(const GemmParams& p);
+
+    template <typename DType>
+    Result<void> rms_norm_impl(const RmsNormParams& p);
+
+    template <typename DType>
+    Result<void> rope_impl(const RopeParams& p);
+
+    template <typename DType>
+    Result<void> silu_mul_impl(const SiluMulParams& p);
+
+    template <typename DType>
+    Result<void> element_add_impl(const ElementAddParams& p);
+
+    template <typename DType>
+    Result<void> split_qkv_impl(const SplitQkvParams& p);
+
+    template <typename DType>
+    Result<void> naive_attention_impl(const NaiveAttnParams& p);
+
+    template <typename DType>
+    Result<void> prefill_attention_impl(const PrefillAttnParams& p);
+
+    template <typename DType>
+    Result<void> decode_attention_impl(const DecodeAttnParams& p);
+
+    template <typename DType>
+    Result<void> write_kv_cache_impl(const WriteKVCacheParams& p);
+
+    std::unique_ptr<DeviceBuffer> allocate_buffer_impl(std::size_t bytes);
+
+    Result<void> memcpy_h2d_impl(void* dst, const void* src, std::size_t count);
+    Result<void> memcpy_d2h_impl(void* dst, const void* src, std::size_t count);
+    Result<void> memcpy_d2d_impl(void* dst, const void* src, std::size_t count);
+
+    void* stream_impl();
 
 private:
-    cublasHandle_t cublas_handle_;
-    cudaStream_t stream_;
+    cudaStream_t stream_ = nullptr;
+    cublasHandle_t cublas_handle_ = nullptr;
 };
 
 }  // namespace engine

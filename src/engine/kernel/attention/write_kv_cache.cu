@@ -43,15 +43,6 @@ Result<void> launch_write_kv_cache(const __nv_bfloat16* k_new, const __nv_bfloat
                                    const int32_t* slot_mapping, int total_tokens,
                                    int n_kv_heads, int head_dim, int max_slots,
                                    cudaStream_t stream) {
-
-    if (k_new == nullptr || v_new == nullptr || k_cache == nullptr || v_cache == nullptr ||
-        slot_mapping == nullptr) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-    if (total_tokens <= 0 || n_kv_heads <= 0 || head_dim <= 0 || max_slots <= 0) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-
     dim3 grid(total_tokens, n_kv_heads);
     dim3 block(head_dim);
 

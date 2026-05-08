@@ -1,21 +1,20 @@
 #pragma once
 
+#include <concepts>
 #include <cstdint>
 #include <memory>
 
 #include "common/result.h"
-#include "engine/backend/backend.h"
 #include "engine/backend/device_buffer.h"
+#include "engine/common/backend_def.h"
 
 namespace ccinfer {
 namespace engine {
 
-template <typename DType>
+template <typename KVDType>
 class KVCacheStorage {
 public:
-    KVCacheStorage() = default;
-
-    Result<void> init(DeviceBackend& backend, int num_layers, int max_blocks, int block_size,
+    Result<void> init(DefaultBackend& backend, int num_layers, int max_blocks, int block_size,
                       int num_kv_heads, int head_dim) {
         int64_t token_stride = static_cast<int64_t>(num_kv_heads) * head_dim;
         int64_t elements_per_layer =
@@ -23,7 +22,7 @@ public:
         layer_stride_ = elements_per_layer;
 
         int64_t total_elements = static_cast<int64_t>(num_layers) * elements_per_layer;
-        int64_t total_bytes = total_elements * sizeof(DType);
+        int64_t total_bytes = total_elements * sizeof(KVDType);
 
         k_data_ = backend.allocate_buffer(total_bytes);
         v_data_ = backend.allocate_buffer(total_bytes);
@@ -34,13 +33,17 @@ public:
         return {};
     }
 
-    DType* k_data() { return static_cast<DType*>(k_data_->data()); }
-    DType* v_data() { return static_cast<DType*>(v_data_->data()); }
-    const DType* k_data() const { return static_cast<const DType*>(k_data_->data()); }
-    const DType* v_data() const { return static_cast<const DType*>(v_data_->data()); }
+    KVDType* k_data() { return static_cast<KVDType*>(k_data_->data()); }
+    KVDType* v_data() { return static_cast<KVDType*>(v_data_->data()); }
+    const KVDType* k_data() const { return static_cast<const KVDType*>(k_data_->data()); }
+    const KVDType* v_data() const { return static_cast<const KVDType*>(v_data_->data()); }
 
-    DType* k_layer(int layer) { return static_cast<DType*>(k_data_->data()) + layer * layer_stride_; }
-    DType* v_layer(int layer) { return static_cast<DType*>(v_data_->data()) + layer * layer_stride_; }
+    KVDType* k_layer(int layer) {
+        return static_cast<KVDType*>(k_data_->data()) + layer * layer_stride_;
+    }
+    KVDType* v_layer(int layer) {
+        return static_cast<KVDType*>(v_data_->data()) + layer * layer_stride_;
+    }
 
 private:
     std::unique_ptr<DeviceBuffer> k_data_;

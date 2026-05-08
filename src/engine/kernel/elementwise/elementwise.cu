@@ -82,14 +82,6 @@ __global__ void embed_kernel(const __nv_bfloat16* embed_table, const int32_t* to
 
 Result<void> launch_element_add(__nv_bfloat16* dst, const __nv_bfloat16* src, int64_t n,
                                 cudaStream_t stream) {
-    if (n <= 0) {
-        return {};
-    }
-
-    if (dst == nullptr || src == nullptr) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-
     constexpr int kBlockSize = 256;
     const int grid = static_cast<int>((n + kBlockSize - 1) / kBlockSize);
 
@@ -101,14 +93,6 @@ Result<void> launch_element_add(__nv_bfloat16* dst, const __nv_bfloat16* src, in
 Result<void> launch_split_qkv(const __nv_bfloat16* qkv, __nv_bfloat16* q, __nv_bfloat16* k,
                               __nv_bfloat16* v, int T, int nq, int nkv, int hd,
                               cudaStream_t stream) {
-    if (qkv == nullptr || q == nullptr || k == nullptr || v == nullptr) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-
-    if (T <= 0 || nq <= 0 || nkv <= 0 || hd <= 0) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-
     const int qkv_dim = (nq + 2 * nkv) * hd;
     const int64_t total = static_cast<int64_t>(T) * qkv_dim;
 

@@ -13,12 +13,12 @@ class LlamaModel final : public Model {
 public:
     static Result<std::unique_ptr<Model>> create(const ModelConfig& config,
                                                   const WeightLoader& loader,
-                                                  DeviceBackend& backend);
+                                                  DefaultBackend& backend);
 
     LlamaModel(ModelConfig config, LlamaWeights weights, RopeCache rope_cache);
 
-    Result<void> forward(const ForwardInput& input, ForwardOutput& output, DeviceBackend& backend,
-                         void* stream) override;
+    Result<void> forward(const ForwardInput& input, ForwardOutput& output,
+                         DefaultBackend& backend) override;
 
     const ModelConfig& config() const override { return config_; }
     const char* architecture() const override { return "llama"; }

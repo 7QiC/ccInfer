@@ -6,16 +6,15 @@
 
 #include "common/result.h"
 #include "engine/backend/device_buffer.h"
+#include "engine/common/backend_def.h"
 
 namespace ccinfer {
 namespace engine {
 
-class DeviceBackend;
-
 class RopeCache {
 public:
     static Result<RopeCache> create(int max_position, int rotary_dim, float rope_theta,
-                                    DeviceBackend& backend);
+                                    DefaultBackend& backend);
 
     const float2* data() const noexcept { return buffer_data<float2>(*cache_); }
     float2* data() noexcept { return buffer_data<float2>(*cache_); }

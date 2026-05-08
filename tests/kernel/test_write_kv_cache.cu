@@ -5,6 +5,7 @@
 
 #include <vector>
 
+#include "engine/backend/cuda/cuda_backend.h"
 #include "engine/cache/block.h"
 #include "engine/kernel/cuda_kernels.h"
 
@@ -98,19 +99,14 @@ TEST(WriteKVCacheKernelTest, WriteAndReadbackNonContiguousSlots) {
 }
 
 TEST(WriteKVCacheKernelTest, NullPointerReturnsError) {
-    cudaStream_t stream;
-    cudaStreamCreate(&stream);
+    CudaBackend backend;
 
-    auto r = launch_write_kv_cache(nullptr, nullptr, nullptr, nullptr,
-                                   nullptr, 1, 1, 1, 64, stream);
+    auto r = backend.template write_kv_cache<__nv_bfloat16>(WriteKVCacheParams{
+        .k_new_ = nullptr, .v_new_ = nullptr, .k_cache_ = nullptr, .v_cache_ = nullptr,
+        .slot_mapping_ = nullptr, .total_tokens_ = 1, .num_kv_heads_ = 1,
+        .head_dim_ = 1, .max_slots_ = 64});
     EXPECT_FALSE(r.has_value());
     EXPECT_EQ(r.error(), ErrorCode::InvalidArgument);
-
-    auto sync_err = cudaStreamSynchronize(stream);
-    ASSERT_EQ(sync_err, cudaSuccess);
-    auto last_err = cudaGetLastError();
-    ASSERT_EQ(last_err, cudaSuccess);
-    cudaStreamDestroy(stream);
 }
 
 }  // namespace

@@ -11,12 +11,11 @@
 namespace ccinfer {
 namespace engine {
 
-class DeviceBackend;
 class WeightLoader;
 
 using ModelCreator = Result<std::unique_ptr<Model>> (*)(const ModelConfig& config,
                                                         const WeightLoader& loader,
-                                                        DeviceBackend& backend);
+                                                        DefaultBackend& backend);
 
 class ModelRegistry {
 public:
@@ -26,7 +25,7 @@ public:
 
     Result<std::unique_ptr<Model>> create(const ModelConfig& config,
                                           const WeightLoader& loader,
-                                          DeviceBackend& backend) const;
+                                          DefaultBackend& backend) const;
 
 private:
     ModelRegistry() = default;

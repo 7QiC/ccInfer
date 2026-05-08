@@ -79,7 +79,7 @@ protected:
     ModelConfig config_;
     ByteLevelBpeTokenizer tokenizer_;
     std::unique_ptr<WeightLoader> loader_;
-    std::unique_ptr<DeviceBackend> backend_;
+    std::unique_ptr<CudaBackend> backend_;
     cudaStream_t stream_{};
 };
 

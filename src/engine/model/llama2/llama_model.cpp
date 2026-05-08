@@ -16,7 +16,7 @@ namespace engine {
 
 Result<std::unique_ptr<Model>> LlamaModel::create(const ModelConfig& config,
                                                    const WeightLoader& loader,
-                                                   DeviceBackend& backend) {
+                                                   DefaultBackend& backend) {
     auto weights = LlamaWeights::load(backend, config, loader);
     if (!weights) return std::unexpected(weights.error());
 
@@ -33,7 +33,7 @@ LlamaModel::LlamaModel(ModelConfig config, LlamaWeights weights, RopeCache rope_
       rope_cache_(std::move(rope_cache)) {}
 
 Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& output,
-                                 DeviceBackend& backend) {
+                                 DefaultBackend& backend) {
 
     if (input.input_embeds_ == nullptr || output.logits_ == nullptr) {
         return std::unexpected(ErrorCode::InvalidArgument);
@@ -81,9 +81,8 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
             pos_host[static_cast<size_t>(i)] = i;
         }
 
-        auto r = cuda_check(cudaMemcpy(pos_buf->data(), pos_host.data(),
-                                       static_cast<size_t>(T) * sizeof(int32_t),
-                                       cudaMemcpyHostToDevice));
+        auto r = backend.memcpy_h2d(pos_buf->data(), pos_host.data(),
+                                     static_cast<size_t>(T) * sizeof(int32_t));
 
         if (!r) {
             return std::unexpected(r.error());
@@ -110,9 +109,8 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
 
     // hidden_a = input_embeds
     {
-        auto r = cuda_check(cudaMemcpyAsync(
-            hidden_a->data(), input.input_embeds_,
-            static_cast<size_t>(T) * D * sizeof(__nv_bfloat16), cudaMemcpyDeviceToDevice, static_cast<cudaStream_t>(backend.stream())));
+        auto r = backend.memcpy_d2d(hidden_a->data(), input.input_embeds_,
+                                     static_cast<size_t>(T) * D * sizeof(__nv_bfloat16));
 
         if (!r) {
             return std::unexpected(r.error());
@@ -129,7 +127,7 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
         Result<void> r{};
 
         // Attention block: normed = RMSNorm(hidden)
-        r = backend.rms_norm(RmsNormParams{
+        r = backend.template rms_norm<__nv_bfloat16>(RmsNormParams{
             .input_ = hidden,
             .weight_ = lw.rms_attn_->data(),
             .output_ = normed->data(),
@@ -142,7 +140,7 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
         }
 
         // qkv_out[T, qkv_dim] = normed[T, D] @ qkv_weight[qkv_dim, D]^T
-        r = backend.gemm(GemmParams{
+        r = backend.template gemm<__nv_bfloat16>(GemmParams{
             .a_ = lw.qkv_->data(),
             .b_ = normed->data(),
             .c_ = qkv_out->data(),
@@ -160,7 +158,7 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
         }
 
         // qkv_out [T, Q|K|V] -> q/k/v token-major buffers
-        r = backend.split_qkv(SplitQkvParams{
+        r = backend.template split_qkv<__nv_bfloat16>(SplitQkvParams{
             .qkv_ = qkv_out->data(), .q_ = q_buf->data(), .k_ = k_buf->data(), .v_ = v_buf->data(),
         });
         if (!r) {
@@ -168,7 +166,7 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
         }
 
         // Apply RoPE to Q and K in-place
-        r = backend.rope(RopeParams{
+        r = backend.template rope<__nv_bfloat16>(RopeParams{
             .q_ = q_buf->data(),
             .k_ = k_buf->data(),
             .positions_ = static_cast<const int32_t*>(pos_buf->data()),
@@ -185,7 +183,7 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
         }
 
         // attn_out [T, nq, hd] = causal_attention(q, k, v)
-        r = backend.naive_attention(NaiveAttnParams{
+        r = backend.template naive_attention<__nv_bfloat16>(NaiveAttnParams{
             .q_ = q_buf->data(),
             .k_ = k_buf->data(),
             .v_ = v_buf->data(),
@@ -200,7 +198,7 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
         }
 
         // next_hidden[T, D] = attn_out[T, D] @ o_proj[D, D]^T
-        r = backend.gemm(GemmParams{
+        r = backend.template gemm<__nv_bfloat16>(GemmParams{
             .a_ = lw.o_->data(),
             .b_ = attn_out->data(),
             .c_ = next_hidden,
@@ -218,7 +216,7 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
         }
 
         // next_hidden += hidden
-        r = backend.element_add(ElementAddParams{
+        r = backend.template element_add<__nv_bfloat16>(ElementAddParams{
         });
         if (!r) {
             return r;
@@ -227,7 +225,7 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
         std::swap(hidden, next_hidden);
 
         // FFN block: normed = RMSNorm(hidden)
-        r = backend.rms_norm(RmsNormParams{
+        r = backend.template rms_norm<__nv_bfloat16>(RmsNormParams{
             .input_ = hidden,
             .weight_ = lw.rms_ffn_->data(),
             .output_ = normed->data(),
@@ -240,7 +238,7 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
         }
 
         // gate[T, d_ff] = normed[T, D] @ gate_weight[d_ff, D]^T
-        r = backend.gemm(GemmParams{
+        r = backend.template gemm<__nv_bfloat16>(GemmParams{
             .a_ = lw.gate_->data(),
             .b_ = normed->data(),
             .c_ = gate->data(),
@@ -258,7 +256,7 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
         }
 
         // up[T, d_ff] = normed[T, D] @ up_weight[d_ff, D]^T
-        r = backend.gemm(GemmParams{
+        r = backend.template gemm<__nv_bfloat16>(GemmParams{
             .a_ = lw.up_->data(),
             .b_ = normed->data(),
             .c_ = up->data(),
@@ -276,7 +274,7 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
         }
 
         // ffn_act = SiLU(gate) * up
-        r = backend.silu_mul(SiluMulParams{
+        r = backend.template silu_mul<__nv_bfloat16>(SiluMulParams{
             .gate_ = gate->data(),
             .up_ = up->data(),
             .output_ = ffn_act->data(),
@@ -287,7 +285,7 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
         }
 
         // next_hidden[T, D] = ffn_act[T, d_ff] @ down_weight[D, d_ff]^T
-        r = backend.gemm(GemmParams{
+        r = backend.template gemm<__nv_bfloat16>(GemmParams{
             .a_ = lw.down_->data(),
             .b_ = ffn_act->data(),
             .c_ = next_hidden,
@@ -305,7 +303,7 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
         }
 
         // next_hidden += hidden
-        r = backend.element_add(ElementAddParams{
+        r = backend.template element_add<__nv_bfloat16>(ElementAddParams{
         });
         if (!r) {
             return r;
@@ -315,7 +313,7 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
     }
 
     // Final RMSNorm
-    auto r = backend.rms_norm(RmsNormParams{
+    auto r = backend.template rms_norm<__nv_bfloat16>(RmsNormParams{
         .input_ = hidden,
         .weight_ = weights_.rms_final_->data(),
         .output_ = normed->data(),
@@ -328,7 +326,7 @@ Result<void> LlamaModel::forward(const ForwardInput& input, ForwardOutput& outpu
     }
 
     // LM head: output_logits[T, V] = normed[T, D] @ lm_head[V, D]^T
-    r = backend.gemm(GemmParams{
+    r = backend.template gemm<__nv_bfloat16>(GemmParams{
         .a_ = weights_.lm_head_->data(),
         .b_ = normed->data(),
         .c_ = output.logits_,

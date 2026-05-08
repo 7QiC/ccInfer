@@ -7,13 +7,12 @@
 
 #include "common/result.h"
 #include "engine/backend/device_buffer.h"
+#include "engine/common/backend_def.h"
 #include "engine/model/config.h"
 #include "engine/model/loader.h"
 
 namespace ccinfer {
 namespace engine {
-
-class DeviceBackend;
 
 struct Qwen3LayerWeights {
     std::unique_ptr<DeviceBuffer> qkv_;
@@ -33,7 +32,7 @@ struct Qwen3Weights {
     std::unique_ptr<DeviceBuffer> rms_final_;
     std::vector<Qwen3LayerWeights> layers_;
 
-    static Result<Qwen3Weights> load(DeviceBackend& backend,
+    static Result<Qwen3Weights> load(DefaultBackend& backend,
                                      const ModelConfig& config,
                                      const WeightLoader& loader);
 };

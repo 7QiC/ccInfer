@@ -10,7 +10,7 @@ namespace ccinfer {
 namespace engine {
 
 Result<RopeCache> RopeCache::create(int max_position, int rotary_dim, float rope_theta,
-                                    DeviceBackend& backend) {
+                                    DefaultBackend& backend) {
     if (max_position <= 0 || rotary_dim <= 0 || rotary_dim % 2 != 0) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
@@ -35,8 +35,8 @@ Result<RopeCache> RopeCache::create(int max_position, int rotary_dim, float rope
 
     cache.cache_ = backend.allocate_buffer(host_cache.size() * sizeof(float2));
 
-    auto r = cuda_check(cudaMemcpy(cache.cache_->data(), host_cache.data(),
-                                   host_cache.size() * sizeof(float2), cudaMemcpyHostToDevice));
+    auto r = backend.memcpy_h2d(cache.cache_->data(), host_cache.data(),
+                                 host_cache.size() * sizeof(float2));
     if (!r) return std::unexpected(r.error());
 
     return cache;

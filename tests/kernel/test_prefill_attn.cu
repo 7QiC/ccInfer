@@ -6,6 +6,7 @@
 #include <numeric>
 #include <vector>
 
+#include "engine/backend/cuda/cuda_backend.h"
 #include "engine/cache/block.h"
 #include "engine/kernel/cuda_kernels.h"
 
@@ -105,19 +106,16 @@ TEST(PrefillAttnKernelTest, SingleRequestMatchesNaive) {
 }
 
 TEST(PrefillAttnKernelTest, RejectsNullPointers) {
-    cudaStream_t stream;
-    cudaStreamCreate(&stream);
+    CudaBackend backend;
 
-    auto r = launch_prefill_attention(nullptr, nullptr, nullptr, nullptr, nullptr,
-                                      nullptr, nullptr, 1, 1, 1, 4, 4, 64, 16, stream);
+    int32_t dummy_start_loc[2] = {0, 0};
+    auto r = backend.template prefill_attention<__nv_bfloat16>(PrefillAttnParams{
+        .q_ = nullptr, .k_cache_ = nullptr, .v_cache_ = nullptr, .block_table_ = nullptr,
+        .query_start_loc_ = dummy_start_loc, .context_lens_ = nullptr, .output_ = nullptr,
+        .batch_size_ = 1, .max_blocks_per_req_ = 1, .num_q_heads_ = 4,
+        .num_kv_heads_ = 4, .head_dim_ = 64, .cache_block_size_ = 16});
     EXPECT_FALSE(r.has_value());
     EXPECT_EQ(r.error(), ErrorCode::InvalidArgument);
-
-    auto sync_err = cudaStreamSynchronize(stream);
-    ASSERT_EQ(sync_err, cudaSuccess);
-    auto last_err = cudaGetLastError();
-    ASSERT_EQ(last_err, cudaSuccess);
-    cudaStreamDestroy(stream);
 }
 
 }  // namespace
