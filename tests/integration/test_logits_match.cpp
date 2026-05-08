@@ -65,6 +65,7 @@ protected:
         loader_ = std::make_unique<WeightLoader>(std::move(*loader_result));
 
         backend_ = std::make_unique<CudaBackend>();
+        ASSERT_TRUE(backend_->init(0).has_value());
         register_builtin_models();
     }
 

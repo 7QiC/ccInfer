@@ -53,6 +53,7 @@ protected:
     void SetUp() override {
         if (!model_available()) GTEST_SKIP() << "CCINFER_TEST_MODEL_DIR not set";
         cudaStreamCreate(&stream_);
+        ASSERT_TRUE(backend_.init(0).has_value());
         dir_ = model_dir();
 
         auto cfg_json = nlohmann::json::parse(read_file(dir_ + "/config.json"), nullptr, false);

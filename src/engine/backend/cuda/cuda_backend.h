@@ -16,7 +16,7 @@ namespace engine {
 
 class CudaBackend final : public DeviceBackend<CudaBackend> {
 public:
-    CudaBackend();
+    CudaBackend() = default;
     ~CudaBackend();
 
     CudaBackend(const CudaBackend&) = delete;
@@ -24,6 +24,8 @@ public:
 
     CudaBackend(CudaBackend&&) noexcept;
     CudaBackend& operator=(CudaBackend&&) noexcept;
+
+    Result<void> init(int device_id);
 
     template <typename DType>
     Result<void> gemm_impl(const GemmParams& p);

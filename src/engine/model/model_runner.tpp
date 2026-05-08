@@ -4,17 +4,17 @@
 #include <cstdint>
 #include <vector>
 
-#include "engine/backend/backend.h"
 #include "engine/cache/kv_cache_storage.h"
+#include "engine/common/backend_def.h"
 #include "engine/common/types.h"
 #include "engine/model/model.h"
 
 namespace ccinfer {
 namespace engine {
 
-template <typename Backend, typename Model, typename Traits, typename KVDType>
+template <typename Traits, typename KVDType>
 Result<std::vector<std::vector<int32_t>>> ModelRunner::execute(
-    Model& model, const PhysicalBatch& batch, Backend& backend,
+    Model& model, const PhysicalBatch& batch, DefaultBackend& backend,
     KVCacheStorage<KVDType>& kv_storage) {
     // Placeholder implementation.
     //
@@ -34,13 +34,11 @@ Result<std::vector<std::vector<int32_t>>> ModelRunner::execute(
     (void)kv_storage;
 
     assert(batch.batch_size >= 0);
-    assert(batch.num_tokens >= 0);
 
     std::vector<std::vector<int32_t>> results;
     results.reserve(static_cast<size_t>(batch.batch_size));
 
     for (int i = 0; i < batch.batch_size; ++i) {
-        // Dummy token. Later this should be the sampled token from lm_head.
         results.push_back({42});
     }
 

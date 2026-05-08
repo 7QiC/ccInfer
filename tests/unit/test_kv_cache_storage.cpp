@@ -15,6 +15,7 @@ namespace {
 
 TEST(KVCacheStorageTest, InitSucceeds) {
     CudaBackend backend;
+    ASSERT_TRUE(backend.init(0).has_value());
     KVCacheStorage<__nv_bfloat16> storage;
     auto r = storage.init(backend, 4, 100, kKVBlockSize, 8, 128);
     ASSERT_TRUE(r.has_value());
@@ -28,6 +29,7 @@ TEST(KVCacheStorageTest, InitSucceeds) {
 
 TEST(KVCacheStorageTest, LayerPointersDiffer) {
     CudaBackend backend;
+    ASSERT_TRUE(backend.init(0).has_value());
     KVCacheStorage<__nv_bfloat16> storage;
     auto r = storage.init(backend, 2, 10, kKVBlockSize, 4, 64);
     ASSERT_TRUE(r.has_value());
@@ -43,6 +45,7 @@ TEST(KVCacheStorageTest, LayerPointersDiffer) {
 
 TEST(KVCacheStorageTest, ZeroInitialized) {
     CudaBackend backend;
+    ASSERT_TRUE(backend.init(0).has_value());
     KVCacheStorage<__nv_bfloat16> storage;
     auto r = storage.init(backend, 1, 4, kKVBlockSize, 2, 32);
     ASSERT_TRUE(r.has_value());

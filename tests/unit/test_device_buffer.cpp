@@ -17,6 +17,7 @@ TEST(DeviceBufferTest, DefaultConstruction) {
 
 TEST(DeviceBufferTest, AllocateAndZero) {
     CudaBackend backend;
+    ASSERT_TRUE(backend.init(0).has_value());
     auto buf = backend.allocate_buffer(1024 * sizeof(float));
     ASSERT_NE(buf, nullptr);
     EXPECT_NE(buf->data(), nullptr);
@@ -33,6 +34,7 @@ TEST(DeviceBufferTest, AllocateAndZero) {
 
 TEST(DeviceBufferTest, MoveConstruction) {
     CudaBackend backend;
+    ASSERT_TRUE(backend.init(0).has_value());
     auto a = backend.allocate_buffer(512 * sizeof(float));
     void* ptr = a->data();
     EXPECT_NE(ptr, nullptr);
@@ -45,6 +47,7 @@ TEST(DeviceBufferTest, MoveConstruction) {
 
 TEST(DeviceBufferTest, MoveAssignment) {
     CudaBackend backend;
+    ASSERT_TRUE(backend.init(0).has_value());
     auto a = backend.allocate_buffer(256 * sizeof(float));
     auto b = backend.allocate_buffer(128 * sizeof(float));
     void* ptr_a = a->data();

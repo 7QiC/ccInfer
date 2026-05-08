@@ -21,6 +21,7 @@ TEST(SmokeTest, GPUAccessible) {
 
 TEST(SmokeTest, AllocateAndZero) {
     CudaBackend backend;
+    ASSERT_TRUE(backend.init(0).has_value());
     auto buf = backend.allocate_buffer(256 * sizeof(float));
     ASSERT_NE(buf->data(), nullptr);
 

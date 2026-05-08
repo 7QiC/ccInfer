@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "common/result.h"
+#include "engine/common/backend_def.h"
 
 namespace ccinfer {
 namespace engine {
@@ -15,11 +16,10 @@ class KVCacheStorage;
 
 class ModelRunner {
 public:
-    template <typename Backend, typename Model, typename Traits, typename KVDType>
-    static Result<std::vector<std::vector<int32_t>>> execute(Model& model,
-                                                             const PhysicalBatch& batch,
-                                                             Backend& backend,
-                                                             KVCacheStorage<KVDType>& kv_storage);
+    template <typename Traits, typename KVDType>
+    static Result<std::vector<std::vector<int32_t>>> execute(
+        Model& model, const PhysicalBatch& batch,
+        DefaultBackend& backend, KVCacheStorage<KVDType>& kv_storage);
 };
 
 }  // namespace engine

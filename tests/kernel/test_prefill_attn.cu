@@ -107,6 +107,7 @@ TEST(PrefillAttnKernelTest, SingleRequestMatchesNaive) {
 
 TEST(PrefillAttnKernelTest, RejectsNullPointers) {
     CudaBackend backend;
+    ASSERT_TRUE(backend.init(0).has_value());
 
     int32_t dummy_start_loc[2] = {0, 0};
     auto r = backend.template prefill_attention<__nv_bfloat16>(PrefillAttnParams{

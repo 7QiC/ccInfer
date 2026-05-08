@@ -161,6 +161,7 @@ TEST_F(RopeTest, GQA) {
 
 TEST_F(RopeTest, RopeCacheClass) {
     CudaBackend backend;
+    ASSERT_TRUE(backend.init(0).has_value());
     auto cache_result = RopeCache::create(16, 32, 10000.0f, backend);
     ASSERT_TRUE(cache_result);
     auto& cache = *cache_result;

@@ -13,10 +13,12 @@
 namespace ccinfer {
 namespace engine {
 
-CudaBackend::CudaBackend() {
-    if (auto r = cublas_check(cublasCreate(&cublas_handle_)); !r) std::abort();
-    if (auto r = cuda_check(cudaStreamCreate(&stream_)); !r) std::abort();
-    if (auto r = cublas_check(cublasSetStream(cublas_handle_, stream_)); !r) std::abort();
+Result<void> CudaBackend::init(int device_id) {
+    if (auto r = cuda_check(cudaSetDevice(device_id)); !r) return r;
+    if (auto r = cublas_check(cublasCreate(&cublas_handle_)); !r) return r;
+    if (auto r = cuda_check(cudaStreamCreate(&stream_)); !r) return r;
+    if (auto r = cublas_check(cublasSetStream(cublas_handle_, stream_)); !r) return r;
+    return {};
 }
 
 CudaBackend::~CudaBackend() {
