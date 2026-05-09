@@ -11,15 +11,14 @@ namespace engine {
 
 class Model;
 struct PhysicalBatch;
-template <typename DType>
 class KVCacheStorage;
 
 class ModelRunner {
 public:
-    template <typename Traits, typename KVDType>
+    template <typename Traits>
     static Result<std::vector<std::vector<int32_t>>> execute(
         Model& model, const PhysicalBatch& batch,
-        DefaultBackend& backend, KVCacheStorage<KVDType>& kv_storage);
+        DefaultBackend& backend, KVCacheStorage& kv_storage);
 };
 
 }  // namespace engine

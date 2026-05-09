@@ -38,7 +38,6 @@ struct DeviceCapacity {
 
 class KVCacheManager;
 class Model;
-template <typename DType>
 class KVCacheStorage;
 
 class Worker {
@@ -131,7 +130,7 @@ private:
     std::unique_ptr<DefaultBackend> backend_;
     std::unique_ptr<Model> model_;
     std::unique_ptr<KVCacheManager> kv_mgr_;
-    std::unique_ptr<KVCacheStorage<__nv_bfloat16>> kv_storage_;
+    std::unique_ptr<KVCacheStorage> kv_storage_;
 };
 
 // --- Template definitions ---

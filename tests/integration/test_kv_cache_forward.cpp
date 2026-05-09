@@ -31,8 +31,8 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     // 1. Init GPU storage and CPU block manager separately
     CudaBackend backend;
     ASSERT_TRUE(backend.init(0).has_value());
-    KVCacheStorage<__nv_bfloat16> storage;
-    auto r_storage = storage.init(backend, kNumLayers, kMaxBlocks, block_size, nkv, hd);
+    KVCacheStorage storage;
+    auto r_storage = storage.init<__nv_bfloat16>(backend, kNumLayers, kMaxBlocks, block_size, nkv, hd);
     ASSERT_TRUE(r_storage.has_value());
 
     KVCacheManager mgr;
@@ -88,7 +88,8 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     // 3. write_kv_cache for each layer (use layer 0 for this test)
     {
         auto r = launch_write_kv_cache(d_k_new, d_v_new,
-                                       storage.k_layer(0), storage.v_layer(0),
+                                       static_cast<__nv_bfloat16*>(storage.k_layer(0)),
+                                       static_cast<__nv_bfloat16*>(storage.v_layer(0)),
                                        d_slot_mapping, kNumTokens, nkv, hd,
                                        kMaxBlocks * block_size, stream);
         ASSERT_TRUE(r.has_value());
@@ -113,7 +114,9 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     // 5. prefill_attention and compare with naive_attention
     {
         // Paged prefill: reads K/V through block_table
-        auto r = launch_prefill_attention(d_q, storage.k_layer(0), storage.v_layer(0),
+        auto r = launch_prefill_attention(d_q,
+                                          static_cast<const __nv_bfloat16*>(storage.k_layer(0)),
+                                          static_cast<const __nv_bfloat16*>(storage.v_layer(0)),
                                           d_block_table, d_query_start_loc, d_context_lens,
                                           d_out_prefill, 1, kNumTokens, num_blocks,
                                           nq, nkv, hd, block_size, stream);
@@ -179,7 +182,9 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
                         kDecodeBatch * sizeof(int32_t), cudaMemcpyHostToDevice, stream);
 
         // Paged decode
-        auto r = launch_decode_attention(d_decode_q, storage.k_layer(0), storage.v_layer(0),
+        auto r = launch_decode_attention(d_decode_q,
+                                          static_cast<const __nv_bfloat16*>(storage.k_layer(0)),
+                                          static_cast<const __nv_bfloat16*>(storage.v_layer(0)),
                                          d_dec_block_table, d_dec_context_lens,
                                          d_decode_out, kDecodeBatch, num_blocks,
                                          nq, nkv, hd, block_size, stream);

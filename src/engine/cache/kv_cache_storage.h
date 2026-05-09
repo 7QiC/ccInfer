@@ -11,14 +11,13 @@
 namespace ccinfer {
 namespace engine {
 
-template <typename KVDType>
 class KVCacheStorage {
 public:
+    template <typename KVDType>
     Result<void> init(DefaultBackend& backend, int num_layers, int max_blocks, int block_size,
                       int num_kv_heads, int head_dim) {
         int64_t token_stride = static_cast<int64_t>(num_kv_heads) * head_dim;
-        int64_t elements_per_layer =
-            static_cast<int64_t>(max_blocks) * block_size * token_stride;
+        int64_t elements_per_layer = static_cast<int64_t>(max_blocks) * block_size * token_stride;
         layer_stride_ = elements_per_layer;
 
         int64_t total_elements = static_cast<int64_t>(num_layers) * elements_per_layer;
@@ -30,25 +29,28 @@ public:
         if (!k_data_ || !v_data_) {
             return std::unexpected(ErrorCode::CudaOutOfMemory);
         }
+
+        elem_size_ = sizeof(KVDType);
         return {};
     }
 
-    KVDType* k_data() { return static_cast<KVDType*>(k_data_->data()); }
-    KVDType* v_data() { return static_cast<KVDType*>(v_data_->data()); }
-    const KVDType* k_data() const { return static_cast<const KVDType*>(k_data_->data()); }
-    const KVDType* v_data() const { return static_cast<const KVDType*>(v_data_->data()); }
+    void* k_data() { return k_data_->data(); }
+    void* v_data() { return v_data_->data(); }
+    const void* k_data() const { return k_data_->data(); }
+    const void* v_data() const { return v_data_->data(); }
 
-    KVDType* k_layer(int layer) {
-        return static_cast<KVDType*>(k_data_->data()) + layer * layer_stride_;
+    void* k_layer(int layer) {
+        return buffer_data<char>(*k_data_) + layer * layer_stride_ * elem_size_;
     }
-    KVDType* v_layer(int layer) {
-        return static_cast<KVDType*>(v_data_->data()) + layer * layer_stride_;
+    void* v_layer(int layer) {
+        return buffer_data<char>(*v_data_) + layer * layer_stride_ * elem_size_;
     }
 
 private:
     std::unique_ptr<DeviceBuffer> k_data_;
     std::unique_ptr<DeviceBuffer> v_data_;
     int64_t layer_stride_ = 0;
+    size_t elem_size_ = 0;
 };
 
 }  // namespace engine

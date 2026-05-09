@@ -200,8 +200,8 @@ void Worker::init_resources(const std::string& model_path,
         return;
     }
 
-    kv_storage_ = std::make_unique<KVCacheStorage<__nv_bfloat16>>();
-    auto kvs_r = kv_storage_->init(*backend_, kDefaultLayers, max_blocks_, kKVBlockSize,
+    kv_storage_ = std::make_unique<KVCacheStorage>();
+    auto kvs_r = kv_storage_->init<__nv_bfloat16>(*backend_, kDefaultLayers, max_blocks_, kKVBlockSize,
                                    kDefaultKVHeads, kDefaultHeadDim);
     if (!kvs_r) {
         promise->set_value(std::unexpected(kvs_r.error()));

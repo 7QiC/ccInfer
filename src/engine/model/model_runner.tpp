@@ -12,10 +12,10 @@
 namespace ccinfer {
 namespace engine {
 
-template <typename Traits, typename KVDType>
+template <typename Traits>
 Result<std::vector<std::vector<int32_t>>> ModelRunner::execute(
     Model& model, const PhysicalBatch& batch, DefaultBackend& backend,
-    KVCacheStorage<KVDType>& kv_storage) {
+    KVCacheStorage& kv_storage) {
     // Placeholder implementation.
     //
     // Real implementation will:
