@@ -11,7 +11,6 @@
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/write.hpp>
 #include <cctype>
-#include <chrono>
 #include <cstdlib>
 #include <istream>
 #include <nlohmann/json.hpp>
@@ -126,7 +125,8 @@ CLResult parse_content_length(std::string_view line) {
 HttpServer::HttpServer(asio::io_context& io, uint16_t port, Scheduler& scheduler)
     : io_(io), port_(port), scheduler_(scheduler), acceptor_(io) {}
 
-HttpServer::~HttpServer() { shutdown(); }
+// Owner must call shutdown() + shutdown_async().wait() before destroying.
+HttpServer::~HttpServer() = default;
 
 void HttpServer::start() {
     bool expected = false;
@@ -134,15 +134,45 @@ void HttpServer::start() {
     asio::co_spawn(io_, accept_loop(), detached);
 }
 
-void HttpServer::shutdown() {
+void HttpServer::shutdown() { shutdown_async(); }
+
+std::shared_future<void> HttpServer::shutdown_async() {
+    if (shutdown_promise_) {
+        return shutdown_future_;
+    }
+
+    shutdown_promise_ = std::make_unique<std::promise<void>>();
+    shutdown_future_ = shutdown_promise_->get_future().share();
+
     bool was_running = running_.exchange(false);
-    if (!was_running) return;
-    asio::post(io_, [this] {
+
+    asio::post(io_, [this, was_running] {
         boost::system::error_code ec;
         acceptor_.cancel(ec);
         acceptor_.close(ec);
+        for (auto& sock : active_sockets_) {
+            sock->cancel(ec);
+            sock->close(ec);
+        }
+
+        if (!was_running) {
+            accept_loop_done_ = true;
+        }
+
+        try_finish_shutdown_on_http_thread();
     });
-    // TODO: close active sockets for clean shutdown.
+
+    return shutdown_future_;
+}
+
+void HttpServer::try_finish_shutdown_on_http_thread() {
+    if (shutdown_done_sent_) return;
+    if (!running_ && accept_loop_done_ && active_sockets_.empty()) {
+        shutdown_done_sent_ = true;
+        if (shutdown_promise_) {
+            shutdown_promise_->set_value();
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -150,6 +180,12 @@ void HttpServer::shutdown() {
 // ---------------------------------------------------------------------------
 
 asio::awaitable<void> HttpServer::accept_loop() {
+    co_await accept_loop_impl();
+    accept_loop_done_ = true;
+    try_finish_shutdown_on_http_thread();
+}
+
+asio::awaitable<void> HttpServer::accept_loop_impl() {
     boost::system::error_code ec;
 
     acceptor_.open(asio::ip::tcp::v4(), ec);
@@ -182,7 +218,9 @@ asio::awaitable<void> HttpServer::accept_loop() {
             if (!running_) break;
             continue;
         }
-        asio::co_spawn(io_, handle_connection(std::move(socket)), detached);
+        auto sock = std::make_shared<asio::ip::tcp::socket>(std::move(socket));
+        active_sockets_.insert(sock);
+        asio::co_spawn(io_, handle_connection(std::move(sock)), detached);
     }
 }
 
@@ -240,7 +278,13 @@ asio::awaitable<void> HttpServer::write_response(asio::ip::tcp::socket& socket,
 // Connection handler
 // ---------------------------------------------------------------------------
 
-asio::awaitable<void> HttpServer::handle_connection(asio::ip::tcp::socket socket) {
+asio::awaitable<void> HttpServer::handle_connection(std::shared_ptr<asio::ip::tcp::socket> socket) {
+    co_await handle_connection_impl(*socket);
+    active_sockets_.erase(socket);
+    try_finish_shutdown_on_http_thread();
+}
+
+asio::awaitable<void> HttpServer::handle_connection_impl(asio::ip::tcp::socket& socket) {
     asio::streambuf buf;
 
     auto request_line = co_await read_line(socket, buf);
@@ -369,15 +413,27 @@ asio::awaitable<void> HttpServer::handle_chat(asio::ip::tcp::socket& socket, std
         co_return;
     }
 
-    // Build request
-    auto req = std::make_shared<RequestState>();
-    req->request_id = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
-    req->prompt_tokens = prompt_tokens;
-    req->sampling = sampling;
-    req->max_context_len = 2048;
-    req->output_channel = std::make_shared<TokenChannel>(co_await asio::this_coro::executor, 16);
+    // Build HTTP-side connection state and cross-thread request.
+    auto executor = co_await asio::this_coro::executor;
+    auto conn = std::make_shared<ConnectionState>();
+    conn->request_id = "req-" + std::to_string(next_request_id_++);
+    conn->output_channel = std::make_shared<TokenChannel>(executor, 16);
 
-    scheduler_.enqueue(req);
+    SchedulerRequest sreq;
+    sreq.request_id = conn->request_id;
+    sreq.prompt_tokens = std::move(prompt_tokens);
+    sreq.sampling = sampling;
+    sreq.max_context_len = 2048;
+    sreq.sink.executor = executor;
+    sreq.sink.channel = conn->output_channel;
+    // on_send_failed captures Scheduler& — the Server shutdown sequence must
+    // guarantee Scheduler outlives every HTTP connection coroutine and every
+    // token callback posted to the HTTP executor.
+    sreq.sink.on_send_failed = [&sched = scheduler_, request_id = conn->request_id]() {
+        sched.cancel(request_id);
+    };
+
+    scheduler_.submit(std::move(sreq));
 
     // Send SSE headers
     std::string headers =
@@ -391,16 +447,17 @@ asio::awaitable<void> HttpServer::handle_chat(asio::ip::tcp::socket& socket, std
         auto [ec, _] =
             co_await asio::async_write(socket, asio::buffer(headers), as_tuple(deferred));
         if (ec) {
-            req->cancelled = true;
+            scheduler_.cancel(conn->request_id);
             co_return;
         }
     }
 
     // Stream tokens
+    auto channel = conn->output_channel;
     while (true) {
-        auto [recv_ec, tok] = co_await req->output_channel->async_receive(as_tuple(deferred));
+        auto [recv_ec, tok] = co_await channel->async_receive(as_tuple(deferred));
         if (recv_ec) {
-            req->cancelled = true;
+            scheduler_.cancel(conn->request_id);
             break;
         }
 
@@ -408,7 +465,7 @@ asio::awaitable<void> HttpServer::handle_chat(asio::ip::tcp::socket& socket, std
         auto [write_ec, _] =
             co_await asio::async_write(socket, asio::buffer(frame), as_tuple(deferred));
         if (write_ec) {
-            req->cancelled = true;
+            scheduler_.cancel(conn->request_id);
             break;
         }
 

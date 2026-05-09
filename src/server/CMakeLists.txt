@@ -1,6 +1,7 @@
 add_library(server STATIC
     http/http_server.cpp
     scheduler/scheduler.cpp
+    server.cpp
 )
 
 target_include_directories(server

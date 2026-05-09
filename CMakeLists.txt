@@ -18,11 +18,7 @@ find_package(Boost REQUIRED)
 option(BUILD_TESTS "Build tests" ON)
 option(BUILD_SERVER "Build server" OFF)
 
-add_subdirectory(src/engine)
-
-if(BUILD_SERVER)
-    add_subdirectory(src/server)
-endif()
+add_subdirectory(src)
 
 if(BUILD_TESTS)
     enable_testing()
