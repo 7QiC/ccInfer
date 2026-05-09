@@ -3,6 +3,8 @@
 #include <cuda_bf16.h>
 
 #include <atomic>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/post.hpp>
 #include <condition_variable>
 #include <deque>
 #include <future>
@@ -14,9 +16,6 @@
 #include <utility>
 #include <variant>
 #include <vector>
-
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/post.hpp>
 
 #include "common/channel.h"
 #include "common/result.h"
@@ -105,8 +104,8 @@ private:
     BatchResult generate_dummy_result(const ScheduledBatch& batch);
 
     // --- Completion via io_context ---
-    template <typename ChanPtr, typename... Args>
-    void resolve(ChanPtr& chan_ptr, ErrorCode ec, Args&&... args);
+    template <typename ChanPtr, typename T>
+    void resolve(ChanPtr& chan_ptr, Result<T> result);
 
     // --- State ---
     asio::io_context& io_;
@@ -135,10 +134,10 @@ private:
 
 // --- Template definitions ---
 
-template <typename ChanPtr, typename... Args>
-void Worker::resolve(ChanPtr& chan_ptr, ErrorCode ec, Args&&... args) {
-    asio::post(io_, [chan_ptr, ec, ... args = std::move(args)]() mutable {
-        chan_ptr->try_send(ec, std::move(args)...);
+template <typename ChanPtr, typename T>
+void Worker::resolve(ChanPtr& chan_ptr, Result<T> result) {
+    asio::post(io_, [chan_ptr, result = std::move(result)]() mutable {
+        chan_ptr->try_send(boost::system::error_code{}, std::move(result));
     });
 }
 

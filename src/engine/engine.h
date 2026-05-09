@@ -31,12 +31,12 @@ public:
     Result<void> init(const std::string& model_path);
     void shutdown();
 
-    asio::awaitable<SequenceId> create_sequence(std::vector<int32_t> prompt_tokens,
-                                                int max_context_len);
-    asio::awaitable<void> release_sequence(SequenceId seq_id);
-    asio::awaitable<void> abort_sequence(SequenceId seq_id);
+    asio::awaitable<Result<SequenceId>> create_sequence(std::vector<int32_t> prompt_tokens,
+                                                        int max_context_len);
+    asio::awaitable<Result<void>> release_sequence(SequenceId seq_id);
+    asio::awaitable<Result<void>> abort_sequence(SequenceId seq_id);
     EngineCapacity capacity() const;
-    asio::awaitable<BatchResult> execute_batch(ScheduledBatch batch);
+    asio::awaitable<Result<BatchResult>> execute_batch(ScheduledBatch batch);
 
 private:
     std::unique_ptr<Executor> executor_;

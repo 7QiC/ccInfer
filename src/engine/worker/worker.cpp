@@ -43,13 +43,12 @@ void Worker::shutdown() {
 
 // --- Enqueue helpers ---
 
-void Worker::enqueue_create_sequence(std::vector<int32_t> prompt_tokens,
-                                     int max_context_len,
+void Worker::enqueue_create_sequence(std::vector<int32_t> prompt_tokens, int max_context_len,
                                      std::shared_ptr<SeqIdChannel> chan) {
     std::unique_lock lock(queue_mutex_);
     if (!running_) {
         lock.unlock();
-        resolve(chan, ErrorCode::ServerShuttingDown, SequenceId{0});
+        resolve(chan, Result<SequenceId>(std::unexpected(ErrorCode::ServerShuttingDown)));
         return;
     }
     queue_.push_back(
@@ -58,12 +57,11 @@ void Worker::enqueue_create_sequence(std::vector<int32_t> prompt_tokens,
     cv_.notify_one();
 }
 
-void Worker::enqueue_release_sequence(SequenceId seq_id,
-                                      std::shared_ptr<VoidChannel> chan) {
+void Worker::enqueue_release_sequence(SequenceId seq_id, std::shared_ptr<VoidChannel> chan) {
     std::unique_lock lock(queue_mutex_);
     if (!running_) {
         lock.unlock();
-        resolve(chan, ErrorCode::ServerShuttingDown);
+        resolve(chan, Result<void>(std::unexpected(ErrorCode::ServerShuttingDown)));
         return;
     }
     queue_.push_back(ControlCmd{CmdReleaseSequence{seq_id, std::move(chan)}});
@@ -71,12 +69,11 @@ void Worker::enqueue_release_sequence(SequenceId seq_id,
     cv_.notify_one();
 }
 
-void Worker::enqueue_abort_sequence(SequenceId seq_id,
-                                    std::shared_ptr<VoidChannel> chan) {
+void Worker::enqueue_abort_sequence(SequenceId seq_id, std::shared_ptr<VoidChannel> chan) {
     std::unique_lock lock(queue_mutex_);
     if (!running_) {
         lock.unlock();
-        resolve(chan, ErrorCode::ServerShuttingDown);
+        resolve(chan, Result<void>(std::unexpected(ErrorCode::ServerShuttingDown)));
         return;
     }
     queue_.push_back(ControlCmd{CmdAbortSequence{seq_id, std::move(chan)}});
@@ -84,15 +81,14 @@ void Worker::enqueue_abort_sequence(SequenceId seq_id,
     cv_.notify_one();
 }
 
-void Worker::enqueue_execute_batch(ScheduledBatch batch,
-                                   std::shared_ptr<BatchChannel> chan) {
+void Worker::enqueue_execute_batch(ScheduledBatch batch, std::shared_ptr<BatchChannel> chan) {
     std::unique_lock lock(queue_mutex_);
     if (!running_) {
         uint64_t batch_id = batch.batch_id;
         lock.unlock();
         BatchResult result;
         result.batch_id = batch_id;
-        resolve(chan, ErrorCode::ServerShuttingDown, std::move(result));
+        resolve(chan, Result<BatchResult>(std::unexpected(ErrorCode::ServerShuttingDown)));
         return;
     }
     queue_.push_back(PendingBatch{std::move(batch), std::move(chan)});
@@ -136,18 +132,20 @@ void Worker::worker_loop() {
                                         c.promise->set_value(
                                             std::unexpected(ErrorCode::ServerShuttingDown));
                                     } else if constexpr (std::is_same_v<CT, CmdCreateSequence>) {
-                                        resolve(c.chan, ErrorCode::ServerShuttingDown,
-                                                SequenceId{0});
+                                        resolve(c.chan, Result<SequenceId>(std::unexpected(
+                                                            ErrorCode::ServerShuttingDown)));
                                     } else if constexpr (std::is_same_v<CT, CmdReleaseSequence> ||
                                                          std::is_same_v<CT, CmdAbortSequence>) {
-                                        resolve(c.chan, ErrorCode::ServerShuttingDown);
+                                        resolve(c.chan, Result<void>(std::unexpected(
+                                                            ErrorCode::ServerShuttingDown)));
                                     }
                                 },
                                 e);
                         } else if constexpr (std::is_same_v<T, PendingBatch>) {
                             BatchResult result;
                             result.batch_id = e.batch.batch_id;
-                            resolve(e.chan, ErrorCode::ServerShuttingDown, std::move(result));
+                            resolve(e.chan, Result<BatchResult>(
+                                                std::unexpected(ErrorCode::ServerShuttingDown)));
                         }
                     },
                     entry);
@@ -201,8 +199,8 @@ void Worker::init_resources(const std::string& model_path,
     }
 
     kv_storage_ = std::make_unique<KVCacheStorage>();
-    auto kvs_r = kv_storage_->init<__nv_bfloat16>(*backend_, kDefaultLayers, max_blocks_, kKVBlockSize,
-                                   kDefaultKVHeads, kDefaultHeadDim);
+    auto kvs_r = kv_storage_->init<__nv_bfloat16>(*backend_, kDefaultLayers, max_blocks_,
+                                                  kKVBlockSize, kDefaultKVHeads, kDefaultHeadDim);
     if (!kvs_r) {
         promise->set_value(std::unexpected(kvs_r.error()));
         return;
@@ -223,19 +221,23 @@ void Worker::process_control(ControlCmd& cmd) {
             } else if constexpr (std::is_same_v<T, CmdCreateSequence>) {
                 // Validate
                 if (c.prompt_tokens.empty() || c.max_context_len <= 0) {
-                    resolve(c.chan, ErrorCode::InvalidArgument, SequenceId{0});
+                    resolve(c.chan,
+                            Result<SequenceId>(std::unexpected(ErrorCode::InvalidArgument)));
                     return;
                 }
                 if (c.max_context_len < static_cast<int>(c.prompt_tokens.size())) {
-                    resolve(c.chan, ErrorCode::InvalidArgument, SequenceId{0});
+                    resolve(c.chan,
+                            Result<SequenceId>(std::unexpected(ErrorCode::InvalidArgument)));
                     return;
                 }
                 if (c.max_context_len > max_blocks_ * kKVBlockSize) {
-                    resolve(c.chan, ErrorCode::InvalidArgument, SequenceId{0});
+                    resolve(c.chan,
+                            Result<SequenceId>(std::unexpected(ErrorCode::InvalidArgument)));
                     return;
                 }
                 if (active_sequences_.load() >= kMaxSequences) {
-                    resolve(c.chan, ErrorCode::MaxSequencesReached, SequenceId{0});
+                    resolve(c.chan,
+                            Result<SequenceId>(std::unexpected(ErrorCode::MaxSequencesReached)));
                     return;
                 }
 
@@ -246,23 +248,23 @@ void Worker::process_control(ControlCmd& cmd) {
                 state.max_context_len = c.max_context_len;
                 sequences_[id] = std::move(state);
                 active_sequences_++;
-                resolve(c.chan, ErrorCode::Ok, id);
+                resolve(c.chan, Result<SequenceId>{id});
             } else if constexpr (std::is_same_v<T, CmdReleaseSequence>) {
                 auto it = sequences_.find(c.seq_id);
                 if (it == sequences_.end()) {
-                    resolve(c.chan, ErrorCode::Ok);
+                    resolve(c.chan, Result<void>{});
                     return;
                 }
                 release_sequence_state(it);
-                resolve(c.chan, ErrorCode::Ok);
+                resolve(c.chan, Result<void>{});
             } else if constexpr (std::is_same_v<T, CmdAbortSequence>) {
                 auto it = sequences_.find(c.seq_id);
                 if (it == sequences_.end()) {
-                    resolve(c.chan, ErrorCode::Ok);
+                    resolve(c.chan, Result<void>{});
                     return;
                 }
                 release_sequence_state(it);
-                resolve(c.chan, ErrorCode::Ok);
+                resolve(c.chan, Result<void>{});
             }
         },
         cmd);
@@ -290,25 +292,21 @@ void Worker::process_batch(PendingBatch pending) {
         if (sequences_.find(seq_id) == sequences_.end()) {
             BatchResult result;
             result.batch_id = pending.batch.batch_id;
-            resolve(pending.chan, ErrorCode::InvalidArgument, std::move(result));
+            resolve(pending.chan, Result<BatchResult>(std::unexpected(ErrorCode::InvalidArgument)));
             return;
         }
     }
 
-    BatchResult result;
-
     if (model_) {
-        // model_ is loaded but BatchTranslator not yet wired (Task 10).
-        // The fake PhysicalBatch below has null device buffers and would
-        // cause undefined behaviour if passed to a real forward.
-        // TODO: replace with BatchTranslator → PhysicalBatch → ModelRunner.
+        BatchResult result;
         result.batch_id = pending.batch.batch_id;
-        resolve(pending.chan, ErrorCode::BatchTranslationFailed, std::move(result));
+        resolve(pending.chan,
+                Result<BatchResult>(std::unexpected(ErrorCode::BatchTranslationFailed)));
         return;
     }
 
-    result = generate_dummy_result(pending.batch);
-    resolve(pending.chan, ErrorCode::Ok, std::move(result));
+    BatchResult result = generate_dummy_result(pending.batch);
+    resolve(pending.chan, Result<BatchResult>(std::move(result)));
 }
 
 BatchResult Worker::generate_dummy_result(const ScheduledBatch& batch) {

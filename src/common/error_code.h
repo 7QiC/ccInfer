@@ -1,7 +1,7 @@
 #pragma once
 
+#include <boost/asio/error.hpp>
 #include <boost/system/error_code.hpp>
-
 #include <cstdint>
 #include <string_view>
 
@@ -35,6 +35,9 @@ enum class ErrorCode : uint16_t {
 
     MaxSequencesReached,
     BatchTranslationFailed,
+
+    ChannelClosed,
+    ChannelCancelled,
 };
 
 inline constexpr std::string_view error_message(ErrorCode c) noexcept {
@@ -87,33 +90,20 @@ inline constexpr std::string_view error_message(ErrorCode c) noexcept {
             return "maximum concurrent sequences reached";
         case ErrorCode::BatchTranslationFailed:
             return "WorkItem to PhysicalBatch translation failed";
+
+        case ErrorCode::ChannelClosed:
+            return "asio channel closed";
+        case ErrorCode::ChannelCancelled:
+            return "asio channel operation cancelled";
     }
 
     return "unknown error";
 }
 
-class ErrorCategory : public boost::system::error_category {
-public:
-    const char* name() const noexcept override { return "ccinfer"; }
-    std::string message(int ev) const override {
-        return std::string(error_message(static_cast<ErrorCode>(ev)));
-    }
-};
-
-inline const boost::system::error_category& engine_error_category() {
-    static ErrorCategory instance;
-    return instance;
-}
-
-inline boost::system::error_code make_error_code(ErrorCode c) {
-    return {static_cast<int>(c), engine_error_category()};
+inline ErrorCode to_error_code(const boost::system::error_code& ec) {
+    if (ec == boost::asio::error::operation_aborted) return ErrorCode::ChannelCancelled;
+    if (ec == boost::asio::error::eof) return ErrorCode::ChannelClosed;
+    return ErrorCode::ChannelCancelled;
 }
 
 }  // namespace ccinfer
-
-namespace boost {
-namespace system {
-template <>
-struct is_error_code_enum<ccinfer::ErrorCode> : std::true_type {};
-}  // namespace system
-}  // namespace boost

@@ -1,6 +1,7 @@
 add_library(engine STATIC
     backend/cuda/cuda_backend.cpp
     backend/cuda/cuda_buffer.cpp
+    engine.cpp
     executor/single_device_executor.cpp
     worker/worker.cpp
     kernel/norm/rms_norm.cu
