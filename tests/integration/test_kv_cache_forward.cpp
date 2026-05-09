@@ -40,13 +40,11 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     ASSERT_TRUE(init_r.has_value());
     EXPECT_EQ(mgr.num_free_blocks(), kMaxBlocks);
 
-    // 2. prepare_blocks
-    std::vector<int32_t> tokens(kNumTokens);
-    for (int i = 0; i < kNumTokens; ++i) tokens[i] = i + 1;
-    auto alloc = mgr.prepare_blocks(tokens);
+    // 2. allocate_blocks
+    int num_blocks = (kNumTokens + block_size - 1) / block_size;
+    auto alloc = mgr.allocate_blocks(num_blocks);
     ASSERT_TRUE(alloc.has_value());
-    int num_blocks = alloc->block_table.size();
-    EXPECT_EQ(num_blocks, (kNumTokens + block_size - 1) / block_size);
+    EXPECT_EQ(alloc->size(), num_blocks);
     EXPECT_EQ(mgr.num_free_blocks(), kMaxBlocks - num_blocks);
 
     cudaStream_t stream;
@@ -79,10 +77,18 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
         h[i] = __float2bfloat16((static_cast<float>(rand()) / RAND_MAX - 0.5f) * 0.1f);
     cudaMemcpy(d_v_new, h.data(), kv_new_elems * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
 
+    // Compute slot_mapping from allocated blocks
+    std::vector<int32_t> slot_mapping(kNumTokens);
+    for (int t = 0; t < kNumTokens; ++t) {
+        int block_idx = t / block_size;
+        int pos_in_block = t % block_size;
+        slot_mapping[t] = (*alloc)[block_idx] * block_size + pos_in_block;
+    }
+
     // Upload slot_mapping
     int32_t* d_slot_mapping;
     cudaMalloc(&d_slot_mapping, kNumTokens * sizeof(int32_t));
-    cudaMemcpy(d_slot_mapping, alloc->slot_mapping.data(),
+    cudaMemcpy(d_slot_mapping, slot_mapping.data(),
                kNumTokens * sizeof(int32_t), cudaMemcpyHostToDevice);
 
     // 3. write_kv_cache for each layer (use layer 0 for this test)
@@ -108,7 +114,7 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
                     2 * sizeof(int32_t), cudaMemcpyHostToDevice, stream);
     cudaMemcpyAsync(d_context_lens, h_context_lens.data(),
                     sizeof(int32_t), cudaMemcpyHostToDevice, stream);
-    cudaMemcpyAsync(d_block_table, alloc->block_table.data(),
+    cudaMemcpyAsync(d_block_table, (*alloc).data(),
                     num_blocks * sizeof(int32_t), cudaMemcpyHostToDevice, stream);
 
     // 5. prefill_attention and compare with naive_attention
@@ -168,8 +174,8 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
                    decode_q_elems * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
 
         // Two requests, both seeing the full 32-token context
-        std::vector<int32_t> h_dec_block_table = {alloc->block_table[0], alloc->block_table[1],
-                                                   alloc->block_table[0], alloc->block_table[1]};
+        std::vector<int32_t> h_dec_block_table = {(*alloc)[0], (*alloc)[1],
+                                                   (*alloc)[0], (*alloc)[1]};
         std::vector<int32_t> h_dec_context_lens = {kNumTokens, kNumTokens};
 
         int32_t *d_dec_block_table, *d_dec_context_lens;
@@ -210,12 +216,12 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     }
 
     // 7. release_blocks returns blocks to free list
-    auto rel = mgr.release_blocks(alloc->block_table);
+    auto rel = mgr.release_blocks(*alloc);
     ASSERT_TRUE(rel.has_value());
     EXPECT_EQ(mgr.num_free_blocks(), kMaxBlocks);
 
     // Double release should fail
-    auto rel2 = mgr.release_blocks(alloc->block_table);
+    auto rel2 = mgr.release_blocks(*alloc);
     EXPECT_FALSE(rel2.has_value());
     EXPECT_EQ(rel2.error(), ErrorCode::KVBlockDoubleFree);
 

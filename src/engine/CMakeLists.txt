@@ -4,6 +4,7 @@ add_library(engine STATIC
     engine.cpp
     executor/single_device_executor.cpp
     worker/worker.cpp
+    worker/batch_translator.cpp
     kernel/norm/rms_norm.cu
     kernel/pos/rope.cu
     model/rope/rope_cache.cpp

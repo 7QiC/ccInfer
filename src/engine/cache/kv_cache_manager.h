@@ -9,18 +9,16 @@
 namespace ccinfer {
 namespace engine {
 
+// Owns the free list and block metadata.  allocate_blocks / release_blocks
+// are the only mutating operations.  Slot mapping, positions, and block-table
+// layout are computed by BatchTranslator.
 class KVCacheManager {
 public:
-    struct AllocResult {
-        BlockTable block_table;
-        std::vector<int32_t> slot_mapping;
-    };
-
     KVCacheManager() = default;
 
     Result<void> init(int max_blocks);
 
-    Result<AllocResult> prepare_blocks(const std::vector<int32_t>& token_ids);
+    Result<BlockTable> allocate_blocks(int num_blocks);
     Result<void> release_blocks(const BlockTable& table);
 
     int max_blocks() const { return max_blocks_; }

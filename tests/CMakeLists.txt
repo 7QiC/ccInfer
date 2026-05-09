@@ -78,3 +78,7 @@ gtest_discover_tests(test_logits_match)
 add_executable(test_layer_match integration/test_layer_match.cpp)
 target_link_libraries(test_layer_match PRIVATE engine gtest_main CUDA::cudart CUDA::cublas)
 gtest_discover_tests(test_layer_match)
+
+add_executable(test_batch_translator unit/test_batch_translator.cpp)
+target_link_libraries(test_batch_translator PRIVATE engine gtest_main CUDA::cudart)
+gtest_discover_tests(test_batch_translator)
