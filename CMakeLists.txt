@@ -20,6 +20,10 @@ option(BUILD_SERVER "Build server" OFF)
 
 add_subdirectory(src/engine)
 
+if(BUILD_SERVER)
+    add_subdirectory(src/server)
+endif()
+
 if(BUILD_TESTS)
     enable_testing()
 

@@ -2,8 +2,11 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <variant>
 #include <vector>
+
+#include "common/error_code.h"
 
 namespace ccinfer {
 
@@ -51,6 +54,14 @@ struct WorkItemResult {
 struct BatchResult {
     uint64_t batch_id;
     std::vector<WorkItemResult> items;
+};
+
+struct GeneratedToken {
+    int32_t token_id = -1;
+    std::string text;
+    bool has_token = false;
+    bool finished = false;
+    ErrorCode error = ErrorCode::Ok;
 };
 
 struct EngineCapacity {
