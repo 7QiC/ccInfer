@@ -26,6 +26,8 @@ public:
                                        std::shared_ptr<BatchChannel> chan) = 0;
 
     virtual EngineCapacity capacity() const = 0;
+
+    static std::unique_ptr<Executor> create(asio::io_context& io);
 };
 
 }  // namespace engine
