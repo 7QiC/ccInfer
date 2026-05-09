@@ -1,4 +1,5 @@
 add_library(server STATIC
+    http/http_server.cpp
     scheduler/scheduler.cpp
 )
 
