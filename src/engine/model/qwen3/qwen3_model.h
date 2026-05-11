@@ -13,8 +13,8 @@ namespace engine {
 class Qwen3Model final : public Model {
 public:
     static Result<std::unique_ptr<Model>> create(const ModelConfig& config,
-                                                  const WeightLoader& loader,
-                                                  DefaultBackend& backend);
+                                                 const WeightLoader& loader,
+                                                 DefaultBackend& backend);
 
     Qwen3Model(ModelConfig config, Qwen3Weights weights, RopeCache rope_cache);
 

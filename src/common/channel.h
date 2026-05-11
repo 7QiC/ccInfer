@@ -17,6 +17,6 @@ using VoidChannel = asio::experimental::channel<void(boost::system::error_code, 
 using BatchChannel =
     asio::experimental::channel<void(boost::system::error_code, Result<BatchResult>)>;
 using TokenChannel =
-    asio::experimental::channel<void(boost::system::error_code, GeneratedToken)>;
+    asio::experimental::channel<void(boost::system::error_code, Result<GeneratedToken>)>;
 
 }  // namespace ccinfer

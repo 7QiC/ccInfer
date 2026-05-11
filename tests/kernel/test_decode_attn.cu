@@ -163,8 +163,9 @@ TEST(DecodeAttnKernelTest, GQA) {
 }
 
 TEST(DecodeAttnKernelTest, NullPointers) {
-    CudaBackend backend;
-    ASSERT_TRUE(backend.init(0).has_value());
+    auto backend_r = CudaBackend::create(0);
+    ASSERT_TRUE(backend_r.has_value());
+    auto& backend = **backend_r;
 
     auto r = backend.template decode_attention<__nv_bfloat16>(DecodeAttnParams{
         .q_ = nullptr, .k_cache_ = nullptr, .v_cache_ = nullptr, .block_table_ = nullptr,

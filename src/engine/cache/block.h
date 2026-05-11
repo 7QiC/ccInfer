@@ -16,11 +16,8 @@ enum class BlockFlags : uint32_t {
     kInLRU = 1 << 2,
 };
 
-inline BlockFlags operator|(BlockFlags a, BlockFlags b) {
-    return static_cast<BlockFlags>(static_cast<uint32_t>(a) | static_cast<uint32_t>(b));
-}
-inline bool operator&(BlockFlags a, uint32_t mask) {
-    return (static_cast<uint32_t>(a) & mask) != 0;
+inline constexpr bool has_flag(uint32_t flags, BlockFlags f) noexcept {
+    return (flags & static_cast<uint32_t>(f)) != 0;
 }
 
 struct Block {
@@ -32,17 +29,17 @@ struct Block {
     boost::intrusive::list_member_hook<> free_hook;
     boost::intrusive::list_member_hook<> lru_hook;
 
-    bool is_free() const { return flags & static_cast<uint32_t>(BlockFlags::kInFreeList); }
-    bool is_cached() const { return flags & static_cast<uint32_t>(BlockFlags::kCached); }
+    bool is_free() const { return has_flag(flags, BlockFlags::kInFreeList); }
+    bool is_cached() const { return has_flag(flags, BlockFlags::kCached); }
 };
 
 using FreeList = boost::intrusive::list<
-    Block, boost::intrusive::member_hook<Block, boost::intrusive::list_member_hook<>,
-                                         &Block::free_hook>>;
+    Block,
+    boost::intrusive::member_hook<Block, boost::intrusive::list_member_hook<>, &Block::free_hook>>;
 
 using LruList = boost::intrusive::list<
-    Block, boost::intrusive::member_hook<Block, boost::intrusive::list_member_hook<>,
-                                         &Block::lru_hook>>;
+    Block,
+    boost::intrusive::member_hook<Block, boost::intrusive::list_member_hook<>, &Block::lru_hook>>;
 
 class BlockTable {
 public:
@@ -56,10 +53,14 @@ public:
     int32_t shared_count() const { return shared_count_; }
 
     const int32_t* data() const { return block_ids_.data(); }
-    int32_t token_capacity() const { return size() * kKVBlockSize; }
+    int64_t token_capacity(int32_t block_size) const {
+        return static_cast<int64_t>(size()) * block_size;
+    }
 
 private:
     std::vector<int32_t> block_ids_;
+    // Reserved for prefix cache / shared-prefix blocks.
+    // release_blocks decides whether to free a block via ref_count, not shared_count_.
     int32_t shared_count_ = 0;
 };
 

@@ -14,12 +14,20 @@
 #include "engine/model/config.h"
 #include "engine/model/loader.h"
 #include "engine/model/registry.h"
-#include "engine/tokenizer/byte_level_bpe_tokenizer.h"
+#include "server/tokenizer/byte_level_bpe_tokenizer.h"
 
 using namespace ccinfer;
 using namespace ccinfer::engine;
+using namespace ccinfer::server;
 
 namespace {
+
+template <typename B>
+std::unique_ptr<DeviceBuffer> alloc_buf(B& backend, size_t bytes) {
+    auto r = backend.allocate_buffer(bytes);
+    assert(r.has_value());
+    return std::move(*r);
+}
 
 std::string model_dir() {
     const char* dir = std::getenv("CCINFER_TEST_MODEL_DIR");
@@ -64,8 +72,9 @@ protected:
         ASSERT_TRUE(loader_result);
         loader_ = std::make_unique<WeightLoader>(std::move(*loader_result));
 
-        backend_ = std::make_unique<CudaBackend>();
-        ASSERT_TRUE(backend_->init(0).has_value());
+        auto b = CudaBackend::create(0);
+        ASSERT_TRUE(b.has_value());
+        backend_ = std::move(*b);
         register_builtin_models();
     }
 
@@ -98,10 +107,10 @@ TEST_F(LogitsMatchTest, SingleToken) {
     auto embed = loader_->load<__nv_bfloat16>(*backend_, "model.embed_tokens.weight", {V, D});
     ASSERT_TRUE(embed);
 
-    auto token_ids_dev = backend_->allocate_buffer(static_cast<size_t>(T) * sizeof(int32_t));
+    auto token_ids_dev = alloc_buf(*backend_,static_cast<size_t>(T) * sizeof(int32_t));
     cudaMemcpy(token_ids_dev->data(), token_ids.data(), T * sizeof(int32_t), cudaMemcpyHostToDevice);
 
-    auto input_embeds = backend_->allocate_buffer(static_cast<size_t>(T) * D * sizeof(__nv_bfloat16));
+    auto input_embeds = alloc_buf(*backend_,static_cast<size_t>(T) * D * sizeof(__nv_bfloat16));
     auto r = launch_embed(static_cast<__nv_bfloat16*>((*embed)->data()),
                           static_cast<int32_t*>(token_ids_dev->data()),
                           static_cast<__nv_bfloat16*>(input_embeds->data()), T, D, stream_);
@@ -110,7 +119,7 @@ TEST_F(LogitsMatchTest, SingleToken) {
     auto model = ModelRegistry::instance().create(config_, *loader_, *backend_);
     ASSERT_TRUE(model);
 
-    auto output_logits = backend_->allocate_buffer(static_cast<size_t>(T) * V * sizeof(__nv_bfloat16));
+    auto output_logits = alloc_buf(*backend_,static_cast<size_t>(T) * V * sizeof(__nv_bfloat16));
 
     ForwardInput fwd_in{};
     fwd_in.input_embeds_ = static_cast<__nv_bfloat16*>(input_embeds->data());
@@ -165,10 +174,10 @@ TEST_F(LogitsMatchTest, CompareWithReference) {
     auto embed = loader_->load<__nv_bfloat16>(*backend_, "model.embed_tokens.weight", {V, D});
     ASSERT_TRUE(embed);
 
-    auto token_ids_dev = backend_->allocate_buffer(static_cast<size_t>(T) * sizeof(int32_t));
+    auto token_ids_dev = alloc_buf(*backend_,static_cast<size_t>(T) * sizeof(int32_t));
     cudaMemcpy(token_ids_dev->data(), token_ids.data(), T * sizeof(int32_t), cudaMemcpyHostToDevice);
 
-    auto input_embeds = backend_->allocate_buffer(static_cast<size_t>(T) * D * sizeof(__nv_bfloat16));
+    auto input_embeds = alloc_buf(*backend_,static_cast<size_t>(T) * D * sizeof(__nv_bfloat16));
     auto r = launch_embed(static_cast<__nv_bfloat16*>((*embed)->data()),
                           static_cast<int32_t*>(token_ids_dev->data()),
                           static_cast<__nv_bfloat16*>(input_embeds->data()), T, D, stream_);
@@ -178,7 +187,7 @@ TEST_F(LogitsMatchTest, CompareWithReference) {
     auto model = ModelRegistry::instance().create(config_, *loader_, *backend_);
     ASSERT_TRUE(model);
 
-    auto output_logits = backend_->allocate_buffer(static_cast<size_t>(T) * V * sizeof(__nv_bfloat16));
+    auto output_logits = alloc_buf(*backend_,static_cast<size_t>(T) * V * sizeof(__nv_bfloat16));
 
     ForwardInput fwd_in{};
     fwd_in.input_embeds_ = static_cast<__nv_bfloat16*>(input_embeds->data());
@@ -265,10 +274,10 @@ TEST_F(LogitsMatchTest, TopKAgreement) {
     auto embed = loader_->load<__nv_bfloat16>(*backend_, "model.embed_tokens.weight", {V, D});
     ASSERT_TRUE(embed);
 
-    auto token_ids_dev = backend_->allocate_buffer(static_cast<size_t>(T) * sizeof(int32_t));
+    auto token_ids_dev = alloc_buf(*backend_,static_cast<size_t>(T) * sizeof(int32_t));
     cudaMemcpy(token_ids_dev->data(), token_ids.data(), T * sizeof(int32_t), cudaMemcpyHostToDevice);
 
-    auto input_embeds = backend_->allocate_buffer(static_cast<size_t>(T) * D * sizeof(__nv_bfloat16));
+    auto input_embeds = alloc_buf(*backend_,static_cast<size_t>(T) * D * sizeof(__nv_bfloat16));
     auto r = launch_embed(static_cast<__nv_bfloat16*>((*embed)->data()),
                           static_cast<int32_t*>(token_ids_dev->data()),
                           static_cast<__nv_bfloat16*>(input_embeds->data()), T, D, stream_);
@@ -277,7 +286,7 @@ TEST_F(LogitsMatchTest, TopKAgreement) {
     auto model = ModelRegistry::instance().create(config_, *loader_, *backend_);
     ASSERT_TRUE(model);
 
-    auto output_logits = backend_->allocate_buffer(static_cast<size_t>(T) * V * sizeof(__nv_bfloat16));
+    auto output_logits = alloc_buf(*backend_,static_cast<size_t>(T) * V * sizeof(__nv_bfloat16));
 
     ForwardInput fwd_in{};
     fwd_in.input_embeds_ = static_cast<__nv_bfloat16*>(input_embeds->data());

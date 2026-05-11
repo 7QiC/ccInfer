@@ -29,8 +29,9 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     const int block_size = kKVBlockSize;
 
     // 1. Init GPU storage and CPU block manager separately
-    CudaBackend backend;
-    ASSERT_TRUE(backend.init(0).has_value());
+    auto backend_r = CudaBackend::create(0);
+    ASSERT_TRUE(backend_r.has_value());
+    auto& backend = **backend_r;
     KVCacheStorage storage;
     auto r_storage = storage.init<__nv_bfloat16>(backend, kNumLayers, kMaxBlocks, block_size, nkv, hd);
     ASSERT_TRUE(r_storage.has_value());

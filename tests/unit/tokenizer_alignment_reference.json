@@ -1,0 +1,1054 @@
+{
+  "tokenizer_path": "/home/qic7/ccInfer/models/qwen3-0.6B/tokenizer.json",
+  "vocab_size": 151669,
+  "cases": [
+    {
+      "prompt": "",
+      "encode_no_special": [],
+      "encode_special": [],
+      "decode_no_special": "",
+      "decode_special": ""
+    },
+    {
+      "prompt": "Hello",
+      "encode_no_special": [
+        9707
+      ],
+      "encode_special": [
+        9707
+      ],
+      "decode_no_special": "Hello",
+      "decode_special": "Hello"
+    },
+    {
+      "prompt": "Hello world",
+      "encode_no_special": [
+        9707,
+        1879
+      ],
+      "encode_special": [
+        9707,
+        1879
+      ],
+      "decode_no_special": "Hello world",
+      "decode_special": "Hello world"
+    },
+    {
+      "prompt": "Hello, world!",
+      "encode_no_special": [
+        9707,
+        11,
+        1879,
+        0
+      ],
+      "encode_special": [
+        9707,
+        11,
+        1879,
+        0
+      ],
+      "decode_no_special": "Hello, world!",
+      "decode_special": "Hello, world!"
+    },
+    {
+      "prompt": "The quick brown fox jumps over the lazy dog.",
+      "encode_no_special": [
+        785,
+        3974,
+        13876,
+        38835,
+        34208,
+        916,
+        279,
+        15678,
+        5562,
+        13
+      ],
+      "encode_special": [
+        785,
+        3974,
+        13876,
+        38835,
+        34208,
+        916,
+        279,
+        15678,
+        5562,
+        13
+      ],
+      "decode_no_special": "The quick brown fox jumps over the lazy dog.",
+      "decode_special": "The quick brown fox jumps over the lazy dog."
+    },
+    {
+      "prompt": " Hello",
+      "encode_no_special": [
+        21927
+      ],
+      "encode_special": [
+        21927
+      ],
+      "decode_no_special": " Hello",
+      "decode_special": " Hello"
+    },
+    {
+      "prompt": "Hello ",
+      "encode_no_special": [
+        9707,
+        220
+      ],
+      "encode_special": [
+        9707,
+        220
+      ],
+      "decode_no_special": "Hello ",
+      "decode_special": "Hello "
+    },
+    {
+      "prompt": "  Hello  world  ",
+      "encode_no_special": [
+        220,
+        21927,
+        220,
+        1879,
+        256
+      ],
+      "encode_special": [
+        220,
+        21927,
+        220,
+        1879,
+        256
+      ],
+      "decode_no_special": "  Hello  world  ",
+      "decode_special": "  Hello  world  "
+    },
+    {
+      "prompt": "Hello\nworld",
+      "encode_no_special": [
+        9707,
+        198,
+        14615
+      ],
+      "encode_special": [
+        9707,
+        198,
+        14615
+      ],
+      "decode_no_special": "Hello\nworld",
+      "decode_special": "Hello\nworld"
+    },
+    {
+      "prompt": "Hello\n\nworld",
+      "encode_no_special": [
+        9707,
+        271,
+        14615
+      ],
+      "encode_special": [
+        9707,
+        271,
+        14615
+      ],
+      "decode_no_special": "Hello\n\nworld",
+      "decode_special": "Hello\n\nworld"
+    },
+    {
+      "prompt": "Hello\tworld",
+      "encode_no_special": [
+        9707,
+        76508
+      ],
+      "encode_special": [
+        9707,
+        76508
+      ],
+      "decode_no_special": "Hello\tworld",
+      "decode_special": "Hello\tworld"
+    },
+    {
+      "prompt": "Line 1\nLine 2\nLine 3",
+      "encode_no_special": [
+        2460,
+        220,
+        16,
+        198,
+        2460,
+        220,
+        17,
+        198,
+        2460,
+        220,
+        18
+      ],
+      "encode_special": [
+        2460,
+        220,
+        16,
+        198,
+        2460,
+        220,
+        17,
+        198,
+        2460,
+        220,
+        18
+      ],
+      "decode_no_special": "Line 1\nLine 2\nLine 3",
+      "decode_special": "Line 1\nLine 2\nLine 3"
+    },
+    {
+      "prompt": "a+b=c",
+      "encode_no_special": [
+        64,
+        35093,
+        19535
+      ],
+      "encode_special": [
+        64,
+        35093,
+        19535
+      ],
+      "decode_no_special": "a+b=c",
+      "decode_special": "a+b=c"
+    },
+    {
+      "prompt": "price: $12.50",
+      "encode_no_special": [
+        6555,
+        25,
+        400,
+        16,
+        17,
+        13,
+        20,
+        15
+      ],
+      "encode_special": [
+        6555,
+        25,
+        400,
+        16,
+        17,
+        13,
+        20,
+        15
+      ],
+      "decode_no_special": "price: $12.50",
+      "decode_special": "price: $12.50"
+    },
+    {
+      "prompt": "email@example.com",
+      "encode_no_special": [
+        2332,
+        35487,
+        905
+      ],
+      "encode_special": [
+        2332,
+        35487,
+        905
+      ],
+      "decode_no_special": "email@example.com",
+      "decode_special": "email@example.com"
+    },
+    {
+      "prompt": "https://example.com/path?a=1&b=2",
+      "encode_no_special": [
+        2428,
+        1110,
+        8687,
+        905,
+        50976,
+        98461,
+        28,
+        16,
+        5,
+        65,
+        28,
+        17
+      ],
+      "encode_special": [
+        2428,
+        1110,
+        8687,
+        905,
+        50976,
+        98461,
+        28,
+        16,
+        5,
+        65,
+        28,
+        17
+      ],
+      "decode_no_special": "https://example.com/path?a=1&b=2",
+      "decode_special": "https://example.com/path?a=1&b=2"
+    },
+    {
+      "prompt": "foo_bar-baz.qux",
+      "encode_no_special": [
+        7975,
+        14388,
+        1455,
+        1370,
+        17283,
+        87
+      ],
+      "encode_special": [
+        7975,
+        14388,
+        1455,
+        1370,
+        17283,
+        87
+      ],
+      "decode_no_special": "foo_bar-baz.qux",
+      "decode_special": "foo_bar-baz.qux"
+    },
+    {
+      "prompt": "1234567890",
+      "encode_no_special": [
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        15
+      ],
+      "encode_special": [
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        15
+      ],
+      "decode_no_special": "1234567890",
+      "decode_special": "1234567890"
+    },
+    {
+      "prompt": "3.1415926535",
+      "encode_no_special": [
+        18,
+        13,
+        16,
+        19,
+        16,
+        20,
+        24,
+        17,
+        21,
+        20,
+        18,
+        20
+      ],
+      "encode_special": [
+        18,
+        13,
+        16,
+        19,
+        16,
+        20,
+        24,
+        17,
+        21,
+        20,
+        18,
+        20
+      ],
+      "decode_no_special": "3.1415926535",
+      "decode_special": "3.1415926535"
+    },
+    {
+      "prompt": "-42 + 17 = -25",
+      "encode_no_special": [
+        12,
+        19,
+        17,
+        488,
+        220,
+        16,
+        22,
+        284,
+        481,
+        17,
+        20
+      ],
+      "encode_special": [
+        12,
+        19,
+        17,
+        488,
+        220,
+        16,
+        22,
+        284,
+        481,
+        17,
+        20
+      ],
+      "decode_no_special": "-42 + 17 = -25",
+      "decode_special": "-42 + 17 = -25"
+    },
+    {
+      "prompt": "2026-05-11 14:30:00",
+      "encode_no_special": [
+        17,
+        15,
+        17,
+        21,
+        12,
+        15,
+        20,
+        12,
+        16,
+        16,
+        220,
+        16,
+        19,
+        25,
+        18,
+        15,
+        25,
+        15,
+        15
+      ],
+      "encode_special": [
+        17,
+        15,
+        17,
+        21,
+        12,
+        15,
+        20,
+        12,
+        16,
+        16,
+        220,
+        16,
+        19,
+        25,
+        18,
+        15,
+        25,
+        15,
+        15
+      ],
+      "decode_no_special": "2026-05-11 14:30:00",
+      "decode_special": "2026-05-11 14:30:00"
+    },
+    {
+      "prompt": "你好",
+      "encode_no_special": [
+        108386
+      ],
+      "encode_special": [
+        108386
+      ],
+      "decode_no_special": "你好",
+      "decode_special": "你好"
+    },
+    {
+      "prompt": "你好，世界！",
+      "encode_no_special": [
+        108386,
+        3837,
+        99489,
+        6313
+      ],
+      "encode_special": [
+        108386,
+        3837,
+        99489,
+        6313
+      ],
+      "decode_no_special": "你好，世界！",
+      "decode_special": "你好，世界！"
+    },
+    {
+      "prompt": "我正在做大模型推理引擎。",
+      "encode_no_special": [
+        35946,
+        96555,
+        111562,
+        104949,
+        113272,
+        102977,
+        1773
+      ],
+      "encode_special": [
+        35946,
+        96555,
+        111562,
+        104949,
+        113272,
+        102977,
+        1773
+      ],
+      "decode_no_special": "我正在做大模型推理引擎。",
+      "decode_special": "我正在做大模型推理引擎。"
+    },
+    {
+      "prompt": "这是一个中文 tokenizer 对齐测试。",
+      "encode_no_special": [
+        105464,
+        104811,
+        45958,
+        69162,
+        100046,
+        81705,
+        1773
+      ],
+      "encode_special": [
+        105464,
+        104811,
+        45958,
+        69162,
+        100046,
+        81705,
+        1773
+      ],
+      "decode_no_special": "这是一个中文 tokenizer 对齐测试。",
+      "decode_special": "这是一个中文 tokenizer 对齐测试。"
+    },
+    {
+      "prompt": "南京大学建筑与城市规划学院",
+      "encode_no_special": [
+        102034,
+        99562,
+        99893,
+        57218,
+        99490,
+        100367,
+        101085
+      ],
+      "encode_special": [
+        102034,
+        99562,
+        99893,
+        57218,
+        99490,
+        100367,
+        101085
+      ],
+      "decode_no_special": "南京大学建筑与城市规划学院",
+      "decode_special": "南京大学建筑与城市规划学院"
+    },
+    {
+      "prompt": "Hello 世界",
+      "encode_no_special": [
+        9707,
+        220,
+        99489
+      ],
+      "encode_special": [
+        9707,
+        220,
+        99489
+      ],
+      "decode_no_special": "Hello 世界",
+      "decode_special": "Hello 世界"
+    },
+    {
+      "prompt": "Qwen3 模型推理 test",
+      "encode_no_special": [
+        48,
+        16948,
+        18,
+        6567,
+        44401,
+        24300,
+        113272,
+        1273
+      ],
+      "encode_special": [
+        48,
+        16948,
+        18,
+        6567,
+        44401,
+        24300,
+        113272,
+        1273
+      ],
+      "decode_no_special": "Qwen3 模型推理 test",
+      "decode_special": "Qwen3 模型推理 test"
+    },
+    {
+      "prompt": "GPU 上的 KV cache 管理",
+      "encode_no_special": [
+        49891,
+        64118,
+        9370,
+        84648,
+        6500,
+        10236,
+        106,
+        94,
+        21887
+      ],
+      "encode_special": [
+        49891,
+        64118,
+        9370,
+        84648,
+        6500,
+        10236,
+        106,
+        94,
+        21887
+      ],
+      "decode_no_special": "GPU 上的 KV cache 管理",
+      "decode_special": "GPU 上的 KV cache 管理"
+    },
+    {
+      "prompt": "我想找 AI Infra 的工作。",
+      "encode_no_special": [
+        104100,
+        92133,
+        15235,
+        14921,
+        956,
+        43589,
+        99257,
+        1773
+      ],
+      "encode_special": [
+        104100,
+        92133,
+        15235,
+        14921,
+        956,
+        43589,
+        99257,
+        1773
+      ],
+      "decode_no_special": "我想找 AI Infra 的工作。",
+      "decode_special": "我想找 AI Infra 的工作。"
+    },
+    {
+      "prompt": "😀",
+      "encode_no_special": [
+        141334
+      ],
+      "encode_special": [
+        141334
+      ],
+      "decode_no_special": "😀",
+      "decode_special": "😀"
+    },
+    {
+      "prompt": "Hello 😀 world",
+      "encode_no_special": [
+        9707,
+        90316,
+        1879
+      ],
+      "encode_special": [
+        9707,
+        90316,
+        1879
+      ],
+      "decode_no_special": "Hello 😀 world",
+      "decode_special": "Hello 😀 world"
+    },
+    {
+      "prompt": "CUDA 🚀 inference",
+      "encode_no_special": [
+        80285,
+        11162,
+        248,
+        222,
+        44378
+      ],
+      "encode_special": [
+        80285,
+        11162,
+        248,
+        222,
+        44378
+      ],
+      "decode_no_special": "CUDA 🚀 inference",
+      "decode_special": "CUDA 🚀 inference"
+    },
+    {
+      "prompt": "中文🙂英文🚀混合",
+      "encode_no_special": [
+        104811,
+        145080,
+        105205,
+        145836,
+        105063
+      ],
+      "encode_special": [
+        104811,
+        145080,
+        105205,
+        145836,
+        105063
+      ],
+      "decode_no_special": "中文🙂英文🚀混合",
+      "decode_special": "中文🙂英文🚀混合"
+    },
+    {
+      "prompt": "int main() { return 0; }",
+      "encode_no_special": [
+        396,
+        1887,
+        368,
+        314,
+        470,
+        220,
+        15,
+        26,
+        335
+      ],
+      "encode_special": [
+        396,
+        1887,
+        368,
+        314,
+        470,
+        220,
+        15,
+        26,
+        335
+      ],
+      "decode_no_special": "int main() { return 0; }",
+      "decode_special": "int main() { return 0; }"
+    },
+    {
+      "prompt": "std::vector<int32_t> tokens;",
+      "encode_no_special": [
+        1834,
+        486,
+        3215,
+        4159,
+        18,
+        17,
+        528,
+        29,
+        11211,
+        26
+      ],
+      "encode_special": [
+        1834,
+        486,
+        3215,
+        4159,
+        18,
+        17,
+        528,
+        29,
+        11211,
+        26
+      ],
+      "decode_no_special": "std::vector<int32_t> tokens;",
+      "decode_special": "std::vector<int32_t> tokens;"
+    },
+    {
+      "prompt": "if (!result) return std::unexpected(result.error());",
+      "encode_no_special": [
+        333,
+        1505,
+        1382,
+        8,
+        470,
+        1460,
+        486,
+        53859,
+        4456,
+        4417,
+        13426
+      ],
+      "encode_special": [
+        333,
+        1505,
+        1382,
+        8,
+        470,
+        1460,
+        486,
+        53859,
+        4456,
+        4417,
+        13426
+      ],
+      "decode_no_special": "if (!result) return std::unexpected(result.error());",
+      "decode_special": "if (!result) return std::unexpected(result.error());"
+    },
+    {
+      "prompt": "template <typename T>\nResult<void> foo(T x) {\n    return {};\n}",
+      "encode_no_special": [
+        4214,
+        366,
+        9031,
+        350,
+        397,
+        2077,
+        16958,
+        29,
+        15229,
+        4140,
+        856,
+        8,
+        341,
+        262,
+        470,
+        9321,
+        92
+      ],
+      "encode_special": [
+        4214,
+        366,
+        9031,
+        350,
+        397,
+        2077,
+        16958,
+        29,
+        15229,
+        4140,
+        856,
+        8,
+        341,
+        262,
+        470,
+        9321,
+        92
+      ],
+      "decode_no_special": "template <typename T>\nResult<void> foo(T x) {\n    return {};\n}",
+      "decode_special": "template <typename T>\nResult<void> foo(T x) {\n    return {};\n}"
+    },
+    {
+      "prompt": "{\"name\":\"ccInfer\",\"version\":1,\"ok\":true}",
+      "encode_no_special": [
+        4913,
+        606,
+        3252,
+        638,
+        641,
+        802,
+        2198,
+        4366,
+        788,
+        16,
+        1335,
+        562,
+        788,
+        1866,
+        92
+      ],
+      "encode_special": [
+        4913,
+        606,
+        3252,
+        638,
+        641,
+        802,
+        2198,
+        4366,
+        788,
+        16,
+        1335,
+        562,
+        788,
+        1866,
+        92
+      ],
+      "decode_no_special": "{\"name\":\"ccInfer\",\"version\":1,\"ok\":true}",
+      "decode_special": "{\"name\":\"ccInfer\",\"version\":1,\"ok\":true}"
+    },
+    {
+      "prompt": "- item 1\n- item 2\n- item 3",
+      "encode_no_special": [
+        12,
+        1509,
+        220,
+        16,
+        198,
+        12,
+        1509,
+        220,
+        17,
+        198,
+        12,
+        1509,
+        220,
+        18
+      ],
+      "encode_special": [
+        12,
+        1509,
+        220,
+        16,
+        198,
+        12,
+        1509,
+        220,
+        17,
+        198,
+        12,
+        1509,
+        220,
+        18
+      ],
+      "decode_no_special": "- item 1\n- item 2\n- item 3",
+      "decode_special": "- item 1\n- item 2\n- item 3"
+    },
+    {
+      "prompt": "```cpp\nint x = 42;\n```",
+      "encode_no_special": [
+        73594,
+        10821,
+        198,
+        396,
+        856,
+        284,
+        220,
+        19,
+        17,
+        280,
+        73594
+      ],
+      "encode_special": [
+        73594,
+        10821,
+        198,
+        396,
+        856,
+        284,
+        220,
+        19,
+        17,
+        280,
+        73594
+      ],
+      "decode_no_special": "```cpp\nint x = 42;\n```",
+      "decode_special": "```cpp\nint x = 42;\n```"
+    },
+    {
+      "prompt": "# Title\n\nThis is a paragraph.",
+      "encode_no_special": [
+        2,
+        10869,
+        271,
+        1986,
+        374,
+        264,
+        14311,
+        13
+      ],
+      "encode_special": [
+        2,
+        10869,
+        271,
+        1986,
+        374,
+        264,
+        14311,
+        13
+      ],
+      "decode_no_special": "# Title\n\nThis is a paragraph.",
+      "decode_special": "# Title\n\nThis is a paragraph."
+    },
+    {
+      "prompt": "<|endoftext|>",
+      "encode_no_special": [
+        151643
+      ],
+      "encode_special": [
+        151643
+      ],
+      "decode_no_special": "",
+      "decode_special": "<|endoftext|>"
+    },
+    {
+      "prompt": "<|im_start|>user\nHello<|im_end|>",
+      "encode_no_special": [
+        151644,
+        872,
+        198,
+        9707,
+        151645
+      ],
+      "encode_special": [
+        151644,
+        872,
+        198,
+        9707,
+        151645
+      ],
+      "decode_no_special": "user\nHello",
+      "decode_special": "<|im_start|>user\nHello<|im_end|>"
+    },
+    {
+      "prompt": "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n你好<|im_end|>",
+      "encode_no_special": [
+        151644,
+        8948,
+        198,
+        2610,
+        525,
+        264,
+        10950,
+        17847,
+        13,
+        151645,
+        198,
+        151644,
+        872,
+        198,
+        108386,
+        151645
+      ],
+      "encode_special": [
+        151644,
+        8948,
+        198,
+        2610,
+        525,
+        264,
+        10950,
+        17847,
+        13,
+        151645,
+        198,
+        151644,
+        872,
+        198,
+        108386,
+        151645
+      ],
+      "decode_no_special": "system\nYou are a helpful assistant.\nuser\n你好",
+      "decode_special": "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n你好<|im_end|>"
+    },
+    {
+      "prompt": "<s>Hello</s>",
+      "encode_no_special": [
+        44047,
+        79497,
+        522,
+        82,
+        29
+      ],
+      "encode_special": [
+        44047,
+        79497,
+        522,
+        82,
+        29
+      ],
+      "decode_no_special": "<s>Hello</s>",
+      "decode_special": "<s>Hello</s>"
+    }
+  ]
+}

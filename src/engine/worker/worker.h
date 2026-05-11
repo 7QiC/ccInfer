@@ -1,7 +1,5 @@
 #pragma once
 
-#include <cuda_bf16.h>
-
 #include <atomic>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
@@ -27,13 +25,6 @@ namespace ccinfer {
 namespace engine {
 
 namespace asio = boost::asio;
-
-struct DeviceCapacity {
-    int max_sequences = 0;
-    int active_sequences = 0;
-    int free_blocks = 0;
-    int max_blocks = 0;
-};
 
 class KVCacheManager;
 class Model;
@@ -98,7 +89,7 @@ private:
 
     // --- Sequence helpers ---
     using SeqMapIter = std::unordered_map<SequenceId, SequenceState>::iterator;
-    void release_sequence_state(SeqMapIter it);
+    Result<void> release_sequence_state(SeqMapIter it);
 
     // --- Dummy output (no model loaded yet) ---
     BatchResult generate_dummy_result(const ScheduledBatch& batch);
@@ -122,8 +113,10 @@ private:
     // --- Cached capacity ---
     std::atomic<int> active_sequences_{0};
     std::atomic<int> free_blocks_{0};
-    int max_blocks_ = 0;
+    std::atomic<int> max_blocks_{0};
     static constexpr int kMaxSequences = 64;
+
+    bool initialized_ = false;
 
     // --- Resources (owned by worker thread after init_resources) ---
     std::unique_ptr<DefaultBackend> backend_;

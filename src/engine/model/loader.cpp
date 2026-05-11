@@ -98,7 +98,7 @@ Result<void> WeightLoader::parse() {
     uint64_t header_len = 0;
     std::memcpy(&header_len, data_, sizeof(uint64_t));
 
-    if (header_len == 0 || kHeaderSize + header_len > size_) {
+    if (header_len == 0 || header_len > size_ - kHeaderSize) {
         return std::unexpected(ErrorCode::ModelLoadFailed);
     }
 
@@ -138,6 +138,10 @@ Result<void> WeightLoader::parse() {
             t.shape_.push_back(s.get<int64_t>());
         }
 
+        if (!info["data_offsets"][0].is_number_unsigned() ||
+            !info["data_offsets"][1].is_number_unsigned()) {
+            return std::unexpected(ErrorCode::ModelLoadFailed);
+        }
         const uint64_t begin = info["data_offsets"][0].get<uint64_t>();
         const uint64_t end = info["data_offsets"][1].get<uint64_t>();
 
@@ -146,8 +150,9 @@ Result<void> WeightLoader::parse() {
         t.offset_ = begin;
         t.size_bytes_ = end - begin;
 
-        if (data_start + t.offset_ > size_ ||
-            t.size_bytes_ > size_ - data_start - t.offset_) {
+        if (data_start > size_) return std::unexpected(ErrorCode::ModelLoadFailed);
+        if (t.offset_ > size_ - data_start) return std::unexpected(ErrorCode::ModelLoadFailed);
+        if (t.size_bytes_ > size_ - data_start - t.offset_) {
             return std::unexpected(ErrorCode::ModelLoadFailed);
         }
 

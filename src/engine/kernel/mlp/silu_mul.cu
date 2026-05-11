@@ -61,7 +61,7 @@ Result<void> launch_silu_mul(const __nv_bfloat16* gate, const __nv_bfloat16* up,
         silu_mul_scalar_kernel<<<ceil_div_i64(n, kBlockSize), kBlockSize, 0, stream>>>(gate, up,
                                                                                        output, n);
     }
-    return cuda_check(cudaGetLastError());
+    return cuda_check_last_error();
 }
 
 }  // namespace engine

@@ -5,6 +5,8 @@
 #include <boost/asio/this_coro.hpp>
 #include <utility>
 
+#include "common/asio_error.h"
+#include "common/channel.h"
 #include "engine/executor/executor.h"
 
 namespace ccinfer {

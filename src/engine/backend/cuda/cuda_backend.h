@@ -1,10 +1,10 @@
 #pragma once
 
-#include <cstddef>
-#include <memory>
-
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
+
+#include <cstddef>
+#include <memory>
 
 #include "common/result.h"
 #include "engine/backend/backend.h"
@@ -16,16 +16,20 @@ namespace engine {
 
 class CudaBackend final : public DeviceBackend<CudaBackend> {
 public:
-    CudaBackend() = default;
+    // Only way to obtain an initialized backend.
+    static Result<std::unique_ptr<CudaBackend>> create(int device_id);
+
     ~CudaBackend();
 
     CudaBackend(const CudaBackend&) = delete;
     CudaBackend& operator=(const CudaBackend&) = delete;
+    CudaBackend(CudaBackend&&) = delete;
+    CudaBackend& operator=(CudaBackend&&) = delete;
 
-    CudaBackend(CudaBackend&&) noexcept;
-    CudaBackend& operator=(CudaBackend&&) noexcept;
+private:
+    friend class DeviceBackend<CudaBackend>;
 
-    Result<void> init(int device_id);
+    Result<void> embed_impl(const EmbedParams& p);
 
     template <typename DType>
     Result<void> gemm_impl(const GemmParams& p);
@@ -57,7 +61,10 @@ public:
     template <typename DType>
     Result<void> write_kv_cache_impl(const WriteKVCacheParams& p);
 
-    std::unique_ptr<DeviceBuffer> allocate_buffer_impl(std::size_t bytes);
+    Result<void> gemm_logits_impl(const GemmParams& p);
+    Result<void> sample_impl(const SampleParams& p);
+
+    Result<std::unique_ptr<DeviceBuffer>> allocate_buffer_impl(std::size_t bytes);
 
     Result<void> memcpy_h2d_impl(void* dst, const void* src, std::size_t count);
     Result<void> memcpy_d2h_impl(void* dst, const void* src, std::size_t count);
@@ -65,7 +72,13 @@ public:
 
     void* stream_impl();
 
-private:
+    Result<void> synchronize_impl();
+
+    CudaBackend() = default;
+
+    Result<void> init(int device_id);
+    void reset() noexcept;
+
     cudaStream_t stream_ = nullptr;
     cublasHandle_t cublas_handle_ = nullptr;
 };

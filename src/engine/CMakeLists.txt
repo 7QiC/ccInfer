@@ -15,14 +15,11 @@ add_library(engine STATIC
     kernel/attention/decode_attn.cu
     cache/kv_cache_manager.cpp
     kernel/elementwise/elementwise.cu
+    kernel/sampling/sample.cu
     model/loader.cpp
     model/registry.cpp
     model/qwen3/qwen3_model.cpp
     model/qwen3/qwen3_weights.cpp
-    model/llama2/llama_model.cpp
-    model/llama2/llama2_weights.cpp
-    tokenizer/byte_level_bpe_tokenizer.cpp
-    sampling/sampler.cpp
 )
 
 target_include_directories(engine

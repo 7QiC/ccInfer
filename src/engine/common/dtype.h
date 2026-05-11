@@ -5,6 +5,7 @@
 #include <string_view>
 
 namespace ccinfer {
+namespace engine {
 
 enum class DType : uint8_t {
     kUnknown,
@@ -42,4 +43,5 @@ inline constexpr std::string_view dtype_name(DType dt) noexcept {
     return "unknown";
 }
 
+}  // namespace engine
 }  // namespace ccinfer

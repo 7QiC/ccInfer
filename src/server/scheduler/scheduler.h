@@ -72,7 +72,7 @@ private:
 
     void filter_active_order();
 
-    bool send_event(const TokenSink& sink, GeneratedToken tok);
+    bool send_event(const TokenSink& sink, Result<GeneratedToken> result);
     bool send_token_event(StatePtr& state);
     bool send_terminal_event(StatePtr& state);
     bool send_error_event(StatePtr& state, ErrorCode err);

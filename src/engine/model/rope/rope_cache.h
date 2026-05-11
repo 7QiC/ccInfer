@@ -2,6 +2,7 @@
 
 #include <cuda_runtime.h>
 
+#include <cstddef>
 #include <memory>
 
 #include "common/result.h"
@@ -24,8 +25,10 @@ public:
     int half_rotary_dim() const noexcept { return rotary_dim_ / 2; }
     float rope_theta() const noexcept { return rope_theta_; }
 
-    size_t numel() const noexcept { return static_cast<size_t>(max_position_) * half_rotary_dim(); }
-    size_t bytes() const noexcept { return numel() * sizeof(float2); }
+    std::size_t numel() const noexcept {
+        return static_cast<std::size_t>(max_position_) * half_rotary_dim();
+    }
+    std::size_t bytes() const noexcept { return numel() * sizeof(float2); }
 
 private:
     RopeCache() = default;

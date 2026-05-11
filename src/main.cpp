@@ -30,8 +30,10 @@ int main(int argc, char* argv[]) {
         std::cerr << "Invalid port: " << port << std::endl;
         return 1;
     }
-
-    std::cout << "ccInfer server starting on port " << port << std::endl;
+    if (model_path.empty()) {
+        std::cerr << "Error: --model-path is required (no dummy tokenizer available)" << std::endl;
+        return 1;
+    }
 
     // Infrastructure — work guards prevent run() from returning early
     // when there is temporarily no work.
@@ -48,15 +50,20 @@ int main(int argc, char* argv[]) {
     }
 
     // Server (server layer)
-    ccinfer::server::Server server(http_io, scheduler_io, engine,
-                                   static_cast<uint16_t>(port));
-    server.start();
+    ccinfer::server::Server server(http_io, scheduler_io, engine, static_cast<uint16_t>(port),
+                                   model_path);
+    auto sr = server.start();
+    if (!sr) {
+        std::cerr << "Server start failed: " << ccinfer::error_message(sr.error()) << std::endl;
+        engine.shutdown();
+        return 1;
+    }
 
     // Signal handling — only sets a flag; no complex work in signal handler.
     std::atomic<bool> shutdown_flag{false};
     boost::asio::signal_set signals(http_io, SIGINT, SIGTERM);
-    signals.async_wait([&shutdown_flag](const boost::system::error_code&, int) {
-        shutdown_flag.store(true);
+    signals.async_wait([&shutdown_flag](const boost::system::error_code& ec, int) {
+        if (!ec) shutdown_flag.store(true);
     });
 
     // Threads
@@ -69,15 +76,13 @@ int main(int argc, char* argv[]) {
     }
 
     // Graceful shutdown.
-    // Order:
-    //   1. Initiate HTTP + Scheduler shutdown (non-blocking).
-    //   2. Wait for Scheduler shutdown first (releases sequences, sends
-    //      terminal events to HTTP TokenSinks).
-    //   3. Wait for HttpServer shutdown (accept loop exited, sockets drained).
-    //   4. Shutdown Engine (all sequences already released).
-    //   5. Reset work guards so io_context::run() can return.
-    //   6. Stop io_contexts (safety, in case anything still lingers).
-    //   7. Join threads.
+    //   1. server.shutdown() — triggers HttpServer shutdown (closes sockets,
+    //      channels, drains SSE coroutines).
+    //   2. server.wait_shutdown() — waits for HTTP drain, then triggers and
+    //      waits for Scheduler cleanup (releases sequences, sends terminal
+    //      events through already-draining channels).
+    //   3. engine.shutdown() — all sequences released, safe to stop Engine.
+    //   4. Reset work guards + stop io_contexts + join threads.
     std::cout << "Shutting down..." << std::endl;
 
     server.shutdown();

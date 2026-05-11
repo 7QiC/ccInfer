@@ -7,8 +7,8 @@
 using namespace ccinfer;
 using namespace ccinfer::engine;
 
-TEST(ModelConfigTest, FromLlamaJson) {
-    nlohmann::json j = {{"architectures", {"LlamaForCausalLM"}},
+TEST(ModelConfigTest, FromQwen3Json) {
+    nlohmann::json j = {{"architectures", {"Qwen3ForCausalLM"}},
                         {"hidden_size", 2048},
                         {"num_attention_heads", 16},
                         {"num_key_value_heads", 4},
@@ -21,7 +21,7 @@ TEST(ModelConfigTest, FromLlamaJson) {
 
     auto cfg = ModelConfig::from_json(j);
     ASSERT_TRUE(cfg.has_value());
-    EXPECT_EQ(cfg->arch_, ModelArch::Llama);
+    EXPECT_EQ(cfg->arch_, ModelArch::Qwen3);
     EXPECT_EQ(cfg->n_layers_, 16);
     EXPECT_EQ(cfg->n_q_heads_, 16);
     EXPECT_EQ(cfg->n_kv_heads_, 4);
@@ -40,13 +40,13 @@ TEST(ModelConfigTest, UnknownArchitecture) {
                         {"max_position_embeddings", 4096}};
 
     auto cfg = ModelConfig::from_json(j);
-    ASSERT_TRUE(cfg.has_value());
-    EXPECT_EQ(cfg->arch_, ModelArch::Unknown);
+    EXPECT_FALSE(cfg.has_value());
+    EXPECT_EQ(cfg.error(), ErrorCode::ModelUnsupportedArch);
 }
 
 TEST(ModelConfigTest, MissingRequiredFields) {
-    nlohmann::json j = {{"architectures", {"LlamaForCausalLM"}}};
+    nlohmann::json j = {{"architectures", {"Qwen3ForCausalLM"}}};
     auto cfg = ModelConfig::from_json(j);
     EXPECT_FALSE(cfg.has_value());
-    EXPECT_EQ(cfg.error(), ErrorCode::ModelLoadFailed);
+    EXPECT_EQ(cfg.error(), ErrorCode::ModelConfigInvalid);
 }

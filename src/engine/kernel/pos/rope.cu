@@ -18,7 +18,7 @@ __global__ void rope_split_half_scalar_kernel(__nv_bfloat16* __restrict__ q,
                                               const int32_t* __restrict__ positions,
                                               const float2* __restrict__ rope_cache, int num_tokens,
                                               int num_q_heads, int num_kv_heads, int head_dim,
-                                              int rotary_dim, int max_position) {
+                                              int rotary_dim, int rope_cache_max_position) {
     const int pair_idx = blockIdx.x * blockDim.x + threadIdx.x;
     const int token = blockIdx.y;
     const int logical_head = blockIdx.z;
@@ -33,7 +33,7 @@ __global__ void rope_split_half_scalar_kernel(__nv_bfloat16* __restrict__ q,
     __nv_bfloat16* x = is_q ? q : k;
 
     const int pos = positions[token];
-    if (pos < 0 || pos >= max_position) return;
+    if (pos < 0 || pos >= rope_cache_max_position) return;
 
     const int64_t base = (static_cast<int64_t>(token) * num_heads + head) * head_dim;
     const int i0 = pair_idx;
@@ -53,7 +53,7 @@ __global__ void rope_split_half_bf162_kernel(__nv_bfloat16* __restrict__ q,
                                              const int32_t* __restrict__ positions,
                                              const float2* __restrict__ rope_cache, int num_tokens,
                                              int num_q_heads, int num_kv_heads, int head_dim,
-                                             int rotary_dim, int max_position) {
+                                             int rotary_dim, int rope_cache_max_position) {
     const int pair2 = (blockIdx.x * blockDim.x + threadIdx.x) * 2;
     const int token = blockIdx.y;
     const int logical_head = blockIdx.z;
@@ -68,7 +68,7 @@ __global__ void rope_split_half_bf162_kernel(__nv_bfloat16* __restrict__ q,
     __nv_bfloat16* x = is_q ? q : k;
 
     const int pos = positions[token];
-    if (pos < 0 || pos >= max_position) return;
+    if (pos < 0 || pos >= rope_cache_max_position) return;
 
     const int64_t base = (static_cast<int64_t>(token) * num_heads + head) * head_dim;
 
@@ -94,8 +94,8 @@ __global__ void rope_split_half_bf162_kernel(__nv_bfloat16* __restrict__ q,
 
 Result<void> launch_rope(__nv_bfloat16* q, __nv_bfloat16* k, const int32_t* positions,
                          const float2* rope_cache, int num_tokens, int num_q_heads,
-                         int num_kv_heads, int head_dim, int rotary_dim, int max_position,
-                         cudaStream_t stream) {
+                         int num_kv_heads, int head_dim, int rotary_dim,
+                         int rope_cache_max_position, cudaStream_t stream) {
     const int half_rotary_dim = rotary_dim / 2;
     const int total_heads = num_q_heads + num_kv_heads;
     constexpr int kThreads = 64;
@@ -108,14 +108,14 @@ Result<void> launch_rope(__nv_bfloat16* q, __nv_bfloat16* k, const int32_t* posi
         dim3 grid(ceil_div(n2, kThreads), num_tokens, total_heads);
         rope_split_half_bf162_kernel<<<grid, kThreads, 0, stream>>>(
             q, k, positions, rope_cache, num_tokens, num_q_heads, num_kv_heads, head_dim,
-            rotary_dim, max_position);
+            rotary_dim, rope_cache_max_position);
     } else {
         dim3 grid(ceil_div(half_rotary_dim, kThreads), num_tokens, total_heads);
         rope_split_half_scalar_kernel<<<grid, kThreads, 0, stream>>>(
             q, k, positions, rope_cache, num_tokens, num_q_heads, num_kv_heads, head_dim,
-            rotary_dim, max_position);
+            rotary_dim, rope_cache_max_position);
     }
-    return cuda_check(cudaGetLastError());
+    return cuda_check_last_error();
 }
 
 }  // namespace engine

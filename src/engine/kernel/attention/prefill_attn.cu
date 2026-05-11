@@ -276,7 +276,7 @@ Result<void> launch_prefill_attention(const __nv_bfloat16* q, const __nv_bfloat1
         total_query_tokens, max_blocks_per_req, num_q_heads, num_kv_heads, head_dim,
         cache_block_size, scale);
 
-    return cuda_check(cudaGetLastError());
+    return cuda_check_last_error();
 }
 
 }  // namespace engine

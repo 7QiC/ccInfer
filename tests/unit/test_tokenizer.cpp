@@ -4,7 +4,7 @@
 #include <fstream>
 #include <string>
 
-#include "engine/tokenizer/byte_level_bpe_tokenizer.h"
+#include "server/tokenizer/byte_level_bpe_tokenizer.h"
 
 namespace {
 
@@ -133,13 +133,13 @@ protected:
 };
 
 TEST_F(TokenizerTest, LoadAndVocabSize) {
-    ccinfer::engine::ByteLevelBpeTokenizer tok;
+    ccinfer::server::ByteLevelBpeTokenizer tok;
     ASSERT_TRUE(tok.load(path_));
     EXPECT_EQ(tok.vocab_size(), 100);
 }
 
 TEST_F(TokenizerTest, EncodeSingleChar) {
-    ccinfer::engine::ByteLevelBpeTokenizer tok;
+    ccinfer::server::ByteLevelBpeTokenizer tok;
     ASSERT_TRUE(tok.load(path_));
 
     auto ids = tok.encode("H");
@@ -149,7 +149,7 @@ TEST_F(TokenizerTest, EncodeSingleChar) {
 }
 
 TEST_F(TokenizerTest, EncodeMultiChar) {
-    ccinfer::engine::ByteLevelBpeTokenizer tok;
+    ccinfer::server::ByteLevelBpeTokenizer tok;
     ASSERT_TRUE(tok.load(path_));
 
     auto ids = tok.encode("Hello");
@@ -163,7 +163,7 @@ TEST_F(TokenizerTest, EncodeMultiChar) {
 }
 
 TEST_F(TokenizerTest, DecodeSingleToken) {
-    ccinfer::engine::ByteLevelBpeTokenizer tok;
+    ccinfer::server::ByteLevelBpeTokenizer tok;
     ASSERT_TRUE(tok.load(path_));
 
     auto text = tok.decode({40});
@@ -176,7 +176,7 @@ TEST_F(TokenizerTest, DecodeSingleToken) {
 }
 
 TEST_F(TokenizerTest, EncodeDecodeRoundtrip) {
-    ccinfer::engine::ByteLevelBpeTokenizer tok;
+    ccinfer::server::ByteLevelBpeTokenizer tok;
     ASSERT_TRUE(tok.load(path_));
 
     auto ids = tok.encode("Hello");

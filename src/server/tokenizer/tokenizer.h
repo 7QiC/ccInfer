@@ -9,7 +9,7 @@
 #include "common/result.h"
 
 namespace ccinfer {
-namespace engine {
+namespace server {
 
 class Tokenizer {
 public:
@@ -33,5 +33,5 @@ public:
 
 Result<std::unique_ptr<Tokenizer>> create_tokenizer(const std::string& model_dir);
 
-}  // namespace engine
+}  // namespace server
 }  // namespace ccinfer

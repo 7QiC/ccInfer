@@ -93,7 +93,7 @@ Result<void> launch_rms_norm(const __nv_bfloat16* input, const __nv_bfloat16* we
         rms_norm_scalar_kernel<kBlockSize>
             <<<grid, block, 0, stream>>>(input, weight, output, rows, dim, eps);
 
-    return cuda_check(cudaGetLastError());
+    return cuda_check_last_error();
 }
 
 }  // namespace engine

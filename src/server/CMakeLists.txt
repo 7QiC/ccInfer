@@ -2,6 +2,7 @@ add_library(server STATIC
     http/http_server.cpp
     scheduler/scheduler.cpp
     server.cpp
+    tokenizer/byte_level_bpe_tokenizer.cpp
 )
 
 target_include_directories(server

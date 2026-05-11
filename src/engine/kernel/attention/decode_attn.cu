@@ -267,7 +267,7 @@ Result<void> launch_decode_attention(const __nv_bfloat16* q, const __nv_bfloat16
         q, k_cache, v_cache, block_table, context_lens, output, batch_size, max_blocks_per_req,
         num_q_heads, num_kv_heads, head_dim, cache_block_size, scale);
 
-    return cuda_check(cudaGetLastError());
+    return cuda_check_last_error();
 }
 
 }  // namespace engine

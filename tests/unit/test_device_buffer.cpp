@@ -16,10 +16,12 @@ TEST(DeviceBufferTest, DefaultConstruction) {
 }
 
 TEST(DeviceBufferTest, AllocateAndZero) {
-    CudaBackend backend;
-    ASSERT_TRUE(backend.init(0).has_value());
-    auto buf = backend.allocate_buffer(1024 * sizeof(float));
-    ASSERT_NE(buf, nullptr);
+    auto backend_r = CudaBackend::create(0);
+    ASSERT_TRUE(backend_r.has_value());
+    auto& backend = **backend_r;
+    auto buf_r = backend.allocate_buffer(1024 * sizeof(float));
+    ASSERT_TRUE(buf_r.has_value());
+    auto buf = std::move(*buf_r);
     EXPECT_NE(buf->data(), nullptr);
     EXPECT_FALSE(!buf);
     EXPECT_EQ(buf->bytes() / sizeof(float), 1024);
@@ -33,9 +35,12 @@ TEST(DeviceBufferTest, AllocateAndZero) {
 }
 
 TEST(DeviceBufferTest, MoveConstruction) {
-    CudaBackend backend;
-    ASSERT_TRUE(backend.init(0).has_value());
-    auto a = backend.allocate_buffer(512 * sizeof(float));
+    auto backend_r = CudaBackend::create(0);
+    ASSERT_TRUE(backend_r.has_value());
+    auto& backend = **backend_r;
+    auto a_r = backend.allocate_buffer(512 * sizeof(float));
+    ASSERT_TRUE(a_r.has_value());
+    auto a = std::move(*a_r);
     void* ptr = a->data();
     EXPECT_NE(ptr, nullptr);
 
@@ -46,10 +51,15 @@ TEST(DeviceBufferTest, MoveConstruction) {
 }
 
 TEST(DeviceBufferTest, MoveAssignment) {
-    CudaBackend backend;
-    ASSERT_TRUE(backend.init(0).has_value());
-    auto a = backend.allocate_buffer(256 * sizeof(float));
-    auto b = backend.allocate_buffer(128 * sizeof(float));
+    auto backend_r = CudaBackend::create(0);
+    ASSERT_TRUE(backend_r.has_value());
+    auto& backend = **backend_r;
+    auto a_r = backend.allocate_buffer(256 * sizeof(float));
+    ASSERT_TRUE(a_r.has_value());
+    auto a = std::move(*a_r);
+    auto b_r = backend.allocate_buffer(128 * sizeof(float));
+    ASSERT_TRUE(b_r.has_value());
+    auto b = std::move(*b_r);
     void* ptr_a = a->data();
     EXPECT_NE(ptr_a, nullptr);
 

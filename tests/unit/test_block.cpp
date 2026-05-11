@@ -48,7 +48,7 @@ TEST(BlockTest, FreeListPushPop) {
 TEST(BlockTableTest, Empty) {
     BlockTable bt;
     EXPECT_EQ(bt.size(), 0);
-    EXPECT_EQ(bt.token_capacity(), 0);
+    EXPECT_EQ(bt.token_capacity(kKVBlockSize), 0);
 }
 
 TEST(BlockTableTest, PushBackAndIndex) {
@@ -61,7 +61,7 @@ TEST(BlockTableTest, PushBackAndIndex) {
     EXPECT_EQ(bt[0], 7);
     EXPECT_EQ(bt[1], 3);
     EXPECT_EQ(bt[2], 42);
-    EXPECT_EQ(bt.token_capacity(), 3 * kKVBlockSize);
+    EXPECT_EQ(bt.token_capacity(kKVBlockSize), 3 * kKVBlockSize);
 }
 
 TEST(BlockTableTest, SharedCount) {

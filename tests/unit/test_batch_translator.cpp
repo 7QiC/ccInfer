@@ -17,9 +17,12 @@ namespace {
 class BatchTranslatorTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        auto b = CudaBackend::create(0);
+        ASSERT_TRUE(b.has_value());
+        backend_ = std::move(*b);
         auto r = kv_mgr_.init(32);
         ASSERT_TRUE(r.has_value());
-        translator_ = std::make_unique<BatchTranslator>(backend_, kv_mgr_, kBlockSize);
+        translator_ = std::make_unique<BatchTranslator>(*backend_, kv_mgr_, kBlockSize);
 
         // Create one sequence with a 20-token prompt.
         SequenceState seq;
@@ -30,7 +33,7 @@ protected:
     }
 
     static constexpr int kBlockSize = 16;
-    DefaultBackend backend_;
+    std::unique_ptr<DefaultBackend> backend_;
     KVCacheManager kv_mgr_;
     std::unique_ptr<BatchTranslator> translator_;
     std::unordered_map<SequenceId, SequenceState> sequences_;
@@ -52,7 +55,7 @@ TEST_F(BatchTranslatorTest, PrefillAllocatesBlocks) {
     const auto& pb = result->physical_batch;
     EXPECT_EQ(pb.num_tokens, 16);
     EXPECT_EQ(pb.batch_size, 1);
-    EXPECT_EQ(pb.max_blocks_per_seq, 1);
+    EXPECT_EQ(pb.max_blocks_per_req, 1);
 
     // Commit: kv_written and prompt_processed advance.
     auto commit_r = translator_->commit(batch, sequences_, result->per_item);
@@ -81,8 +84,10 @@ TEST_F(BatchTranslatorTest, RollbackRestoresFreeBlocks) {
 }
 
 TEST_F(BatchTranslatorTest, DecodeNoNewBlock) {
-    // Set up: prefill already done, context fits in 1 block.
+    // Set up: prefill already done (8-token prompt), context fits in 1 block.
+    sequences_[1].prompt_tokens = std::vector<int32_t>(8, 1);
     sequences_[1].kv_written = 8;
+    sequences_[1].prompt_processed = 8;  // prefill complete
     auto alloc = kv_mgr_.allocate_blocks(1);  // 16 tokens → 1 block
     ASSERT_TRUE(alloc.has_value());
     for (int i = 0; i < alloc->size(); ++i) {
@@ -120,7 +125,7 @@ TEST_F(BatchTranslatorTest, PrefillSpansMultipleBlocks) {
     ASSERT_TRUE(result.has_value());
 
     // 20 tokens → 2 blocks (ceil(20/16)).
-    EXPECT_EQ(result->physical_batch.max_blocks_per_seq, 2);
+    EXPECT_EQ(result->physical_batch.max_blocks_per_req, 2);
     EXPECT_EQ(result->physical_batch.num_tokens, 20);
 
     auto commit_r = translator_->commit(batch, sequences_, result->per_item);

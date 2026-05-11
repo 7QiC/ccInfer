@@ -1,4 +1,4 @@
-#include "engine/tokenizer/byte_level_bpe_tokenizer.h"
+#include "server/tokenizer/byte_level_bpe_tokenizer.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -10,7 +10,7 @@
 #include "common/error_code.h"
 
 namespace ccinfer {
-namespace engine {
+namespace server {
 
 namespace {
 
@@ -21,13 +21,13 @@ std::string read_file(const std::string& path) {
     }
 
     f.seekg(0, std::ios::end);
-    const auto end = f.tellg();
+    const auto end = static_cast<std::streamoff>(f.tellg());
     if (end <= 0) {
         return {};
     }
 
     std::string content;
-    content.resize(static_cast<size_t>(end));
+    content.resize(static_cast<std::size_t>(end));
 
     f.seekg(0, std::ios::beg);
     f.read(content.data(), static_cast<std::streamsize>(content.size()));
@@ -40,7 +40,7 @@ std::string read_file(const std::string& path) {
 }
 
 bool starts_with_at(std::string_view text, size_t pos, std::string_view pattern) {
-    if (pos + pattern.size() > text.size()) {
+    if (pattern.size() > text.size() || pos > text.size() - pattern.size()) {
         return false;
     }
 
@@ -140,15 +140,25 @@ Result<void> ByteLevelBpeTokenizer::load(const std::string& path) {
     merge_rank_.clear();
     special_token_to_id_.clear();
     id_to_special_token_.clear();
+    max_token_id_ = -1;
+    bos_token_id_ = -1;
+    eos_token_id_ = -1;
+    pad_token_id_ = -1;
+    unk_token_id_ = -1;
 
     for (const auto& [token, id_val] : model["vocab"].items()) {
         if (!id_val.is_number_integer()) {
             return std::unexpected(ErrorCode::ModelLoadFailed);
         }
 
-        const int32_t id = id_val.get<int32_t>();
+        const int64_t raw = id_val.get<int64_t>();
+        if (raw < 0 || raw >= static_cast<int64_t>(std::numeric_limits<int32_t>::max())) {
+            return std::unexpected(ErrorCode::ModelLoadFailed);
+        }
+        const int32_t id = static_cast<int32_t>(raw);
         vocab_[token] = id;
         id_to_token_[id] = token;
+        if (id > max_token_id_) max_token_id_ = id;
     }
 
     if (model.contains("merges") && model["merges"].is_array()) {
@@ -180,6 +190,7 @@ Result<void> ByteLevelBpeTokenizer::load(const std::string& path) {
     }
 
     // Parse added/special tokens from tokenizer.json.
+    // Only tokens with "special":true are added to the special-token maps.
     if (j.contains("added_tokens") && j["added_tokens"].is_array()) {
         for (const auto& tok : j["added_tokens"]) {
             if (!tok.is_object()) {
@@ -195,12 +206,24 @@ Result<void> ByteLevelBpeTokenizer::load(const std::string& path) {
             }
 
             const std::string content = tok["content"].get<std::string>();
-            const int32_t id = tok["id"].get<int32_t>();
+            const int64_t raw = tok["id"].get<int64_t>();
+            if (raw < 0 || raw >= static_cast<int64_t>(std::numeric_limits<int32_t>::max())) {
+                continue;
+            }
+            const int32_t id = static_cast<int32_t>(raw);
 
-            special_token_to_id_[content] = id;
-            id_to_special_token_[id] = content;
             vocab_[content] = id;
             id_to_token_[id] = content;
+            if (id > max_token_id_) max_token_id_ = id;
+
+            bool is_special = false;
+            if (tok.contains("special") && tok["special"].is_boolean()) {
+                is_special = tok["special"].get<bool>();
+            }
+            if (is_special) {
+                special_token_to_id_[content] = id;
+                id_to_special_token_[id] = content;
+            }
 
             if (content == "<s>" || content == "<|begin_of_text|>") {
                 bos_token_id_ = id;
@@ -220,8 +243,6 @@ Result<void> ByteLevelBpeTokenizer::load(const std::string& path) {
         auto it = vocab_.find(token);
         if (it != vocab_.end() && *dst < 0) {
             *dst = it->second;
-            special_token_to_id_[token] = it->second;
-            id_to_special_token_[it->second] = token;
         }
     };
 
@@ -382,62 +403,146 @@ bool ByteLevelBpeTokenizer::try_match_special(std::string_view text, size_t pos,
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Simplified byte-level BPE tokenizer — Phase 4.1 demo version.
+// NOT a HuggingFace-exact tokenizer pipeline.
+// ---------------------------------------------------------------------------
+//
+// Implemented:
+//   - GPT-2 byte→unicode mapping (build_byte_maps)
+//   - BPE merge restricted within pre-tokenizer segments
+//   - Special-token matching (only tokens from added_tokens with special=true)
+//   - Simplified pre-tokenizer (whitespace/newline boundary rules)
+//   - Decode (byte→unicode→UTF-8 via str_to_byte_)
+//
+// NOT implemented (required for strict HF token-id alignment):
+//   - Full pre_tokenizer regex from tokenizer.json (contractions, \p{L}/\p{N},
+//     punctuation grouping, the exact alternation order)
+//   - normalizer / decoder / post_processor pipeline stages
+//   - Added-token lstrip / rstrip / normalized semantics
+//
+// add_special_tokens is ignored (Phase 4.1 design):
+//   Qwen3 does not auto-add BOS/EOS with add_special_tokens=True.
+//   Mid-text special tokens (<|im_start|>, <|endoftext|>, etc.) are always
+//   recognised because they come from added_tokens with special=true.
+//   Vocab-only tokens like <s> / </s> that are NOT in added_tokens are
+//   NOT treated as special — they go through normal byte-encode + BPE.
+//
+// Current alignment vs Qwen3-0.6B HF tokenizer: 43/46 cases pass.
+// 3 known limitations (pre_tokenizer regex granularity):
+//   - C++ template syntax with angle brackets
+//   - Markdown code fences (```)
+//   - HTML-like tags with mixed alphanumeric + punctuation
+//
+// Suitable for: smoke tests, demo inference, decode round-trip.
+// NOT suitable as: production tokenizer or HF-exact token-id baseline.
 Result<std::vector<int32_t>> ByteLevelBpeTokenizer::encode(std::string_view text,
                                                            bool add_special_tokens) const {
+    (void)add_special_tokens;  // Phase 4.1: not used (see above).
     if (vocab_.empty()) {
         return std::unexpected(ErrorCode::ModelLoadFailed);
     }
 
     std::vector<int32_t> ids;
 
-    if (add_special_tokens && bos_token_id_ >= 0) {
-        ids.push_back(bos_token_id_);
-    }
-
     size_t pos = 0;
     size_t segment_start = 0;
 
-    auto flush_segment = [&](size_t begin, size_t end) -> Result<void> {
-        if (end <= begin) {
-            return {};
-        }
-
+    auto flush_bpe = [&](size_t begin, size_t end) -> Result<void> {
+        if (end <= begin) return {};
         auto seg_ids = encode_normal_segment(text.substr(begin, end - begin));
-        if (!seg_ids) {
-            return std::unexpected(seg_ids.error());
-        }
-
+        if (!seg_ids) return std::unexpected(seg_ids.error());
         ids.insert(ids.end(), seg_ids->begin(), seg_ids->end());
         return {};
     };
 
+    auto is_space = [](char c) { return c == ' ' || c == '\t'; };
+    auto is_newline = [](char c) { return c == '\n' || c == '\r'; };
+
+    auto flush_if_any = [&](size_t begin, size_t end) -> Result<void> {
+        if (end <= begin) return {};
+        return flush_bpe(begin, end);
+    };
+
+    // Pre-tokenizer: split text into independent BPE segments.
+    //
+    // Rules (approximating GPT-2 / ByteLevel regex):
+    //   1. Special tokens are matched first.
+    //   2. Newlines always form their own segments.
+    //   3. Spaces/tabs: at most ONE space attaches to the following word.
+    //      For N spaces: (N-1) spaces form a segment, last space + word is another.
+    //   4. Trailing whitespace is its own segment.
+
     while (pos < text.size()) {
         std::string matched_token;
         int32_t matched_id = -1;
-
         if (try_match_special(text, pos, &matched_token, &matched_id)) {
-            auto r = flush_segment(segment_start, pos);
-            if (!r) {
-                return std::unexpected(r.error());
-            }
-
+            auto r = flush_if_any(segment_start, pos);
+            if (!r) return std::unexpected(r.error());
             ids.push_back(matched_id);
             pos += matched_token.size();
             segment_start = pos;
             continue;
         }
 
-        ++pos;
+        if (is_newline(text[pos])) {
+            auto r = flush_if_any(segment_start, pos);
+            if (!r) return std::unexpected(r.error());
+            segment_start = pos;
+            while (pos < text.size() && is_newline(text[pos])) ++pos;
+            r = flush_if_any(segment_start, pos);
+            if (!r) return std::unexpected(r.error());
+            segment_start = pos;
+            continue;
+        }
+
+        if (is_space(text[pos])) {
+            auto r = flush_if_any(segment_start, pos);
+            if (!r) return std::unexpected(r.error());
+
+            size_t space_end = pos;
+            while (space_end < text.size() && is_space(text[space_end])) ++space_end;
+            size_t space_len = space_end - pos;
+
+            bool has_next = false;
+            for (size_t k = space_end; k < text.size(); ++k) {
+                std::string tmp;
+                int32_t tmp_id;
+                if (try_match_special(text, k, &tmp, &tmp_id)) break;
+                if (!is_space(text[k]) && !is_newline(text[k])) {
+                    has_next = true;
+                    break;
+                }
+            }
+
+            if (!has_next) {
+                // Trailing whitespace — segment all of it.
+                segment_start = pos;
+                pos = space_end;
+                r = flush_if_any(segment_start, pos);
+                if (!r) return std::unexpected(r.error());
+                segment_start = pos;
+            } else if (space_len == 1) {
+                // Exactly one space — attach to the next word.
+                segment_start = pos;
+                pos = space_end;
+            } else {
+                // N >= 2 spaces: segment first (N-1), attach last one to word.
+                size_t split_at = pos + space_len - 1;
+                segment_start = pos;
+                pos = split_at;
+                r = flush_if_any(segment_start, pos);
+                if (!r) return std::unexpected(r.error());
+                segment_start = pos;
+                pos = space_end;
+            }
+        } else {
+            ++pos;
+        }
     }
 
-    auto r = flush_segment(segment_start, text.size());
-    if (!r) {
-        return std::unexpected(r.error());
-    }
-
-    if (add_special_tokens && eos_token_id_ >= 0) {
-        ids.push_back(eos_token_id_);
-    }
+    auto r = flush_if_any(segment_start, text.size());
+    if (!r) return std::unexpected(r.error());
 
     return ids;
 }
@@ -526,11 +631,11 @@ Result<std::unique_ptr<Tokenizer>> create_tokenizer(const std::string& model_dir
             return std::unexpected(r.error());
         }
 
-        return tokenizer;
+        return std::unique_ptr<Tokenizer>(std::move(tokenizer));
     }
 
     return std::unexpected(ErrorCode::ModelLoadFailed);
 }
 
-}  // namespace engine
+}  // namespace server
 }  // namespace ccinfer

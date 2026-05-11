@@ -140,9 +140,10 @@ __global__ void naive_attention_token_major_kernel(const __nv_bfloat16* __restri
 
 }  // namespace
 
-Result<void> launch_naive_attention(const __nv_bfloat16* q, const __nv_bfloat16* k, const __nv_bfloat16* v,
-                             __nv_bfloat16* output, int num_tokens, int n_q_heads, int n_kv_heads,
-                             int head_dim, cudaStream_t stream) {
+Result<void> launch_naive_attention(const __nv_bfloat16* q, const __nv_bfloat16* k,
+                                    const __nv_bfloat16* v, __nv_bfloat16* output, int num_tokens,
+                                    int n_q_heads, int n_kv_heads, int head_dim,
+                                    cudaStream_t stream) {
     // Shared memory holds one FP32 score per token.
     // This kernel is intended for small/medium sequence correctness tests.
     const size_t shared_bytes = static_cast<size_t>(num_tokens) * sizeof(float);
@@ -174,7 +175,7 @@ Result<void> launch_naive_attention(const __nv_bfloat16* q, const __nv_bfloat16*
     naive_attention_token_major_kernel<kBlockSize><<<grid, block, shared_bytes, stream>>>(
         q, k, v, output, num_tokens, n_q_heads, n_kv_heads, head_dim, gqa, scale);
 
-    return cuda_check(cudaGetLastError());
+    return cuda_check_last_error();
 }
 
 }  // namespace engine

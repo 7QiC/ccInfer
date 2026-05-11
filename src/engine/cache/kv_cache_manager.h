@@ -16,6 +16,11 @@ class KVCacheManager {
 public:
     KVCacheManager() = default;
 
+    KVCacheManager(const KVCacheManager&) = delete;
+    KVCacheManager& operator=(const KVCacheManager&) = delete;
+    KVCacheManager(KVCacheManager&&) = delete;
+    KVCacheManager& operator=(KVCacheManager&&) = delete;
+
     Result<void> init(int max_blocks);
 
     Result<BlockTable> allocate_blocks(int num_blocks);

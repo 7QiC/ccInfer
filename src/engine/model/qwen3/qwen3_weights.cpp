@@ -3,38 +3,54 @@
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 
+#include <cstddef>
+#include <limits>
 #include <memory>
+#include <string>
+#include <utility>
 
 namespace ccinfer {
 namespace engine {
 
 namespace {
 
-void merge_qkv(std::unique_ptr<DeviceBuffer>& qkv,
-               std::unique_ptr<DeviceBuffer>& q,
-               std::unique_ptr<DeviceBuffer>& k,
-               std::unique_ptr<DeviceBuffer>& v,
-               DefaultBackend& backend) {
-    const size_t q_bytes = q->bytes();
-    const size_t k_bytes = k->bytes();
-    const size_t v_bytes = v->bytes();
-    const size_t total_bytes = q_bytes + k_bytes + v_bytes;
+Result<void> merge_qkv(std::unique_ptr<DeviceBuffer>& qkv, std::unique_ptr<DeviceBuffer>& q,
+                       std::unique_ptr<DeviceBuffer>& k, std::unique_ptr<DeviceBuffer>& v,
+                       DefaultBackend& backend) {
+    const std::size_t q_bytes = q->bytes();
+    const std::size_t k_bytes = k->bytes();
+    const std::size_t v_bytes = v->bytes();
+    const std::size_t kMax = std::numeric_limits<std::size_t>::max();
+    if (q_bytes > kMax - k_bytes || v_bytes > kMax - q_bytes - k_bytes) {
+        return std::unexpected(ErrorCode::InvalidArgument);
+    }
+    const std::size_t total_bytes = q_bytes + k_bytes + v_bytes;
 
-    qkv = backend.allocate_buffer(total_bytes);
+    auto qkv_r = backend.allocate_buffer(total_bytes);
+    if (!qkv_r) return std::unexpected(qkv_r.error());
+    qkv = std::move(*qkv_r);
 
     auto* dst = static_cast<__nv_bfloat16*>(qkv->data());
-    backend.memcpy_d2d(dst, static_cast<const __nv_bfloat16*>(q->data()), q_bytes);
-    backend.memcpy_d2d(dst + q_bytes / sizeof(__nv_bfloat16),
-                       static_cast<const __nv_bfloat16*>(k->data()), k_bytes);
-    backend.memcpy_d2d(dst + (q_bytes + k_bytes) / sizeof(__nv_bfloat16),
-                       static_cast<const __nv_bfloat16*>(v->data()), v_bytes);
+    auto r = backend.memcpy_d2d(dst, static_cast<const __nv_bfloat16*>(q->data()), q_bytes);
+    if (!r) return r;
+    r = backend.memcpy_d2d(dst + q_bytes / sizeof(__nv_bfloat16),
+                           static_cast<const __nv_bfloat16*>(k->data()), k_bytes);
+    if (!r) return r;
+    r = backend.memcpy_d2d(dst + (q_bytes + k_bytes) / sizeof(__nv_bfloat16),
+                           static_cast<const __nv_bfloat16*>(v->data()), v_bytes);
+    if (!r) return r;
+
+    return backend.synchronize();
 }
 
 }  // namespace
 
-Result<Qwen3Weights> Qwen3Weights::load(DefaultBackend& backend,
-                                         const ModelConfig& config,
-                                         const WeightLoader& loader) {
+Result<Qwen3Weights> Qwen3Weights::load(DefaultBackend& backend, const ModelConfig& config,
+                                        const WeightLoader& loader) {
+    if (config.weight_dtype_ != DType::kBFloat16) {
+        return std::unexpected(ErrorCode::ModelUnsupportedDType);
+    }
+
     if (config.d_model_ <= 0 || config.n_q_heads_ <= 0 || config.n_kv_heads_ <= 0 ||
         config.head_dim_ <= 0 || config.n_layers_ <= 0 || config.d_ff_ <= 0 ||
         config.vocab_size_ <= 0) {
@@ -42,6 +58,9 @@ Result<Qwen3Weights> Qwen3Weights::load(DefaultBackend& backend,
     }
 
     if (config.n_q_heads_ % config.n_kv_heads_ != 0) {
+        return std::unexpected(ErrorCode::ModelShapeMismatch);
+    }
+    if (config.d_model_ != config.n_q_heads_ * config.head_dim_) {
         return std::unexpected(ErrorCode::ModelShapeMismatch);
     }
 
@@ -73,7 +92,7 @@ Result<Qwen3Weights> Qwen3Weights::load(DefaultBackend& backend,
         w.rms_final_ = std::move(*r);
     }
 
-    w.layers_.reserve(static_cast<size_t>(n_layers));
+    w.layers_.reserve(static_cast<std::size_t>(n_layers));
 
     for (int i = 0; i < n_layers; ++i) {
         const std::string p = "model.layers." + std::to_string(i);
@@ -81,8 +100,8 @@ Result<Qwen3Weights> Qwen3Weights::load(DefaultBackend& backend,
         Qwen3LayerWeights lw;
 
         {
-            auto r = loader.load<__nv_bfloat16>(backend, p + ".self_attn.o_proj.weight",
-                                                {D, nq * hd});
+            auto r =
+                loader.load<__nv_bfloat16>(backend, p + ".self_attn.o_proj.weight", {D, nq * hd});
             if (!r) return std::unexpected(r.error());
             lw.o_ = std::move(*r);
         }
@@ -107,30 +126,34 @@ Result<Qwen3Weights> Qwen3Weights::load(DefaultBackend& backend,
             lw.rms_attn_ = std::move(*r);
         }
         {
-            auto r = loader.load<__nv_bfloat16>(backend, p + ".post_attention_layernorm.weight",
-                                                {D});
+            auto r =
+                loader.load<__nv_bfloat16>(backend, p + ".post_attention_layernorm.weight", {D});
             if (!r) return std::unexpected(r.error());
             lw.rms_ffn_ = std::move(*r);
         }
 
-        auto q = loader.load<__nv_bfloat16>(backend, p + ".self_attn.q_proj.weight",
-                                            {nq * hd, D});
-        auto k = loader.load<__nv_bfloat16>(backend, p + ".self_attn.k_proj.weight",
-                                            {nkv * hd, D});
-        auto v = loader.load<__nv_bfloat16>(backend, p + ".self_attn.v_proj.weight",
-                                            {nkv * hd, D});
-        if (!q || !k || !v) {
-            return std::unexpected(ErrorCode::ModelLoadFailed);
-        }
+        auto q = loader.load<__nv_bfloat16>(backend, p + ".self_attn.q_proj.weight", {nq * hd, D});
+        if (!q) return std::unexpected(q.error());
+        auto k = loader.load<__nv_bfloat16>(backend, p + ".self_attn.k_proj.weight", {nkv * hd, D});
+        if (!k) return std::unexpected(k.error());
+        auto v = loader.load<__nv_bfloat16>(backend, p + ".self_attn.v_proj.weight", {nkv * hd, D});
+        if (!v) return std::unexpected(v.error());
 
-        merge_qkv(lw.qkv_, *q, *k, *v, backend);
+        auto mqkv = merge_qkv(lw.qkv_, *q, *k, *v, backend);
+        if (!mqkv) return std::unexpected(mqkv.error());
 
         // QK norm (Qwen3-specific).
-        auto qn = loader.load<__nv_bfloat16>(backend, p + ".self_attn.q_norm.weight", {hd});
-        if (qn) lw.q_norm_ = std::move(*qn);
+        if (loader.has(p + ".self_attn.q_norm.weight")) {
+            auto qn = loader.load<__nv_bfloat16>(backend, p + ".self_attn.q_norm.weight", {hd});
+            if (!qn) return std::unexpected(qn.error());
+            lw.q_norm_ = std::move(*qn);
+        }
 
-        auto kn = loader.load<__nv_bfloat16>(backend, p + ".self_attn.k_norm.weight", {hd});
-        if (kn) lw.k_norm_ = std::move(*kn);
+        if (loader.has(p + ".self_attn.k_norm.weight")) {
+            auto kn = loader.load<__nv_bfloat16>(backend, p + ".self_attn.k_norm.weight", {hd});
+            if (!kn) return std::unexpected(kn.error());
+            lw.k_norm_ = std::move(*kn);
+        }
 
         w.layers_.push_back(std::move(lw));
     }

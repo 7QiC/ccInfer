@@ -11,6 +11,13 @@ namespace ccinfer {
 namespace engine {
 
 // ---------------------------------------------------------------------------
+// Embedding gather
+// ---------------------------------------------------------------------------
+Result<void> launch_embed(const __nv_bfloat16* embed_table, const int32_t* token_ids,
+                          __nv_bfloat16* input_embeds, int num_tokens, int d_model,
+                          cudaStream_t stream);
+
+// ---------------------------------------------------------------------------
 // RMSNorm
 // ---------------------------------------------------------------------------
 Result<void> launch_rms_norm(const __nv_bfloat16* input, const __nv_bfloat16* weight,
@@ -22,8 +29,8 @@ Result<void> launch_rms_norm(const __nv_bfloat16* input, const __nv_bfloat16* we
 // ---------------------------------------------------------------------------
 Result<void> launch_rope(__nv_bfloat16* q, __nv_bfloat16* k, const int32_t* positions,
                          const float2* rope_cache, int num_tokens, int num_q_heads,
-                         int num_kv_heads, int head_dim, int rotary_dim, int max_position,
-                         cudaStream_t stream);
+                         int num_kv_heads, int head_dim, int rotary_dim,
+                         int rope_cache_max_position, cudaStream_t stream);
 
 // ---------------------------------------------------------------------------
 // SiLU-mul
@@ -78,11 +85,11 @@ Result<void> launch_write_kv_cache(const __nv_bfloat16* k_new, const __nv_bfloat
                                    int head_dim, int max_slots, cudaStream_t stream);
 
 // ---------------------------------------------------------------------------
-// Embedding gather
+// Sampling
 // ---------------------------------------------------------------------------
-Result<void> launch_embed(const __nv_bfloat16* embed_table, const int32_t* token_ids,
-                          __nv_bfloat16* input_embeds, int num_tokens, int d_model,
-                          cudaStream_t stream);
+Result<void> launch_greedy_sample(const float* logits, int32_t* tokens,
+                                  const int32_t* logits_indices, int batch_size, int vocab_size,
+                                  int num_tokens, cudaStream_t stream);
 
 }  // namespace engine
 }  // namespace ccinfer

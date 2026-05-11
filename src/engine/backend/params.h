@@ -15,8 +15,7 @@ namespace engine {
 // The exact row-major / column-major trick is handled inside CudaBackend::gemm.
 // Keep this struct as a thin backend parameter carrier.
 //
-// For BF16 Phase 2:
-//   a_, b_, c_ are expected to point to __nv_bfloat16 buffers.
+// lda_, ldb_, ldc_ must be > 0.
 // -----------------------------------------------------------------------------
 struct GemmParams {
     const void* a_ = nullptr;
@@ -33,7 +32,6 @@ struct GemmParams {
 
     bool trans_a_ = false;
     bool trans_b_ = false;
-
 };
 
 // -----------------------------------------------------------------------------
@@ -44,9 +42,7 @@ struct GemmParams {
 //   weight: [dim]
 //   output: [rows, dim]
 //
-// BF16 Phase 2:
-//   input_, weight_, output_ point to __nv_bfloat16.
-//   accumulation is FP32 inside CUDA kernel.
+// eps_ must be > 0.
 // -----------------------------------------------------------------------------
 struct RmsNormParams {
     const void* input_ = nullptr;
@@ -56,7 +52,6 @@ struct RmsNormParams {
     int rows_ = 0;
     int dim_ = 0;
     float eps_ = 1e-6f;
-
 };
 
 // -----------------------------------------------------------------------------
@@ -68,11 +63,8 @@ struct RmsNormParams {
 //   k: [num_tokens, num_kv_heads, head_dim]
 //
 // rope_cache:
-//   [max_position, rotary_dim / 2]
+//   [rope_cache_max_position_, rotary_dim / 2]
 //   each element is float2{cos, sin}
-//
-// BF16 Phase 2:
-//   q_, k_ point to __nv_bfloat16.
 // -----------------------------------------------------------------------------
 struct RopeParams {
     void* q_ = nullptr;
@@ -86,8 +78,7 @@ struct RopeParams {
     int num_kv_heads_ = 0;
     int head_dim_ = 0;
     int rotary_dim_ = 0;
-    int max_position_ = 0;
-
+    int rope_cache_max_position_ = 0;  // RoPE cache capacity; valid pos < this
 };
 
 // -----------------------------------------------------------------------------
@@ -100,9 +91,6 @@ struct RopeParams {
 //
 // Computes:
 //   output[i] = silu(gate[i]) * up[i]
-//
-// BF16 Phase 2:
-//   gate_, up_, output_ point to __nv_bfloat16.
 // -----------------------------------------------------------------------------
 struct SiluMulParams {
     const void* gate_ = nullptr;
@@ -110,13 +98,13 @@ struct SiluMulParams {
     void* output_ = nullptr;
 
     int64_t n_ = 0;
-
 };
 
 // -----------------------------------------------------------------------------
-// Naive attention
+// Naive attention — single-sequence causal self-attention baseline.
 //
-// Phase 2 correctness baseline.
+// HF correctness reference.  Does NOT use KV cache; Q, K, V are all the same
+// sequence length.  Causal mask: token at position i attends to [0, i].
 //
 // Canonical token-major layout:
 //
@@ -127,10 +115,6 @@ struct SiluMulParams {
 //
 // GQA mapping:
 //   kv_head = q_head / (num_q_heads / num_kv_heads)
-//
-// BF16 Phase 2:
-//   q_, k_, v_, output_ point to __nv_bfloat16.
-//
 // This is NOT the final high-performance attention backend.
 // -----------------------------------------------------------------------------
 struct NaiveAttnParams {
@@ -143,7 +127,6 @@ struct NaiveAttnParams {
     int num_q_heads_ = 0;
     int num_kv_heads_ = 0;
     int head_dim_ = 0;
-
 };
 
 // -----------------------------------------------------------------------------
@@ -155,27 +138,32 @@ struct NaiveAttnParams {
 // K/V are read exclusively from the KV cache (k_cache_/v_cache_).
 // Caller must write new K/V into cache via write_kv_cache before calling.
 //
+// Causal semantics:
+//   query_len_i  = query_start_loc_[i+1] - query_start_loc_[i]
+//   prefix_len_i = context_lens_[i] - query_len_i
+//   The j-th query token of request i may attend to [0, prefix_len_i + j].
+//
 // query_start_loc_[i] = start index in Q for request i (has batch_size_+1 elements)
-// context_lens_[i]   = total KV context for request i (prefix + new tokens)
+// context_lens_[i]   = prefix_len + query_len = total KV length for request i
 // block_table_: [batch_size_, max_blocks_per_req_] flattened, -1 for unused slots
 struct PrefillAttnParams {
     const void* q_ = nullptr;
     const void* k_cache_ = nullptr;
     const void* v_cache_ = nullptr;
 
-    const int32_t* block_table_ = nullptr;     // [batch, max_blocks_per_req]
-    const int32_t* query_start_loc_ = nullptr; // [batch + 1]
-    const int32_t* context_lens_ = nullptr;    // [batch]
+    const int32_t* block_table_ = nullptr;      // [batch, max_blocks_per_req]
+    const int32_t* query_start_loc_ = nullptr;  // [batch + 1]
+    const int32_t* context_lens_ = nullptr;     // [batch]
 
     void* output_ = nullptr;
 
+    int num_tokens_ = 0;  // total query tokens = query_start_loc_[batch_size_]
     int batch_size_ = 0;
     int max_blocks_per_req_ = 0;
     int num_q_heads_ = 0;
     int num_kv_heads_ = 0;
     int head_dim_ = 0;
     int cache_block_size_ = 0;
-
 };
 
 // -----------------------------------------------------------------------------
@@ -185,13 +173,15 @@ struct PrefillAttnParams {
 // Output:    [batch_size, num_q_heads, head_dim]
 //
 // K/V read from paged KV cache via block_table_ and context_lens_.
+// The current token's K/V must already be in cache via write_kv_cache.
+// context_lens_[i] includes the current token.
 struct DecodeAttnParams {
     const void* q_ = nullptr;
     const void* k_cache_ = nullptr;
     const void* v_cache_ = nullptr;
 
-    const int32_t* block_table_ = nullptr;  // [batch, max_blocks_per_req]
-    const int32_t* context_lens_ = nullptr; // [batch]
+    const int32_t* block_table_ = nullptr;   // [batch, max_blocks_per_req]
+    const int32_t* context_lens_ = nullptr;  // [batch]
 
     void* output_ = nullptr;
 
@@ -201,7 +191,6 @@ struct DecodeAttnParams {
     int num_kv_heads_ = 0;
     int head_dim_ = 0;
     int cache_block_size_ = 0;
-
 };
 
 // Write KV cache — scatter newly computed K/V into paged KV cache.
@@ -220,7 +209,6 @@ struct WriteKVCacheParams {
     int num_kv_heads_ = 0;
     int head_dim_ = 0;
     int max_slots_ = 0;
-
 };
 
 // -----------------------------------------------------------------------------
@@ -244,6 +232,39 @@ struct SplitQkvParams {
     int num_q_heads_ = 0;
     int num_kv_heads_ = 0;
     int head_dim_ = 0;
+};
+
+// -----------------------------------------------------------------------------
+// Embedding — GPU gather from embedding table
+// -----------------------------------------------------------------------------
+struct EmbedParams {
+    const void* embed_table_ = nullptr;   // [vocab, d_model] bf16
+    const int32_t* token_ids_ = nullptr;  // [num_tokens]
+    void* input_embeds_ = nullptr;        // [num_tokens, d_model] bf16
+    int num_tokens_ = 0;
+    int d_model_ = 0;
+};
+
+// -----------------------------------------------------------------------------
+// Sampling — backend-level.  Converted from common::SamplingParams.
+//
+// logits_:      [num_tokens, vocab] FP32
+// logits_indices_: [batch_size]  — logits_[logits_indices_[i], :] is seq i's row
+// tokens_out_:     [batch_size]
+//
+// Constraints: top_k_ in [0, vocab_size_], top_p_ in (0, 1], temperature_ >= 0.
+// -----------------------------------------------------------------------------
+struct SampleParams {
+    const float* logits_ = nullptr;            // [num_tokens, vocab]
+    const int32_t* logits_indices_ = nullptr;  // [batch_size]
+    int32_t* tokens_out_ = nullptr;            // [batch_size]
+    int num_tokens_ = 0;
+    int batch_size_ = 0;
+    int vocab_size_ = 0;
+    int top_k_ = 0;
+    float top_p_ = 1.0f;
+    float temperature_ = 0.0f;
+    uint32_t seed_ = 42;
 };
 
 }  // namespace engine

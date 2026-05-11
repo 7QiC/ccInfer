@@ -23,8 +23,7 @@ public:
 
     void register_model(std::string arch, ModelCreator creator);
 
-    Result<std::unique_ptr<Model>> create(const ModelConfig& config,
-                                          const WeightLoader& loader,
+    Result<std::unique_ptr<Model>> create(const ModelConfig& config, const WeightLoader& loader,
                                           DefaultBackend& backend) const;
 
 private:

@@ -1,16 +1,18 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
-#include "engine/tokenizer/tokenizer.h"
+#include "server/tokenizer/tokenizer.h"
 
 namespace ccinfer {
-namespace engine {
+namespace server {
 
 class ByteLevelBpeTokenizer final : public Tokenizer {
 public:
@@ -29,7 +31,7 @@ public:
     int32_t pad_token_id() const noexcept override { return pad_token_id_; }
     int32_t unk_token_id() const noexcept override { return unk_token_id_; }
 
-    int32_t vocab_size() const noexcept override { return static_cast<int32_t>(vocab_.size()); }
+    int32_t vocab_size() const noexcept override { return max_token_id_ + 1; }
 
 private:
     struct Pair {
@@ -70,11 +72,12 @@ private:
     std::unordered_map<std::string, int32_t> special_token_to_id_;
     std::unordered_map<int32_t, std::string> id_to_special_token_;
 
+    int32_t max_token_id_ = -1;
     int32_t bos_token_id_ = -1;
     int32_t eos_token_id_ = -1;
     int32_t pad_token_id_ = -1;
     int32_t unk_token_id_ = -1;
 };
 
-}  // namespace engine
+}  // namespace server
 }  // namespace ccinfer

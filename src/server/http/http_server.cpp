@@ -11,15 +11,20 @@
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/write.hpp>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
+#include <iostream>
 #include <istream>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 #include "server/common/types.h"
 #include "server/scheduler/scheduler.h"
+#include "server/tokenizer/tokenizer.h"
 
 namespace ccinfer {
 namespace server {
@@ -63,6 +68,12 @@ constexpr std::string_view kBadRequest =
     "Connection: close\r\n"
     "\r\n";
 
+constexpr std::string_view kInternalError =
+    "HTTP/1.1 500 Internal Server Error\r\n"
+    "Content-Length: 0\r\n"
+    "Connection: close\r\n"
+    "\r\n";
+
 // Phase 4.1 dummy tokenizer output.
 std::string token_text(int32_t token_id) { return "tok_" + std::to_string(token_id); }
 
@@ -74,9 +85,13 @@ std::string sse_frame(const GeneratedToken& tok) {
         j["token_id"] = tok.token_id;
     }
     j["done"] = tok.finished;
-    if (tok.error != ErrorCode::Ok) {
-        j["error"] = std::string(error_message(tok.error));
-    }
+    return "data: " + j.dump() + "\n\n";
+}
+
+std::string sse_error_frame(ErrorCode err) {
+    nlohmann::json j;
+    j["error"] = std::string(error_message(err));
+    j["done"] = true;
     return "data: " + j.dump() + "\n\n";
 }
 
@@ -95,6 +110,8 @@ struct CLResult {
     size_t value = 0;
 };
 
+constexpr size_t kMaxContentLength = 64 * 1024 * 1024;  // 64 MB
+
 CLResult parse_content_length(std::string_view line) {
     if (!starts_with_ci(line, "content-length:")) {
         return {};
@@ -111,7 +128,9 @@ CLResult parse_content_length(std::string_view line) {
         char ch = val[i];
         if (!std::isdigit(static_cast<unsigned char>(ch))) break;
         has_digit = true;
+        if (out > kMaxContentLength / 10) return {CLState::Invalid, 0};
         out = out * 10 + static_cast<size_t>(ch - '0');
+        if (out > kMaxContentLength) return {CLState::Invalid, 0};
     }
     if (!has_digit) return {CLState::Invalid, 0};
     for (; i < val.size(); ++i) {
@@ -122,21 +141,52 @@ CLResult parse_content_length(std::string_view line) {
 
 }  // namespace
 
-HttpServer::HttpServer(asio::io_context& io, uint16_t port, Scheduler& scheduler)
-    : io_(io), port_(port), scheduler_(scheduler), acceptor_(io) {}
+HttpServer::HttpServer(asio::io_context& io, uint16_t port, Scheduler& scheduler,
+                       Tokenizer& tokenizer)
+    : io_(io), port_(port), scheduler_(scheduler), tokenizer_(tokenizer), acceptor_(io) {}
 
 // Owner must call shutdown() + shutdown_async().wait() before destroying.
 HttpServer::~HttpServer() = default;
 
-void HttpServer::start() {
+Result<void> HttpServer::start() {
     bool expected = false;
-    if (!running_.compare_exchange_strong(expected, true)) return;
+    if (!running_.compare_exchange_strong(expected, true)) return {};
+
+    boost::system::error_code ec;
+
+    acceptor_.open(asio::ip::tcp::v4(), ec);
+    if (ec) {
+        running_ = false;
+        return std::unexpected(ErrorCode::NetworkBindFailed);
+    }
+
+    acceptor_.set_option(asio::ip::tcp::acceptor::reuse_address(true), ec);
+    if (ec) {
+        running_ = false;
+        return std::unexpected(ErrorCode::NetworkBindFailed);
+    }
+
+    acceptor_.bind(asio::ip::tcp::endpoint(asio::ip::tcp::v4(), port_), ec);
+    if (ec) {
+        running_ = false;
+        return std::unexpected(ErrorCode::NetworkBindFailed);
+    }
+
+    acceptor_.listen(asio::socket_base::max_listen_connections, ec);
+    if (ec) {
+        running_ = false;
+        return std::unexpected(ErrorCode::NetworkBindFailed);
+    }
+
     asio::co_spawn(io_, accept_loop(), detached);
+    return {};
 }
 
 void HttpServer::shutdown() { shutdown_async(); }
 
 std::shared_future<void> HttpServer::shutdown_async() {
+    std::lock_guard lock(shutdown_mutex_);
+
     if (shutdown_promise_) {
         return shutdown_future_;
     }
@@ -150,9 +200,15 @@ std::shared_future<void> HttpServer::shutdown_async() {
         boost::system::error_code ec;
         acceptor_.cancel(ec);
         acceptor_.close(ec);
-        for (auto& sock : active_sockets_) {
-            sock->cancel(ec);
-            sock->close(ec);
+
+        // Cancel all active connections: close socket + close channel + cancel
+        // scheduler request.  Closing the channel unblocks async_receive so
+        // the SSE coroutine can exit.
+        for (auto& conn : active_conns_) {
+            conn->socket->cancel(ec);
+            conn->socket->close(ec);
+            if (conn->channel) conn->channel->close();
+            if (!conn->request_id.empty()) scheduler_.cancel(conn->request_id);
         }
 
         if (!was_running) {
@@ -167,9 +223,10 @@ std::shared_future<void> HttpServer::shutdown_async() {
 
 void HttpServer::try_finish_shutdown_on_http_thread() {
     if (shutdown_done_sent_) return;
-    if (!running_ && accept_loop_done_ && active_sockets_.empty()) {
-        shutdown_done_sent_ = true;
+    if (!running_ && accept_loop_done_ && active_conns_.empty()) {
+        std::lock_guard lock(shutdown_mutex_);
         if (shutdown_promise_) {
+            shutdown_done_sent_ = true;
             shutdown_promise_->set_value();
         }
     }
@@ -186,32 +243,6 @@ asio::awaitable<void> HttpServer::accept_loop() {
 }
 
 asio::awaitable<void> HttpServer::accept_loop_impl() {
-    boost::system::error_code ec;
-
-    acceptor_.open(asio::ip::tcp::v4(), ec);
-    if (ec) {
-        running_ = false;
-        co_return;
-    }
-
-    acceptor_.set_option(asio::ip::tcp::acceptor::reuse_address(true), ec);
-    if (ec) {
-        running_ = false;
-        co_return;
-    }
-
-    acceptor_.bind(asio::ip::tcp::endpoint(asio::ip::tcp::v4(), port_), ec);
-    if (ec) {
-        running_ = false;
-        co_return;
-    }
-
-    acceptor_.listen(asio::socket_base::max_listen_connections, ec);
-    if (ec) {
-        running_ = false;
-        co_return;
-    }
-
     while (running_) {
         auto [acc_ec, socket] = co_await acceptor_.async_accept(as_tuple(deferred));
         if (acc_ec) {
@@ -219,8 +250,10 @@ asio::awaitable<void> HttpServer::accept_loop_impl() {
             continue;
         }
         auto sock = std::make_shared<asio::ip::tcp::socket>(std::move(socket));
-        active_sockets_.insert(sock);
-        asio::co_spawn(io_, handle_connection(std::move(sock)), detached);
+        auto conn = std::make_shared<ActiveConn>();
+        conn->socket = sock;
+        active_conns_.insert(conn);
+        asio::co_spawn(io_, handle_connection(std::move(sock), conn), detached);
     }
 }
 
@@ -228,6 +261,10 @@ asio::awaitable<void> HttpServer::accept_loop_impl() {
 // HTTP parsing
 // ---------------------------------------------------------------------------
 
+// NOTE: async_read_until will keep growing the streambuf until CRLF is found.
+// A malicious client sending an unbounded line without CRLF could exhaust memory.
+// Future: set a max_read_buffer_size on the streambuf, or switch to manual
+// chunked reads with a per-line length cap.
 asio::awaitable<std::string> HttpServer::read_line(asio::ip::tcp::socket& socket,
                                                    asio::streambuf& buf) {
     auto [ec, len] = co_await asio::async_read_until(socket, buf, "\r\n", as_tuple(deferred));
@@ -244,10 +281,11 @@ asio::awaitable<std::string> HttpServer::read_line(asio::ip::tcp::socket& socket
 asio::awaitable<std::optional<std::string>> HttpServer::read_body(asio::ip::tcp::socket& socket,
                                                                   asio::streambuf& buf,
                                                                   size_t content_length) {
+    if (content_length > kMaxBodySize) co_return std::nullopt;
+
     std::string body;
     body.reserve(content_length);
 
-    // Drain remaining bytes already in streambuf
     auto avail = buf.size();
     if (avail > 0) {
         size_t take = std::min(avail, content_length);
@@ -255,7 +293,6 @@ asio::awaitable<std::optional<std::string>> HttpServer::read_body(asio::ip::tcp:
         buf.sgetn(body.data(), static_cast<std::streamsize>(take));
     }
 
-    // Read the rest from socket
     while (body.size() < content_length) {
         std::string chunk(std::min(content_length - body.size(), size_t{4096}), '\0');
         auto [ec, n] = co_await socket.async_read_some(asio::buffer(chunk.data(), chunk.size()),
@@ -278,13 +315,15 @@ asio::awaitable<void> HttpServer::write_response(asio::ip::tcp::socket& socket,
 // Connection handler
 // ---------------------------------------------------------------------------
 
-asio::awaitable<void> HttpServer::handle_connection(std::shared_ptr<asio::ip::tcp::socket> socket) {
-    co_await handle_connection_impl(*socket);
-    active_sockets_.erase(socket);
+asio::awaitable<void> HttpServer::handle_connection(std::shared_ptr<asio::ip::tcp::socket> socket,
+                                                    std::shared_ptr<ActiveConn> conn) {
+    co_await handle_connection_impl(*socket, conn);
+    active_conns_.erase(conn);
     try_finish_shutdown_on_http_thread();
 }
 
-asio::awaitable<void> HttpServer::handle_connection_impl(asio::ip::tcp::socket& socket) {
+asio::awaitable<void> HttpServer::handle_connection_impl(asio::ip::tcp::socket& socket,
+                                                         std::shared_ptr<ActiveConn> conn) {
     asio::streambuf buf;
 
     auto request_line = co_await read_line(socket, buf);
@@ -300,17 +339,22 @@ asio::awaitable<void> HttpServer::handle_connection_impl(asio::ip::tcp::socket& 
     std::string method = request_line.substr(0, sp1);
     std::string path = request_line.substr(sp1 + 1, sp2 - sp1 - 1);
 
-    // Strip query string
     auto qpos = path.find('?');
     if (qpos != std::string::npos) path.resize(qpos);
 
-    // Read headers
+    // Read headers with size limit (start counting from request line).
     size_t content_length = 0;
     bool has_content_length = false;
     bool content_length_malformed = false;
+    size_t header_bytes = request_line.size() + 2;  // +2 for \r\n
     while (true) {
         auto line = co_await read_line(socket, buf);
         if (line.empty()) break;
+        header_bytes += line.size() + 2;  // +2 for \r\n
+        if (header_bytes > kMaxHeaderSize) {
+            co_await write_response(socket, kBadRequest);
+            co_return;
+        }
         auto cl = parse_content_length(line);
         if (cl.state == CLState::Invalid) {
             content_length_malformed = true;
@@ -352,7 +396,7 @@ asio::awaitable<void> HttpServer::handle_connection_impl(asio::ip::tcp::socket& 
             co_await write_response(socket, kBadRequest);
             co_return;
         }
-        co_await handle_chat(socket, std::move(*body));
+        co_await handle_chat(socket, std::move(*body), conn);
     } else {
         co_await write_response(socket, kNotFoundResponse);
     }
@@ -370,8 +414,35 @@ asio::awaitable<void> HttpServer::handle_models(asio::ip::tcp::socket& socket) {
     co_await write_response(socket, kModelsResponse);
 }
 
-asio::awaitable<void> HttpServer::handle_chat(asio::ip::tcp::socket& socket, std::string body) {
-    // Parse JSON body
+namespace {
+
+enum class JsonFieldState { Missing, Valid, Invalid };
+
+template <typename T>
+JsonFieldState safe_json_get(const nlohmann::json& j, const char* key, T& out) {
+    if (!j.contains(key)) return JsonFieldState::Missing;
+    const auto& val = j[key];
+    if constexpr (std::is_same_v<T, int>) {
+        if (!val.is_number_integer()) return JsonFieldState::Invalid;
+        auto raw = val.get<int64_t>();
+        if (raw < std::numeric_limits<int>::min() || raw > std::numeric_limits<int>::max())
+            return JsonFieldState::Invalid;
+        out = static_cast<int>(raw);
+        return JsonFieldState::Valid;
+    } else if constexpr (std::is_same_v<T, float>) {
+        if (!val.is_number()) return JsonFieldState::Invalid;
+        float v = val.get<float>();
+        if (!std::isfinite(v)) return JsonFieldState::Invalid;
+        out = v;
+        return JsonFieldState::Valid;
+    }
+    return JsonFieldState::Invalid;
+}
+
+}  // namespace
+
+asio::awaitable<void> HttpServer::handle_chat(asio::ip::tcp::socket& socket, std::string body,
+                                              const std::shared_ptr<ActiveConn>& conn) {
     nlohmann::json req_json = nlohmann::json::parse(body.empty() ? "{}" : body, nullptr, false);
     if (req_json.is_discarded()) {
         co_await write_response(socket, kBadRequest);
@@ -380,33 +451,63 @@ asio::awaitable<void> HttpServer::handle_chat(asio::ip::tcp::socket& socket, std
 
     // Extract messages → tokens
     std::vector<int32_t> prompt_tokens;
+    bool tokenizer_failed = false;
     if (req_json.contains("messages") && req_json["messages"].is_array()) {
         for (const auto& msg : req_json["messages"]) {
             if (msg.contains("content") && msg["content"].is_string()) {
                 std::string content = msg["content"].get<std::string>();
-                for (char c : content) prompt_tokens.push_back(static_cast<int32_t>(c));
+                auto encoded = tokenizer_.encode(content);
+                if (encoded) {
+                    for (auto t : *encoded) prompt_tokens.push_back(t);
+                } else {
+                    tokenizer_failed = true;
+                    break;
+                }
             }
         }
     }
-    // Phase 4.1 dummy fallback when no messages provided.
+    if (tokenizer_failed) {
+        // Phase 4.1: treat tokenizer failure as 500 (simplified).
+        // Future: distinguish input encoding errors (400) from internal errors (500).
+        co_await write_response(socket, kInternalError);
+        co_return;
+    }
+    // Phase 4.1 demo fallback when no messages provided.
+    // Future: return 400 Bad Request instead.
     if (prompt_tokens.empty()) prompt_tokens = {1, 2, 3};
 
-    // Sampling params with type checking and validation
+    // Sampling params with type checking and validation.
     SamplingParams sampling;
-    if (req_json.contains("max_tokens") && req_json["max_tokens"].is_number_integer()) {
-        sampling.max_tokens = req_json["max_tokens"].get<int>();
+    {
+        auto s = safe_json_get(req_json, "max_tokens", sampling.max_tokens);
+        if (s == JsonFieldState::Invalid) {
+            co_await write_response(socket, kBadRequest);
+            co_return;
+        }
     }
-    if (req_json.contains("temperature") && req_json["temperature"].is_number()) {
-        sampling.temperature = req_json["temperature"].get<float>();
+    {
+        auto s = safe_json_get(req_json, "temperature", sampling.temperature);
+        if (s == JsonFieldState::Invalid) {
+            co_await write_response(socket, kBadRequest);
+            co_return;
+        }
     }
-    if (req_json.contains("top_p") && req_json["top_p"].is_number()) {
-        sampling.top_p = req_json["top_p"].get<float>();
+    {
+        auto s = safe_json_get(req_json, "top_p", sampling.top_p);
+        if (s == JsonFieldState::Invalid) {
+            co_await write_response(socket, kBadRequest);
+            co_return;
+        }
     }
-    if (req_json.contains("top_k") && req_json["top_k"].is_number_integer()) {
-        sampling.top_k = req_json["top_k"].get<int>();
+    {
+        auto s = safe_json_get(req_json, "top_k", sampling.top_k);
+        if (s == JsonFieldState::Invalid) {
+            co_await write_response(socket, kBadRequest);
+            co_return;
+        }
     }
 
-    // Validate
+    // Validate ranges.
     if (sampling.max_tokens < 0 || sampling.temperature < 0.0f || sampling.top_p <= 0.0f ||
         sampling.top_p > 1.0f || sampling.top_k < 0) {
         co_await write_response(socket, kBadRequest);
@@ -415,21 +516,24 @@ asio::awaitable<void> HttpServer::handle_chat(asio::ip::tcp::socket& socket, std
 
     // Build HTTP-side connection state and cross-thread request.
     auto executor = co_await asio::this_coro::executor;
-    auto conn = std::make_shared<ConnectionState>();
-    conn->request_id = "req-" + std::to_string(next_request_id_++);
-    conn->output_channel = std::make_shared<TokenChannel>(executor, 16);
+    auto http_conn = std::make_shared<ConnectionState>();
+    http_conn->request_id = "req-" + std::to_string(next_request_id_++);
+    http_conn->output_channel = std::make_shared<TokenChannel>(executor, 16);
+
+    // Store in ActiveConn so shutdown() can close the channel.
+    if (conn) {
+        conn->request_id = http_conn->request_id;
+        conn->channel = http_conn->output_channel;
+    }
 
     SchedulerRequest sreq;
-    sreq.request_id = conn->request_id;
+    sreq.request_id = http_conn->request_id;
     sreq.prompt_tokens = std::move(prompt_tokens);
     sreq.sampling = sampling;
     sreq.max_context_len = 2048;
     sreq.sink.executor = executor;
-    sreq.sink.channel = conn->output_channel;
-    // on_send_failed captures Scheduler& — the Server shutdown sequence must
-    // guarantee Scheduler outlives every HTTP connection coroutine and every
-    // token callback posted to the HTTP executor.
-    sreq.sink.on_send_failed = [&sched = scheduler_, request_id = conn->request_id]() {
+    sreq.sink.channel = http_conn->output_channel;
+    sreq.sink.on_send_failed = [&sched = scheduler_, request_id = http_conn->request_id]() {
         sched.cancel(request_id);
     };
 
@@ -447,29 +551,38 @@ asio::awaitable<void> HttpServer::handle_chat(asio::ip::tcp::socket& socket, std
         auto [ec, _] =
             co_await asio::async_write(socket, asio::buffer(headers), as_tuple(deferred));
         if (ec) {
-            scheduler_.cancel(conn->request_id);
+            scheduler_.cancel(http_conn->request_id);
             co_return;
         }
     }
 
     // Stream tokens
-    auto channel = conn->output_channel;
+    auto channel = http_conn->output_channel;
     while (true) {
-        auto [recv_ec, tok] = co_await channel->async_receive(as_tuple(deferred));
+        auto [recv_ec, result] = co_await channel->async_receive(as_tuple(deferred));
         if (recv_ec) {
-            scheduler_.cancel(conn->request_id);
+            scheduler_.cancel(http_conn->request_id);
             break;
         }
 
-        std::string frame = sse_frame(tok);
+        std::string frame;
+        bool done = false;
+        if (result) {
+            frame = sse_frame(*result);
+            done = result->finished;
+        } else {
+            frame = sse_error_frame(result.error());
+            done = true;
+        }
+
         auto [write_ec, _] =
             co_await asio::async_write(socket, asio::buffer(frame), as_tuple(deferred));
         if (write_ec) {
-            scheduler_.cancel(conn->request_id);
+            scheduler_.cancel(http_conn->request_id);
             break;
         }
 
-        if (tok.finished) break;
+        if (done) break;
     }
 }
 

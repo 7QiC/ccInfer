@@ -1,5 +1,7 @@
 #pragma once
 
+#include <boost/asio/io_context.hpp>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -27,7 +29,7 @@ public:
 
     virtual EngineCapacity capacity() const = 0;
 
-    static std::unique_ptr<Executor> create(asio::io_context& io);
+    static std::unique_ptr<Executor> create(boost::asio::io_context& io);
 };
 
 }  // namespace engine

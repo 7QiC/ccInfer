@@ -32,8 +32,7 @@ struct Qwen3Weights {
     std::unique_ptr<DeviceBuffer> rms_final_;
     std::vector<Qwen3LayerWeights> layers_;
 
-    static Result<Qwen3Weights> load(DefaultBackend& backend,
-                                     const ModelConfig& config,
+    static Result<Qwen3Weights> load(DefaultBackend& backend, const ModelConfig& config,
                                      const WeightLoader& loader);
 };
 

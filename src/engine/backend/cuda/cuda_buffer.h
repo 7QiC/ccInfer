@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstddef>
+#include <memory>
 
+#include "common/result.h"
 #include "engine/backend/device_buffer.h"
 
 namespace ccinfer {
@@ -9,7 +11,8 @@ namespace engine {
 
 class CudaBuffer final : public DeviceBuffer {
 public:
-    explicit CudaBuffer(size_t bytes);
+    static Result<std::unique_ptr<CudaBuffer>> create(size_t bytes);
+
     ~CudaBuffer() override;
 
     void* data() override { return ptr_; }
@@ -17,6 +20,8 @@ public:
     size_t bytes() const override { return bytes_; }
 
 private:
+    explicit CudaBuffer(size_t bytes, void* ptr) : bytes_(bytes), ptr_(ptr) {}
+
     void* ptr_ = nullptr;
     size_t bytes_ = 0;
 };

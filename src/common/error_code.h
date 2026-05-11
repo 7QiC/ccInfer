@@ -1,7 +1,5 @@
 #pragma once
 
-#include <boost/asio/error.hpp>
-#include <boost/system/error_code.hpp>
 #include <cstdint>
 #include <string_view>
 
@@ -38,6 +36,11 @@ enum class ErrorCode : uint16_t {
 
     ChannelClosed,
     ChannelCancelled,
+    ChannelError,
+
+    NetworkBindFailed,
+    Unsupported,
+    InternalError,
 };
 
 inline constexpr std::string_view error_message(ErrorCode c) noexcept {
@@ -95,15 +98,19 @@ inline constexpr std::string_view error_message(ErrorCode c) noexcept {
             return "asio channel closed";
         case ErrorCode::ChannelCancelled:
             return "asio channel operation cancelled";
+        case ErrorCode::ChannelError:
+            return "asio channel error";
+
+        case ErrorCode::NetworkBindFailed:
+            return "network bind failed";
+
+        case ErrorCode::Unsupported:
+            return "unsupported operation";
+        case ErrorCode::InternalError:
+            return "internal error";
     }
 
     return "unknown error";
-}
-
-inline ErrorCode to_error_code(const boost::system::error_code& ec) {
-    if (ec == boost::asio::error::operation_aborted) return ErrorCode::ChannelCancelled;
-    if (ec == boost::asio::error::eof) return ErrorCode::ChannelClosed;
-    return ErrorCode::ChannelCancelled;
 }
 
 }  // namespace ccinfer

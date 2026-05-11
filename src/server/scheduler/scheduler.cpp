@@ -23,7 +23,11 @@ using asio::deferred;
 Scheduler::Scheduler(asio::io_context& io, Engine& engine)
     : io_(io), engine_(engine), idle_timer_(io) {}
 
-// Owner must call shutdown() + shutdown_async().wait() before destroying.
+// PRECONDITION: shutdown_async().wait() must have completed before destruction.
+// The detached do_work() coroutine captures `this`; destroying the Scheduler
+// while do_work() is still running is use-after-free.
+// shutdown_async().wait() must NOT be called on the scheduler io_context thread
+// (would deadlock since do_work() runs on that thread and wait() blocks it).
 Scheduler::~Scheduler() = default;
 
 // ---------------------------------------------------------------------------
@@ -32,20 +36,12 @@ Scheduler::~Scheduler() = default;
 
 void Scheduler::submit(SchedulerRequest req) {
     if (!running_) {
-        GeneratedToken tok;
-        tok.has_token = false;
-        tok.finished = true;
-        tok.error = ErrorCode::ServerShuttingDown;
-        send_event(req.sink, std::move(tok));
+        send_event(req.sink, std::unexpected(ErrorCode::ServerShuttingDown));
         return;
     }
     asio::post(io_, [this, req = std::move(req)]() mutable {
         if (!running_) {
-            GeneratedToken tok;
-            tok.has_token = false;
-            tok.finished = true;
-            tok.error = ErrorCode::ServerShuttingDown;
-            send_event(req.sink, std::move(tok));
+            send_event(req.sink, std::unexpected(ErrorCode::ServerShuttingDown));
             return;
         }
         submit_on_scheduler_thread(std::move(req));
@@ -61,6 +57,10 @@ void Scheduler::cancel(std::string request_id) {
 }
 
 void Scheduler::start() {
+    // Phase 4.1: one-shot.  After shutdown, start() is a no-op to prevent
+    // accidentally re-launching do_work() on a partially-destroyed object.
+    std::lock_guard lock(shutdown_mutex_);
+    if (shutdown_promise_) return;
     bool expected = false;
     if (!running_.compare_exchange_strong(expected, true)) return;
     asio::co_spawn(io_, do_work(), asio::detached);
@@ -101,11 +101,7 @@ std::shared_future<void> Scheduler::shutdown_async() {
 
 void Scheduler::submit_on_scheduler_thread(SchedulerRequest req) {
     if (pending_or_creating_ids_.count(req.request_id) || by_request_id_.count(req.request_id)) {
-        GeneratedToken tok;
-        tok.has_token = false;
-        tok.finished = true;
-        tok.error = ErrorCode::InvalidArgument;
-        send_event(req.sink, std::move(tok));
+        send_event(req.sink, std::unexpected(ErrorCode::InvalidArgument));
         return;
     }
 
@@ -141,23 +137,28 @@ void Scheduler::complete_shutdown_on_scheduler_thread() {
 // send_event — post a token/event to the HTTP io_context via TokenSink
 // ---------------------------------------------------------------------------
 
-// Phase 4.1: try_send failure means the HTTP consumer has fallen behind
-// (channel buffer full), which we treat as a cancelled request.
-// A future version should use async_send or an HTTP-side queue to support
-// back-pressure instead of dropping the request on buffer-full.
-bool Scheduler::send_event(const TokenSink& sink, GeneratedToken tok) {
+// send_event returns false only when sink.channel has already expired
+// (synchronous failure).  try_send failures (buffer full) are asynchronous
+// and converge via on_send_failed → cancel().  Callers that set
+// state->cancelled based on the return value therefore only handle the
+// immediate-expired case; the buffer-full path is handled by the cancel
+// callback.
+//
+// Phase 4.1: try_send buffer-full → treated as cancelled request.
+// Future: async_send / HTTP-side queue for real back-pressure.
+bool Scheduler::send_event(const TokenSink& sink, Result<GeneratedToken> result) {
     if (sink.channel.expired()) {
         return false;
     }
 
-    asio::post(sink.executor, [weak = sink.channel, tok = std::move(tok),
+    asio::post(sink.executor, [weak = sink.channel, result = std::move(result),
                                on_send_failed = sink.on_send_failed]() mutable {
         auto ch = weak.lock();
         if (!ch) {
             if (on_send_failed) on_send_failed();
             return;
         }
-        bool ok = ch->try_send(boost::system::error_code{}, std::move(tok));
+        bool ok = ch->try_send(boost::system::error_code{}, std::move(result));
         if (!ok && on_send_failed) {
             on_send_failed();
         }
@@ -166,6 +167,12 @@ bool Scheduler::send_event(const TokenSink& sink, GeneratedToken tok) {
     return true;
 }
 
+// Terminal-event contract:
+//   When the last token reaches max_tokens (or EOS in future), the scheduler
+//   sends a token event with has_token=true + finished=true.  No separate
+//   terminal event (has_token=false, finished=true) follows.
+//   The HTTP/SSE consumer MUST end the stream when finished=true on any event,
+//   NOT only on a has_token=false terminal event.
 bool Scheduler::send_token_event(StatePtr& state) {
     GeneratedToken tok;
     tok.token_id = state->last_token;
@@ -178,9 +185,7 @@ bool Scheduler::send_token_event(StatePtr& state) {
 
 bool Scheduler::send_terminal_event(StatePtr& state) {
     state->finished = true;
-    GeneratedToken tok;
-    tok.has_token = false;
-    tok.finished = true;
+    GeneratedToken tok{.has_token = false, .finished = true};
     bool sent = send_event(state->sink, std::move(tok));
     if (!sent) state->cancelled = true;
     return sent;
@@ -188,11 +193,7 @@ bool Scheduler::send_terminal_event(StatePtr& state) {
 
 bool Scheduler::send_error_event(StatePtr& state, ErrorCode err) {
     state->finished = true;
-    GeneratedToken tok;
-    tok.has_token = false;
-    tok.finished = true;
-    tok.error = err;
-    bool sent = send_event(state->sink, std::move(tok));
+    bool sent = send_event(state->sink, std::unexpected(err));
     if (!sent) state->cancelled = true;
     return sent;
 }
@@ -251,30 +252,20 @@ asio::awaitable<void> Scheduler::drain_pending() {
         // Shutdown may have occurred — stop processing remaining local requests.
         if (!running_) {
             pending_or_creating_ids_.erase(req.request_id);
-            GeneratedToken tok;
-            tok.has_token = false;
-            tok.finished = true;
-            tok.error = ErrorCode::ServerShuttingDown;
-            send_event(req.sink, std::move(tok));
+            send_event(req.sink, std::unexpected(ErrorCode::ServerShuttingDown));
             continue;
         }
 
         // Check if cancelled while pending (before create_sequence).
         if (cancelled_pending_ids_.erase(req.request_id) > 0) {
             pending_or_creating_ids_.erase(req.request_id);
-            GeneratedToken tok;
-            tok.has_token = false;
-            tok.finished = true;
-            tok.error = ErrorCode::RequestCancelled;
-            send_event(req.sink, std::move(tok));
+            send_event(req.sink, std::unexpected(ErrorCode::RequestCancelled));
             continue;
         }
 
         if (req.sampling.max_tokens <= 0) {
             pending_or_creating_ids_.erase(req.request_id);
-            GeneratedToken tok;
-            tok.has_token = false;
-            tok.finished = true;
+            GeneratedToken tok{.has_token = false, .finished = true};
             send_event(req.sink, std::move(tok));
             continue;
         }
@@ -291,11 +282,7 @@ asio::awaitable<void> Scheduler::drain_pending() {
                 }
             }
 
-            GeneratedToken tok;
-            tok.has_token = false;
-            tok.finished = true;
-            tok.error = ErrorCode::ServerShuttingDown;
-            send_event(req.sink, std::move(tok));
+            send_event(req.sink, std::unexpected(ErrorCode::ServerShuttingDown));
             continue;
         }
 
@@ -309,21 +296,13 @@ asio::awaitable<void> Scheduler::drain_pending() {
                 }
             }
 
-            GeneratedToken tok;
-            tok.has_token = false;
-            tok.finished = true;
-            tok.error = ErrorCode::RequestCancelled;
-            send_event(req.sink, std::move(tok));
+            send_event(req.sink, std::unexpected(ErrorCode::RequestCancelled));
             continue;
         }
 
         if (!result) {
             pending_or_creating_ids_.erase(req.request_id);
-            GeneratedToken tok;
-            tok.has_token = false;
-            tok.finished = true;
-            tok.error = result.error();
-            send_event(req.sink, std::move(tok));
+            send_event(req.sink, std::unexpected(result.error()));
             continue;
         }
 
@@ -366,6 +345,8 @@ asio::awaitable<void> Scheduler::wait_for_work() {
 ScheduledBatch Scheduler::build_scheduled_batch() {
     ScheduledBatch batch;
     batch.batch_id = next_batch_id_++;
+    // Phase 4.1: copy sampling from the first active request.
+    // Future: per-item sampling via std::vector<SamplingParams>.
 
     while (!active_order_.empty()) {
         SequenceId id = active_order_.front();
@@ -398,6 +379,7 @@ ScheduledBatch Scheduler::build_scheduled_batch() {
                 active_order_.push_back(id);
                 continue;
             }
+            batch.sampling = state->sampling;
             batch.items.push_back(
                 PrefillChunk{id, TokenSpan{state->prefill_cursor, remaining}, std::nullopt});
             active_order_.pop_front();
@@ -419,6 +401,7 @@ ScheduledBatch Scheduler::build_scheduled_batch() {
             continue;
         }
 
+        batch.sampling = state->sampling;
         batch.items.push_back(DecodeOneToken{id, state->last_token, std::nullopt});
         active_order_.pop_front();
         active_order_.push_back(id);
@@ -588,11 +571,7 @@ void Scheduler::fail_all_pending_on_scheduler_thread(ErrorCode err) {
     cancelled_pending_ids_.clear();
 
     for (auto& req : requests) {
-        GeneratedToken tok;
-        tok.has_token = false;
-        tok.finished = true;
-        tok.error = err;
-        send_event(req.sink, std::move(tok));
+        send_event(req.sink, std::unexpected(err));
     }
 }
 

@@ -99,8 +99,9 @@ TEST(WriteKVCacheKernelTest, WriteAndReadbackNonContiguousSlots) {
 }
 
 TEST(WriteKVCacheKernelTest, NullPointerReturnsError) {
-    CudaBackend backend;
-    ASSERT_TRUE(backend.init(0).has_value());
+    auto backend_r = CudaBackend::create(0);
+    ASSERT_TRUE(backend_r.has_value());
+    auto& backend = **backend_r;
 
     auto r = backend.template write_kv_cache<__nv_bfloat16>(WriteKVCacheParams{
         .k_new_ = nullptr, .v_new_ = nullptr, .k_cache_ = nullptr, .v_cache_ = nullptr,

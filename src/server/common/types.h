@@ -15,20 +15,16 @@ namespace server {
 
 namespace asio = boost::asio;
 
-struct SamplingParams {
-    int max_tokens = 256;
-    float temperature = 1.0f;
-    float top_p = 0.9f;
-    int top_k = 50;
-};
-
 // TokenSink depends on TokenChannel (from common/channel.h) and
 // GeneratedToken (from common/types.h). Both includes must precede this point.
 //
 // Scheduler posts tokens/events to HTTP io_context through this sink.
 // The on_send_failed callback is invoked on the HTTP executor when the
-// channel is gone or try_send fails; it should post a cancel back to
-// the scheduler.
+// channel is gone or try_send fails.  Callers must check for null before
+// invoking (default-constructed std::function evaluates to false).
+//
+// IMPORTANT: on_send_failed must NOT directly mutate scheduler state.
+// It should post a cancel/notification back to the scheduler thread.
 struct TokenSink {
     asio::any_io_executor executor;
     std::weak_ptr<TokenChannel> channel;
@@ -57,9 +53,10 @@ struct SchedulerRequestState {
     SequenceId seq_id = 0;
 
     std::vector<int32_t> prompt_tokens;
-    int prefill_cursor = 0;
+    int prefill_cursor = 0;  // number of prompt tokens already consumed / committed
     bool prefill_done = false;
 
+    // Invariant: prefill_done && last_token >= 0 before building DecodeOneToken.
     int32_t last_token = -1;
     int tokens_generated = 0;
     bool finished = false;

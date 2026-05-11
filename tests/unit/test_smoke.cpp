@@ -20,9 +20,12 @@ TEST(SmokeTest, GPUAccessible) {
 }
 
 TEST(SmokeTest, AllocateAndZero) {
-    CudaBackend backend;
-    ASSERT_TRUE(backend.init(0).has_value());
-    auto buf = backend.allocate_buffer(256 * sizeof(float));
+    auto backend_r = CudaBackend::create(0);
+    ASSERT_TRUE(backend_r.has_value());
+    auto& backend = **backend_r;
+    auto buf_r = backend.allocate_buffer(256 * sizeof(float));
+    ASSERT_TRUE(buf_r.has_value());
+    auto buf = std::move(*buf_r);
     ASSERT_NE(buf->data(), nullptr);
 
     cudaMemset(buf->data(), 0, 256 * sizeof(float));

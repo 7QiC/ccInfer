@@ -7,7 +7,7 @@
 namespace ccinfer {
 namespace engine {
 
-SingleDeviceExecutor::SingleDeviceExecutor(asio::io_context& io)
+SingleDeviceExecutor::SingleDeviceExecutor(boost::asio::io_context& io)
     : worker_(std::make_unique<Worker>(io)) {}
 
 SingleDeviceExecutor::~SingleDeviceExecutor() { shutdown(); }
@@ -44,7 +44,7 @@ EngineCapacity SingleDeviceExecutor::capacity() const {
     return EngineCapacity{cap.max_sequences, cap.active_sequences, cap.free_blocks, cap.max_blocks};
 }
 
-std::unique_ptr<Executor> Executor::create(asio::io_context& io) {
+std::unique_ptr<Executor> Executor::create(boost::asio::io_context& io) {
     return std::make_unique<SingleDeviceExecutor>(io);
 }
 
