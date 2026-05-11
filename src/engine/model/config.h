@@ -153,9 +153,6 @@ struct ModelConfig {
         if (cfg.n_q_heads_ % cfg.n_kv_heads_ != 0) {
             return std::unexpected(ErrorCode::ModelConfigInvalid);
         }
-        if (cfg.head_dim_ * cfg.n_q_heads_ != cfg.d_model_) {
-            return std::unexpected(ErrorCode::ModelConfigInvalid);
-        }
 
         return cfg;
     }

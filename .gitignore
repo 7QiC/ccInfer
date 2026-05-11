@@ -25,6 +25,9 @@ cmake-build-*/
 *.cubin
 *.fatbin
 
+# Test
+Testing/
+
 # Python
 __pycache__/
 *.py[cod]

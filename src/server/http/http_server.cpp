@@ -74,20 +74,6 @@ constexpr std::string_view kInternalError =
     "Connection: close\r\n"
     "\r\n";
 
-// Phase 4.1 dummy tokenizer output.
-std::string token_text(int32_t token_id) { return "tok_" + std::to_string(token_id); }
-
-// Phase 4.1 internal SSE format, not OpenAI-compatible yet.
-std::string sse_frame(const GeneratedToken& tok) {
-    nlohmann::json j;
-    if (tok.has_token) {
-        j["token"] = token_text(tok.token_id);
-        j["token_id"] = tok.token_id;
-    }
-    j["done"] = tok.finished;
-    return "data: " + j.dump() + "\n\n";
-}
-
 std::string sse_error_frame(ErrorCode err) {
     nlohmann::json j;
     j["error"] = std::string(error_message(err));
@@ -406,6 +392,17 @@ asio::awaitable<void> HttpServer::handle_connection_impl(asio::ip::tcp::socket& 
 // Route handlers
 // ---------------------------------------------------------------------------
 
+std::string HttpServer::make_sse_frame(const GeneratedToken& tok) {
+    nlohmann::json j;
+    if (tok.has_token) {
+        auto decoded = tokenizer_.decode({tok.token_id}, false);
+        j["token"] = decoded ? *decoded : "";
+        j["token_id"] = tok.token_id;
+    }
+    j["done"] = tok.finished;
+    return "data: " + j.dump() + "\n\n";
+}
+
 asio::awaitable<void> HttpServer::handle_health(asio::ip::tcp::socket& socket) {
     co_await write_response(socket, kHealthResponse);
 }
@@ -568,7 +565,7 @@ asio::awaitable<void> HttpServer::handle_chat(asio::ip::tcp::socket& socket, std
         std::string frame;
         bool done = false;
         if (result) {
-            frame = sse_frame(*result);
+            frame = make_sse_frame(*result);
             done = result->finished;
         } else {
             frame = sse_error_frame(result.error());

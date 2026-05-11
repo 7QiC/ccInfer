@@ -60,9 +60,6 @@ Result<Qwen3Weights> Qwen3Weights::load(DefaultBackend& backend, const ModelConf
     if (config.n_q_heads_ % config.n_kv_heads_ != 0) {
         return std::unexpected(ErrorCode::ModelShapeMismatch);
     }
-    if (config.d_model_ != config.n_q_heads_ * config.head_dim_) {
-        return std::unexpected(ErrorCode::ModelShapeMismatch);
-    }
 
     const int D = config.d_model_;
     const int nq = config.n_q_heads_;

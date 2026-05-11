@@ -74,7 +74,6 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
     if (D <= 0 || nq <= 0 || nkv <= 0 || hd <= 0 || d_ff <= 0 || V <= 0 || n_layers <= 0) {
         return std::unexpected(ErrorCode::ModelConfigInvalid);
     }
-    if (D != nq * hd) return std::unexpected(ErrorCode::ModelShapeMismatch);
     if (nq % nkv != 0) return std::unexpected(ErrorCode::ModelShapeMismatch);
     if (input.mode_ == ForwardMode::Decode) {
         if (T != B) return std::unexpected(ErrorCode::ModelShapeMismatch);
