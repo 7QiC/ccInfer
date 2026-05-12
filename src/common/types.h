@@ -28,6 +28,7 @@ struct PrefillChunk {
     SequenceId seq_id = 0;
     TokenSpan prompt_span;
     std::optional<int> expected_context_len;
+    bool needs_sample = false;  // only true for the final chunk
 };
 
 struct DecodeOneToken {

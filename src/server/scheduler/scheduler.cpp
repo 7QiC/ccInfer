@@ -5,6 +5,7 @@
 #include <boost/asio/deferred.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/post.hpp>
+#include <algorithm>
 #include <chrono>
 #include <optional>
 #include <type_traits>
@@ -371,8 +372,12 @@ asio::awaitable<void> Scheduler::wait_for_work() {
 // Mixed prefill+decode requires per-item forward mode in BatchTranslator/model
 // (deferred to Phase 4.2).
 //
-// Round-robin: prefill items served first (budget-limited), then
-// compatible decode items up to KV budget.
+// Round-robin: prefill items served first (budget-limited, chunked),
+// then compatible decode items up to KV budget.
+
+namespace {
+constexpr int kMaxPrefillTokensPerChunk = 512;
+}  // namespace
 
 ScheduledBatch Scheduler::build_scheduled_batch() {
     ScheduledBatch batch;
@@ -393,8 +398,67 @@ ScheduledBatch Scheduler::build_scheduled_batch() {
     std::vector<SequenceId> included;
     bool sampling_set = false;
 
-    // --- Phase 1: prefill items (budget-limited) ---
-    auto ceil_div = [](int a, int b) { return (a + b - 1) / b; };
+    // Alternate prefill/decode to avoid starvation.  Prefill items are
+    // chunked (≤512 tokens), so interleaving is natural: after one chunk,
+    // the next round serves decode before the remaining prefill chunks.
+    bool prefer_decode = (next_batch_id_ % 2) == 0;
+
+    auto build_decode_batch = [&]() {
+        for (SequenceId id : active_order_) {
+            auto it = active_.find(id);
+            if (it == active_.end()) continue;
+
+            auto& state = it->second;
+            if (!state || state->finished || state->cancelled || !state->prefill_done) continue;
+            if (state->tokens_generated >= state->sampling.max_tokens) {
+                state->finished = true;
+                continue;
+            }
+            if (state->last_token < 0) {
+                state->finished = true;
+                send_error_event(state, ErrorCode::BatchTranslationFailed);
+                continue;
+            }
+
+            int expected_ctx =
+                static_cast<int>(state->prompt_tokens.size()) + state->tokens_generated - 1;
+
+            if (expected_ctx < 0) {
+                state->finished = true;
+                send_error_event(state, ErrorCode::BatchTranslationFailed);
+                continue;
+            }
+            if (expected_ctx >= state->max_context_len) {
+                state->finished = true;
+                send_terminal_event(state);
+                continue;
+            }
+
+            int decode_blocks = (expected_ctx % bs == 0) ? 1 : 0;
+            if (decode_blocks > budget) {
+                budget_blocked_.push_back(id);
+                continue;
+            }
+
+            if (sampling_set) {
+                if (state->sampling.temperature != batch.sampling.temperature ||
+                    state->sampling.top_p != batch.sampling.top_p ||
+                    state->sampling.top_k != batch.sampling.top_k ||
+                    state->sampling.seed != batch.sampling.seed)
+                    continue;
+            } else {
+                batch.sampling = state->sampling;
+                sampling_set = true;
+            }
+
+            batch.items.push_back(
+                DecodeOneToken{id, state->last_token, std::optional<int>(expected_ctx)});
+            budget -= decode_blocks;
+            included.push_back(id);
+        }
+    };
+    auto build_prefill_batch = [&]() {
+        auto ceil_div = [](int a, int b) { return (a + b - 1) / b; };
 
     for (size_t idx = 0; idx < active_order_.size(); ++idx) {
         SequenceId id = active_order_[idx];
@@ -418,13 +482,23 @@ ScheduledBatch Scheduler::build_scheduled_batch() {
             continue;
         }
 
+        // Chunked prefill: limit tokens per batch to bound per-step latency.
+        int chunk_len = std::min(remaining, kMaxPrefillTokensPerChunk);
+
         // Incremental blocks: only count blocks beyond what's already owned.
         int cur_blocks = ceil_div(state->prefill_cursor, bs);
-        int total_blocks = ceil_div(state->prefill_cursor + remaining, bs);
+        int total_blocks = ceil_div(state->prefill_cursor + chunk_len, bs);
         int additional = total_blocks - cur_blocks;
         if (additional > budget) {
-            budget_blocked_.push_back(id);
-            continue;
+            // Shrink chunk to fit in available budget.
+            int max_tokens_fit = (cur_blocks + budget) * bs - state->prefill_cursor;
+            if (max_tokens_fit <= 0) {
+                budget_blocked_.push_back(id);
+                continue;
+            }
+            chunk_len = max_tokens_fit;
+            total_blocks = ceil_div(state->prefill_cursor + chunk_len, bs);
+            additional = total_blocks - cur_blocks;
         }
 
         // Phase 4.1: shared sampling per batch.  Use first item's sampling;
@@ -440,73 +514,23 @@ ScheduledBatch Scheduler::build_scheduled_batch() {
             sampling_set = true;
         }
 
-        batch.items.push_back(PrefillChunk{id, TokenSpan{state->prefill_cursor, remaining},
-                                           std::optional<int>(state->prefill_cursor)});
+        bool is_final = (state->prefill_cursor + chunk_len >= prompt_len);
+        batch.items.push_back(PrefillChunk{id, TokenSpan{state->prefill_cursor, chunk_len},
+                                           std::optional<int>(state->prefill_cursor), is_final});
         budget -= additional;
         included.push_back(id);
     }
+    };  // build_prefill_batch lambda
 
-    if (!batch.items.empty()) {
-        reorder_after_batch(included);
-        return batch;
-    }
-
-    // --- Phase 2: decode items ---
-    // Each decode may need 1 new block when crossing a block boundary.
-    // Conservative budget check: reserve 1 block per decode item.
-    for (SequenceId id : active_order_) {
-        auto it = active_.find(id);
-        if (it == active_.end()) continue;
-
-        auto& state = it->second;
-        if (!state || state->finished || state->cancelled || !state->prefill_done) continue;
-        if (state->tokens_generated >= state->sampling.max_tokens) {
-            state->finished = true;
-            continue;
-        }
-        if (state->last_token < 0) {
-            state->finished = true;
-            send_error_event(state, ErrorCode::BatchTranslationFailed);
-            continue;
-        }
-
-        // kv_written = prompt_len + tokens_generated - 1.
-        // tokens_generated counts output tokens including the prefill's
-        // sampled last_token, which has not yet been consumed/written to KV.
-        int expected_ctx =
-            static_cast<int>(state->prompt_tokens.size()) + state->tokens_generated - 1;
-
-        if (expected_ctx < 0) {
-            state->finished = true;
-            send_error_event(state, ErrorCode::BatchTranslationFailed);
-            continue;
-        }
-        if (expected_ctx >= state->max_context_len) {
-            state->finished = true;
-            send_terminal_event(state);
-            continue;
-        }
-
-        int decode_blocks = (expected_ctx % bs == 0) ? 1 : 0;
-        if (decode_blocks > budget) {
-            budget_blocked_.push_back(id);
-            continue;
-        }
-
-        if (sampling_set) {
-            if (state->sampling.temperature != batch.sampling.temperature ||
-                state->sampling.top_p != batch.sampling.top_p ||
-                state->sampling.top_k != batch.sampling.top_k ||
-                state->sampling.seed != batch.sampling.seed)
-                continue;
-        } else {
-            batch.sampling = state->sampling;
-            sampling_set = true;
-        }
-        batch.items.push_back(
-            DecodeOneToken{id, state->last_token, std::optional<int>(expected_ctx)});
-        budget -= decode_blocks;
-        included.push_back(id);
+    // Alternate phases to interleave prefill chunks with decode.
+    if (prefer_decode) {
+        build_decode_batch();
+        if (!batch.items.empty()) { reorder_after_batch(included); return batch; }
+        build_prefill_batch();
+    } else {
+        build_prefill_batch();
+        if (!batch.items.empty()) { reorder_after_batch(included); return batch; }
+        build_decode_batch();
     }
 
     if (!batch.items.empty()) {
@@ -576,23 +600,48 @@ asio::awaitable<void> Scheduler::apply_and_push(const ScheduledBatch& batch,
         if (!state || state->cancelled) continue;
 
         bool has_new_token = false;
+        bool is_final_chunk = false;
 
         if (wr.kind == WorkKind::PrefillChunk) {
             int prompt_len = static_cast<int>(state->prompt_tokens.size());
             int remaining = prompt_len - state->prefill_cursor;
 
-            if (remaining <= 0 || wr.tokens_consumed <= 0 || wr.tokens_consumed > remaining) {
+            // Validate tokens_consumed matches the requested chunk.
+            int expected_chunk_len = 0;
+            std::visit([&](const auto& w) {
+                using T = std::decay_t<decltype(w)>;
+                if constexpr (std::is_same_v<T, PrefillChunk>) expected_chunk_len = w.prompt_span.length;
+            }, original_item);
+
+            if (remaining <= 0 || wr.tokens_consumed <= 0 ||
+                wr.tokens_consumed > remaining || wr.tokens_consumed != expected_chunk_len) {
                 send_error_event(state, ErrorCode::BatchTranslationFailed);
                 continue;
             }
 
+            is_final_chunk =
+                (state->prefill_cursor + wr.tokens_consumed >= prompt_len);
+
             state->prefill_cursor += wr.tokens_consumed;
             state->prefill_done = (state->prefill_cursor >= prompt_len);
 
-            if (!wr.sampled_tokens.empty()) {
-                state->last_token = wr.sampled_tokens[0];
-                state->tokens_generated++;
-                has_new_token = true;
+            // Only sample/send token on the final prefill chunk.
+            // Intermediate chunks write KV cache but produce no output token.
+            if (!is_final_chunk) {
+                if (!wr.sampled_tokens.empty() || wr.eos) {
+                    send_error_event(state, ErrorCode::BatchTranslationFailed);
+                    continue;
+                }
+            } else {
+                if (wr.sampled_tokens.empty() && !wr.eos) {
+                    send_error_event(state, ErrorCode::BatchTranslationFailed);
+                    continue;
+                }
+                if (!wr.sampled_tokens.empty()) {
+                    state->last_token = wr.sampled_tokens[0];
+                    state->tokens_generated++;
+                    has_new_token = true;
+                }
             }
         } else {
             if (wr.tokens_consumed != 1) {
@@ -612,7 +661,9 @@ asio::awaitable<void> Scheduler::apply_and_push(const ScheduledBatch& batch,
             }
         }
 
-        if (wr.eos) state->finished = true;
+        // eos only valid for decode items and final prefill chunks.
+        if (wr.eos && (wr.kind == WorkKind::DecodeOneToken || is_final_chunk))
+            state->finished = true;
         if (state->sampling.max_tokens <= 0) state->finished = true;
         if (state->tokens_generated >= state->sampling.max_tokens) state->finished = true;
 

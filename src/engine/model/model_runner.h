@@ -151,12 +151,13 @@ public:
         }
 
         // --- D2H: logits_indices (validate, before forward to avoid KV side-effects) ---
+        std::vector<int32_t> li_host(B);
         {
-            std::vector<int32_t> li_host(B);
             auto r = backend.memcpy_d2h(li_host.data(), batch.logits_indices->data(),
                                         static_cast<std::size_t>(B) * sizeof(int32_t));
             if (!r) return std::unexpected(r.error());
             for (int i = 0; i < B; ++i) {
+                if (li_host[i] == -1) continue;  // skip-sample sentinel
                 if (li_host[i] < 0 || li_host[i] >= T)
                     return std::unexpected(ErrorCode::InvalidArgument);
                 if (batch.mode == ForwardMode::Decode && li_host[i] != i)
@@ -231,7 +232,9 @@ public:
             wr.item_index = static_cast<int>(batch.item_indices[i]);
             wr.seq_id = batch.item_seq_ids[i];
             wr.kind = batch.item_kinds[i];
-            wr.sampled_tokens = {tokens_host[i]};
+            // li_host[i] == -1 means skip-sample — intermediate prefill chunk.
+            wr.sampled_tokens =
+                (li_host[i] >= 0) ? std::vector<int32_t>{tokens_host[i]} : std::vector<int32_t>{};
             wr.tokens_consumed = qsl_host[i + 1] - qsl_host[i];
             wr.eos = false;
             results.push_back(std::move(wr));

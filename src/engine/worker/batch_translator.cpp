@@ -269,9 +269,11 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
     query_start_loc[B_sz] = offset;
 
     for (int i = 0; i < batch_size; ++i) {
-        if (std::holds_alternative<PrefillChunk>(batch.items[i])) {
+        if (auto* pf = std::get_if<PrefillChunk>(&batch.items[i])) {
             logits_indices[static_cast<std::size_t>(i)] =
-                query_start_loc[static_cast<std::size_t>(i) + 1] - 1;
+                pf->needs_sample
+                    ? query_start_loc[static_cast<std::size_t>(i) + 1] - 1
+                    : -1;
         } else {
             logits_indices[static_cast<std::size_t>(i)] = i;
         }
