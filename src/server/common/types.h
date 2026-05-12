@@ -40,13 +40,6 @@ struct SchedulerRequest {
     TokenSink sink;
 };
 
-// HTTP-owned connection state — only accessed on http_io thread.
-struct ConnectionState {
-    std::string request_id;
-    std::shared_ptr<TokenChannel> output_channel;
-    bool closed = false;
-};
-
 // Scheduler-owned request state — only accessed on scheduler_io thread.
 struct SchedulerRequestState {
     std::string request_id;

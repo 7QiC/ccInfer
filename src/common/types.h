@@ -65,7 +65,7 @@ struct WorkItemResult {
 };
 
 struct BatchResult {
-    uint64_t batch_id;
+    uint64_t batch_id = 0;
     std::vector<WorkItemResult> items;
 };
 

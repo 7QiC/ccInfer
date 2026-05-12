@@ -511,26 +511,25 @@ asio::awaitable<void> HttpServer::handle_chat(asio::ip::tcp::socket& socket, std
         co_return;
     }
 
-    // Build HTTP-side connection state and cross-thread request.
+    // Build HTTP-side state — request_id and channel owned by this coroutine.
     auto executor = co_await asio::this_coro::executor;
-    auto http_conn = std::make_shared<ConnectionState>();
-    http_conn->request_id = "req-" + std::to_string(next_request_id_++);
-    http_conn->output_channel = std::make_shared<TokenChannel>(executor, 16);
+    auto request_id = "req-" + std::to_string(next_request_id_++);
+    auto channel = std::make_shared<TokenChannel>(executor, 16);
 
-    // Store in ActiveConn so shutdown() can close the channel.
+    // Store in ActiveConn so shutdown() can close socket and channel.
     if (conn) {
-        conn->request_id = http_conn->request_id;
-        conn->channel = http_conn->output_channel;
+        conn->request_id = request_id;
+        conn->channel = channel;
     }
 
     SchedulerRequest sreq;
-    sreq.request_id = http_conn->request_id;
+    sreq.request_id = request_id;
     sreq.prompt_tokens = std::move(prompt_tokens);
     sreq.sampling = sampling;
     sreq.max_context_len = 2048;
     sreq.sink.executor = executor;
-    sreq.sink.channel = http_conn->output_channel;
-    sreq.sink.on_send_failed = [&sched = scheduler_, request_id = http_conn->request_id]() {
+    sreq.sink.channel = channel;
+    sreq.sink.on_send_failed = [&sched = scheduler_, request_id]() {
         sched.cancel(request_id);
     };
 
@@ -548,17 +547,16 @@ asio::awaitable<void> HttpServer::handle_chat(asio::ip::tcp::socket& socket, std
         auto [ec, _] =
             co_await asio::async_write(socket, asio::buffer(headers), as_tuple(deferred));
         if (ec) {
-            scheduler_.cancel(http_conn->request_id);
+            scheduler_.cancel(request_id);
             co_return;
         }
     }
 
     // Stream tokens
-    auto channel = http_conn->output_channel;
     while (true) {
         auto [recv_ec, result] = co_await channel->async_receive(as_tuple(deferred));
         if (recv_ec) {
-            scheduler_.cancel(http_conn->request_id);
+            scheduler_.cancel(request_id);
             break;
         }
 
@@ -575,7 +573,7 @@ asio::awaitable<void> HttpServer::handle_chat(asio::ip::tcp::socket& socket, std
         auto [write_ec, _] =
             co_await asio::async_write(socket, asio::buffer(frame), as_tuple(deferred));
         if (write_ec) {
-            scheduler_.cancel(http_conn->request_id);
+            scheduler_.cancel(request_id);
             break;
         }
 
