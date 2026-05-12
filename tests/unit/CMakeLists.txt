@@ -43,3 +43,7 @@ gtest_discover_tests(test_tokenizer_alignment)
 add_executable(test_batch_translator test_batch_translator.cpp)
 target_link_libraries(test_batch_translator PRIVATE engine gtest_main CUDA::cudart)
 gtest_discover_tests(test_batch_translator)
+
+add_executable(test_scheduler test_scheduler.cpp)
+target_link_libraries(test_scheduler PRIVATE engine server gtest_main)
+gtest_discover_tests(test_scheduler)

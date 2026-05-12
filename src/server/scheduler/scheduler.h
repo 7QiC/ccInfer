@@ -71,6 +71,7 @@ private:
     asio::awaitable<void> wait_for_work();
 
     void filter_active_order();
+    void reorder_after_batch(const std::vector<SequenceId>& included);
 
     bool send_event(const TokenSink& sink, Result<GeneratedToken> result);
     bool send_token_event(StatePtr& state);
@@ -90,6 +91,7 @@ private:
     std::unordered_map<std::string, StatePtr> by_request_id_;
     std::unordered_map<SequenceId, std::string> seq_to_request_id_;
 
+    std::vector<SequenceId> budget_blocked_{};  // items skipped due to KV budget
     std::atomic<bool> running_{false};
     uint64_t next_batch_id_{1};
 

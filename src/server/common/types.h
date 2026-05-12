@@ -49,9 +49,8 @@ struct SchedulerRequestState {
     int prefill_cursor = 0;  // number of prompt tokens already consumed / committed
     bool prefill_done = false;
 
-    // Invariant: prefill_done && last_token >= 0 before building DecodeOneToken.
-    int32_t last_token = -1;
-    int tokens_generated = 0;
+    int32_t last_token = -1;   // next decode input; sampled but not yet in KV cache
+    int tokens_generated = 0;  // output tokens already sent to client
     bool finished = false;
     bool cancelled = false;
 

@@ -107,7 +107,7 @@ void Worker::enqueue_execute_batch(ScheduledBatch batch, std::shared_ptr<BatchCh
 
 DeviceCapacity Worker::capacity() const {
     return DeviceCapacity{kMaxSequences, active_sequences_.load(), free_blocks_.load(),
-                          max_blocks_.load()};
+                          max_blocks_.load(), kv_storage_->block_size()};
 }
 
 // --- Worker loop ---

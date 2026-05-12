@@ -213,9 +213,34 @@ asio::awaitable<void> Scheduler::do_work() {
         auto batch = build_scheduled_batch();
 
         if (batch.items.empty()) {
+            auto active_before = active_.size();
             co_await cleanup_cancelled_or_finished();
             if (!pending_requests_.empty()) continue;
-            if (!active_order_.empty()) continue;
+
+            if (!active_order_.empty()) {
+                // Cleanup may have released KV blocks — retry if so.
+                if (active_.size() < active_before) continue;
+
+                // Budget stalled: active items exist but none schedulable.
+                // Fail budget-blocked items to free KV resources.
+                if (!budget_blocked_.empty()) {
+                    for (SequenceId id : budget_blocked_) {
+                        auto it = active_.find(id);
+                        if (it != active_.end() && it->second && !it->second->finished &&
+                            !it->second->cancelled) {
+                            send_error_event(it->second, ErrorCode::KVBlockExhausted);
+                        }
+                    }
+                    budget_blocked_.clear();
+                } else {
+                    // Unlikely: active_ non-empty but nothing blocked by budget
+                    // (e.g. all sampling-incompatible). Short idle to avoid spin.
+                    idle_timer_.expires_after(std::chrono::milliseconds(100));
+                    auto [ec] = co_await idle_timer_.async_wait(as_tuple(deferred));
+                    (void)ec;
+                }
+                continue;
+            }
             co_await wait_for_work();
             continue;
         }
@@ -339,76 +364,173 @@ asio::awaitable<void> Scheduler::wait_for_work() {
 }
 
 // ---------------------------------------------------------------------------
-// Build single-WorkItem batch (Phase 4.1)
+// Build multi-WorkItem batch (Phase 4.1 → 4.2)
 // ---------------------------------------------------------------------------
+//
+// Homogeneous batches only — all prefill or all decode.
+// Mixed prefill+decode requires per-item forward mode in BatchTranslator/model
+// (deferred to Phase 4.2).
+//
+// Round-robin: prefill items served first (budget-limited), then
+// compatible decode items up to KV budget.
 
 ScheduledBatch Scheduler::build_scheduled_batch() {
     ScheduledBatch batch;
     batch.batch_id = next_batch_id_++;
-    // Phase 4.1: copy sampling from the first active request.
-    // Future: per-item sampling via std::vector<SamplingParams>.
+    budget_blocked_.clear();
 
-    while (!active_order_.empty()) {
-        SequenceId id = active_order_.front();
-        auto it = active_.find(id);
-        if (it == active_.end()) {
-            active_order_.pop_front();
-            continue;
+    auto cap = engine_.capacity();
+    int bs = cap.block_size;
+    if (bs <= 0) {
+        // Engine not initialised — fail all active to avoid busy spin.
+        for (auto& [id, st] : active_) {
+            if (st && !st->finished && !st->cancelled)
+                send_error_event(st, ErrorCode::InternalError);
         }
+        return batch;
+    }
+    int budget = cap.free_blocks;
+    std::vector<SequenceId> included;
+    bool sampling_set = false;
+
+    // --- Phase 1: prefill items (budget-limited) ---
+    auto ceil_div = [](int a, int b) { return (a + b - 1) / b; };
+
+    for (size_t idx = 0; idx < active_order_.size(); ++idx) {
+        SequenceId id = active_order_[idx];
+        auto it = active_.find(id);
+        if (it == active_.end()) continue;
 
         auto& state = it->second;
-        if (!state || state->finished || state->cancelled) {
-            active_order_.pop_front();
-            continue;
-        }
+        if (!state || state->finished || state->cancelled || state->prefill_done) continue;
 
         int prompt_len = static_cast<int>(state->prompt_tokens.size());
         if (state->prefill_cursor < 0) state->prefill_cursor = 0;
         if (state->prefill_cursor > prompt_len) {
             state->finished = true;
             send_error_event(state, ErrorCode::InvalidArgument);
-            active_order_.pop_front();
             continue;
         }
 
-        if (!state->prefill_done) {
-            int remaining = prompt_len - state->prefill_cursor;
-            if (remaining <= 0) {
-                state->prefill_done = true;
-                active_order_.pop_front();
-                active_order_.push_back(id);
+        int remaining = prompt_len - state->prefill_cursor;
+        if (remaining <= 0) {
+            state->prefill_done = true;
+            continue;
+        }
+
+        // Incremental blocks: only count blocks beyond what's already owned.
+        int cur_blocks = ceil_div(state->prefill_cursor, bs);
+        int total_blocks = ceil_div(state->prefill_cursor + remaining, bs);
+        int additional = total_blocks - cur_blocks;
+        if (additional > budget) {
+            budget_blocked_.push_back(id);
+            continue;
+        }
+
+        // Phase 4.1: shared sampling per batch.  Use first item's sampling;
+        // skip items with incompatible params (future: per-item sampling).
+        if (sampling_set) {
+            if (state->sampling.temperature != batch.sampling.temperature ||
+                state->sampling.top_p != batch.sampling.top_p ||
+                state->sampling.top_k != batch.sampling.top_k ||
+                state->sampling.seed != batch.sampling.seed)
                 continue;
-            }
+        } else {
             batch.sampling = state->sampling;
-            batch.items.push_back(
-                PrefillChunk{id, TokenSpan{state->prefill_cursor, remaining}, std::nullopt});
-            active_order_.pop_front();
-            active_order_.push_back(id);
-            return batch;
+            sampling_set = true;
         }
 
-        // Decode
-        if (state->tokens_generated >= state->sampling.max_tokens) {
-            state->finished = true;
-            active_order_.pop_front();
-            continue;
-        }
+        batch.items.push_back(PrefillChunk{id, TokenSpan{state->prefill_cursor, remaining},
+                                           std::optional<int>(state->prefill_cursor)});
+        budget -= additional;
+        included.push_back(id);
+    }
 
-        if (state->last_token < 0) {
-            state->finished = true;
-            send_error_event(state, ErrorCode::BatchTranslationFailed);
-            active_order_.pop_front();
-            continue;
-        }
-
-        batch.sampling = state->sampling;
-        batch.items.push_back(DecodeOneToken{id, state->last_token, std::nullopt});
-        active_order_.pop_front();
-        active_order_.push_back(id);
+    if (!batch.items.empty()) {
+        reorder_after_batch(included);
         return batch;
     }
 
+    // --- Phase 2: decode items ---
+    // Each decode may need 1 new block when crossing a block boundary.
+    // Conservative budget check: reserve 1 block per decode item.
+    for (SequenceId id : active_order_) {
+        auto it = active_.find(id);
+        if (it == active_.end()) continue;
+
+        auto& state = it->second;
+        if (!state || state->finished || state->cancelled || !state->prefill_done) continue;
+        if (state->tokens_generated >= state->sampling.max_tokens) {
+            state->finished = true;
+            continue;
+        }
+        if (state->last_token < 0) {
+            state->finished = true;
+            send_error_event(state, ErrorCode::BatchTranslationFailed);
+            continue;
+        }
+
+        // kv_written = prompt_len + tokens_generated - 1.
+        // tokens_generated counts output tokens including the prefill's
+        // sampled last_token, which has not yet been consumed/written to KV.
+        int expected_ctx =
+            static_cast<int>(state->prompt_tokens.size()) + state->tokens_generated - 1;
+
+        if (expected_ctx < 0) {
+            state->finished = true;
+            send_error_event(state, ErrorCode::BatchTranslationFailed);
+            continue;
+        }
+        if (expected_ctx >= state->max_context_len) {
+            state->finished = true;
+            send_terminal_event(state);
+            continue;
+        }
+
+        int decode_blocks = (expected_ctx % bs == 0) ? 1 : 0;
+        if (decode_blocks > budget) {
+            budget_blocked_.push_back(id);
+            continue;
+        }
+
+        if (sampling_set) {
+            if (state->sampling.temperature != batch.sampling.temperature ||
+                state->sampling.top_p != batch.sampling.top_p ||
+                state->sampling.top_k != batch.sampling.top_k ||
+                state->sampling.seed != batch.sampling.seed)
+                continue;
+        } else {
+            batch.sampling = state->sampling;
+            sampling_set = true;
+        }
+        batch.items.push_back(
+            DecodeOneToken{id, state->last_token, std::optional<int>(expected_ctx)});
+        budget -= decode_blocks;
+        included.push_back(id);
+    }
+
+    if (!batch.items.empty()) {
+        reorder_after_batch(included);
+    }
+
     return batch;
+}
+
+void Scheduler::reorder_after_batch(const std::vector<SequenceId>& included) {
+    std::unordered_set<SequenceId> inc(included.begin(), included.end());
+    std::deque<SequenceId> keep;
+    for (SequenceId id : active_order_) {
+        if (inc.count(id)) continue;
+        auto it = active_.find(id);
+        if (it == active_.end()) continue;
+        auto& state = it->second;
+        if (!state || state->finished || state->cancelled) continue;
+        keep.push_back(id);
+    }
+    for (SequenceId id : included) {
+        if (active_.count(id)) keep.push_back(id);
+    }
+    active_order_ = std::move(keep);
 }
 
 // ---------------------------------------------------------------------------

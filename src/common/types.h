@@ -81,6 +81,7 @@ struct EngineCapacity {
     int active_sequences = 0;
     int free_blocks = 0;
     int max_blocks = 0;
+    int block_size = 0;
 };
 
 }  // namespace ccinfer
