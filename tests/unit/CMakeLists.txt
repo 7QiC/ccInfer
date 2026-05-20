@@ -47,3 +47,7 @@ gtest_discover_tests(test_batch_translator)
 add_executable(test_scheduler test_scheduler.cpp)
 target_link_libraries(test_scheduler PRIVATE engine server gtest_main)
 gtest_discover_tests(test_scheduler)
+
+add_executable(test_prefix_cache test_prefix_cache.cpp)
+target_link_libraries(test_prefix_cache PRIVATE engine gtest_main)
+gtest_discover_tests(test_prefix_cache)

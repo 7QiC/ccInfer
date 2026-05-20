@@ -9,6 +9,7 @@
 
 #include "common/error_code.h"
 #include "engine/cache/kv_cache_manager.h"
+#include "spdlog/spdlog.h"
 
 namespace ccinfer {
 namespace engine {
@@ -26,6 +27,11 @@ bool check_seq_invariant(const SequenceState& seq, int block_size, int max_block
     const std::size_t b_sz = static_cast<std::size_t>(block_size);
     if (b_sz != 0 && bt_sz > std::numeric_limits<std::size_t>::max() / b_sz) return false;
     if (bt_sz * b_sz < static_cast<std::size_t>(seq.kv_written)) return false;
+    int32_t sc = seq.block_table.shared_count();
+    if (sc < 0 || sc > seq.block_table.size()) return false;
+    if (static_cast<int64_t>(sc) * block_size > static_cast<int64_t>(seq.kv_written)) return false;
+    if (static_cast<int64_t>(sc) * block_size > static_cast<int64_t>(seq.prompt_processed))
+        return false;
     std::unordered_set<int32_t> seen;
     for (int b = 0; b < seq.block_table.size(); ++b) {
         int32_t bid = seq.block_table[b];
@@ -211,6 +217,7 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
     constexpr std::size_t kMax = std::numeric_limits<std::size_t>::max();
 
     // --- Phase 2: build host staging arrays ---
+    if (MBPR_sz == 0) return fail(ErrorCode::InvalidArgument);
     // Overflow-check block_table_host size before allocation.
     if (B_sz > kMax / MBPR_sz) return fail(ErrorCode::InvalidArgument);
 
@@ -269,13 +276,12 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
     query_start_loc[B_sz] = offset;
 
     for (int i = 0; i < batch_size; ++i) {
+        const int last_token_index = query_start_loc[static_cast<std::size_t>(i) + 1] - 1;
+
         if (auto* pf = std::get_if<PrefillChunk>(&batch.items[i])) {
-            logits_indices[static_cast<std::size_t>(i)] =
-                pf->needs_sample
-                    ? query_start_loc[static_cast<std::size_t>(i) + 1] - 1
-                    : -1;
+            logits_indices[static_cast<std::size_t>(i)] = pf->needs_sample ? last_token_index : -1;
         } else {
-            logits_indices[static_cast<std::size_t>(i)] = i;
+            logits_indices[static_cast<std::size_t>(i)] = last_token_index;
         }
     }
 
@@ -485,6 +491,25 @@ Result<void> BatchTranslator::commit(const ScheduledBatch& batch,
             }
         }
 
+        // Validate new_blocks: ids must be in range, non-duplicate, and not in
+        // existing block_table.
+        std::unordered_set<int32_t> existing;
+        for (int b = 0; b < seq.block_table.size(); ++b) existing.insert(seq.block_table[b]);
+        std::unordered_set<int32_t> new_seen;
+        for (int b = 0; b < per_item[i].new_blocks.size(); ++b) {
+            int32_t bid = per_item[i].new_blocks[b];
+            if (bid < 0 || bid >= max_blk) return std::unexpected(ErrorCode::InvalidArgument);
+            if (!new_seen.insert(bid).second) return std::unexpected(ErrorCode::InvalidArgument);
+            if (existing.count(bid)) return std::unexpected(ErrorCode::InvalidArgument);
+        }
+
+        // Verify total blocks after commit cover kv_written + new_tokens.
+        int64_t total_blocks_after =
+            static_cast<int64_t>(seq.block_table.size()) + per_item[i].new_blocks.size();
+        int64_t blocks_needed =
+            (static_cast<int64_t>(seq.kv_written) + new_tokens + block_size_ - 1) / block_size_;
+        if (total_blocks_after < blocks_needed) return std::unexpected(ErrorCode::InvalidArgument);
+
         to_update[i] = &seq;
         new_tokens_per_item[i] = new_tokens;
     }
@@ -516,7 +541,9 @@ void BatchTranslator::rollback(const std::vector<PerItemAlloc>& per_item) const 
     for (const auto& alloc : per_item) {
         if (alloc.new_blocks.size() > 0) {
             auto r = kv_mgr_.release_blocks(alloc.new_blocks);
-            if (!r) { /* TODO: log rollback release failure */
+            if (!r) {
+                spdlog::error("rollback: release_blocks failed for {} new blocks",
+                              alloc.new_blocks.size());
             }
         }
     }

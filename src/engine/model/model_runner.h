@@ -10,7 +10,7 @@
 
 #include "common/result.h"
 #include "engine/backend/params.h"
-#include "engine/cache/kv_cache_storage.h"
+#include "engine/cache/kv_cache_manager.h"
 #include "engine/common/backend_def.h"
 #include "engine/common/traits.h"
 #include "engine/common/types.h"
@@ -25,7 +25,7 @@ public:
     template <typename Traits>
     static Result<std::vector<WorkItemResult>> inference(Model& model, const PhysicalBatch& batch,
                                                          DefaultBackend& backend,
-                                                         KVCacheStorage& kv_storage,
+                                                         KVCacheManager& kv_mgr,
                                                          const SamplingParams& sampling = {}) {
         static_assert(runner_traits_valid_v<Traits>, "RunnerTraits has unknown dtype tags");
 
@@ -76,7 +76,7 @@ public:
         }
 
         // slot_mapping[t] and block_table entries are validated by BatchTranslator:
-        //   0 <= slot_mapping[t] < kv_storage.max_slots()
+        //   0 <= slot_mapping[t] < kv_mgr.max_slots()
         //   block_table entries are valid block ids or -1.
 
         const auto& cfg = model.config();
@@ -130,8 +130,8 @@ public:
 
         // --- D2H: context_lens (validate) ---
         {
-            const int block_sz = kv_storage.block_size();
-            const int max_slots = kv_storage.max_slots();
+            const int block_sz = kv_mgr.block_size();
+            const int max_slots = kv_mgr.max_slots();
             if (block_sz <= 0 || max_slots <= 0) return std::unexpected(ErrorCode::InvalidArgument);
             if (batch.max_blocks_per_req > max_slots / block_sz)
                 return std::unexpected(ErrorCode::InvalidArgument);
@@ -173,7 +173,7 @@ public:
         input.positions_ = static_cast<const int32_t*>(batch.positions->data());
         input.num_tokens_ = T;
         input.max_position_id_ = max_pos;
-        input.kv_storage_ = &kv_storage;
+        input.kv_mgr_ = &kv_mgr;
         input.slot_mapping_ = static_cast<const int32_t*>(batch.slot_mapping->data());
         input.block_table_ = static_cast<const int32_t*>(batch.block_table->data());
         input.query_start_loc_ = static_cast<const int32_t*>(batch.query_start_loc->data());

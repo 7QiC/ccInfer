@@ -4,7 +4,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include "common/error_code.h"
 #include "common/result.h"
 #include "common/types.h"
 #include "engine/cache/block.h"

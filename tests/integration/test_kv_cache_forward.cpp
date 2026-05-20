@@ -28,16 +28,16 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     constexpr int hd = 64;
     const int block_size = kKVBlockSize;
 
-    // 1. Init GPU storage and CPU block manager separately
+    // 1. Init GPU storage and pass to block manager
     auto backend_r = CudaBackend::create(0);
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
-    KVCacheStorage storage;
-    auto r_storage = storage.init<__nv_bfloat16>(backend, kNumLayers, kMaxBlocks, block_size, nkv, hd);
+    auto r_storage = KVCacheStorage::create<__nv_bfloat16>(backend, kNumLayers, kMaxBlocks,
+                                                           block_size, nkv, hd);
     ASSERT_TRUE(r_storage.has_value());
 
     KVCacheManager mgr;
-    auto init_r = mgr.init(kMaxBlocks);
+    auto init_r = mgr.init(std::move(*r_storage), kMaxBlocks, block_size);
     ASSERT_TRUE(init_r.has_value());
     EXPECT_EQ(mgr.num_free_blocks(), kMaxBlocks);
 
@@ -95,8 +95,8 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     // 3. write_kv_cache for each layer (use layer 0 for this test)
     {
         auto r = launch_write_kv_cache(d_k_new, d_v_new,
-                                       static_cast<__nv_bfloat16*>(storage.k_layer(0)),
-                                       static_cast<__nv_bfloat16*>(storage.v_layer(0)),
+                                       static_cast<__nv_bfloat16*>(mgr.k_cache(0)),
+                                       static_cast<__nv_bfloat16*>(mgr.v_cache(0)),
                                        d_slot_mapping, kNumTokens, nkv, hd,
                                        kMaxBlocks * block_size, stream);
         ASSERT_TRUE(r.has_value());
@@ -122,8 +122,8 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     {
         // Paged prefill: reads K/V through block_table
         auto r = launch_prefill_attention(d_q,
-                                          static_cast<const __nv_bfloat16*>(storage.k_layer(0)),
-                                          static_cast<const __nv_bfloat16*>(storage.v_layer(0)),
+                                          static_cast<const __nv_bfloat16*>(mgr.k_cache(0)),
+                                          static_cast<const __nv_bfloat16*>(mgr.v_cache(0)),
                                           d_block_table, d_query_start_loc, d_context_lens,
                                           d_out_prefill, 1, kNumTokens, num_blocks,
                                           nq, nkv, hd, block_size, stream);
@@ -190,8 +190,8 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
 
         // Paged decode
         auto r = launch_decode_attention(d_decode_q,
-                                          static_cast<const __nv_bfloat16*>(storage.k_layer(0)),
-                                          static_cast<const __nv_bfloat16*>(storage.v_layer(0)),
+                                          static_cast<const __nv_bfloat16*>(mgr.k_cache(0)),
+                                          static_cast<const __nv_bfloat16*>(mgr.v_cache(0)),
                                          d_dec_block_table, d_dec_context_lens,
                                          d_decode_out, kDecodeBatch, num_blocks,
                                          nq, nkv, hd, block_size, stream);

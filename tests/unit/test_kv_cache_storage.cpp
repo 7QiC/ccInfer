@@ -22,10 +22,10 @@ TEST(KVCacheStorageTest, LayerOffsetsAreCorrect) {
     auto backend_r = CudaBackend::create(0);
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
-    KVCacheStorage storage;
-    auto r = storage.init<__nv_bfloat16>(backend, kNumLayers, kMaxBlocks, kKVBlockSize,
+    auto s_r = KVCacheStorage::create<__nv_bfloat16>(backend, kNumLayers, kMaxBlocks, kKVBlockSize,
                                          kNvKVHeads, kHeadDim);
-    ASSERT_TRUE(r.has_value());
+    ASSERT_TRUE(s_r.has_value());
+    auto& storage = **s_r;
 
     int64_t layer_bytes =
         static_cast<int64_t>(kMaxBlocks) * kKVBlockSize * kNvKVHeads * kHeadDim *
@@ -63,10 +63,10 @@ TEST(KVCacheStorageTest, LayersAreIndependent) {
     auto backend_r = CudaBackend::create(0);
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
-    KVCacheStorage storage;
-    auto r = storage.init<__nv_bfloat16>(backend, kNumLayers, kMaxBlocks, kKVBlockSize,
+    auto s_r = KVCacheStorage::create<__nv_bfloat16>(backend, kNumLayers, kMaxBlocks, kKVBlockSize,
                                          kNvKVHeads, kHeadDim);
-    ASSERT_TRUE(r.has_value());
+    ASSERT_TRUE(s_r.has_value());
+    auto& storage = **s_r;
 
     int64_t layer_elems =
         static_cast<int64_t>(kMaxBlocks) * kKVBlockSize * kNvKVHeads * kHeadDim;
@@ -129,10 +129,10 @@ TEST(KVCacheStorageTest, ZeroInitialized) {
     auto backend_r = CudaBackend::create(0);
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
-    KVCacheStorage storage;
-    auto r = storage.init<__nv_bfloat16>(backend, kNumLayers, kMaxBlocks, kKVBlockSize,
+    auto s_r = KVCacheStorage::create<__nv_bfloat16>(backend, kNumLayers, kMaxBlocks, kKVBlockSize,
                                          kNvKVHeads, kHeadDim);
-    ASSERT_TRUE(r.has_value());
+    ASSERT_TRUE(s_r.has_value());
+    auto& storage = **s_r;
 
     int64_t layer_elems =
         static_cast<int64_t>(kMaxBlocks) * kKVBlockSize * kNvKVHeads * kHeadDim;

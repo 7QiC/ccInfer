@@ -19,6 +19,7 @@
 #include "engine/model/model_runner.h"
 #include "engine/model/registry.h"
 #include "engine/worker/batch_translator.h"
+#include "spdlog/spdlog.h"
 
 namespace ccinfer {
 namespace engine {
@@ -107,7 +108,7 @@ void Worker::enqueue_execute_batch(ScheduledBatch batch, std::shared_ptr<BatchCh
 
 DeviceCapacity Worker::capacity() const {
     return DeviceCapacity{kMaxSequences, active_sequences_.load(), free_blocks_.load(),
-                          max_blocks_.load(), kv_storage_->block_size()};
+                          max_blocks_.load(), block_size_.load()};
 }
 
 // --- Worker loop ---
@@ -175,11 +176,19 @@ void Worker::worker_loop() {
     active_sequences_.store(0);
     free_blocks_.store(0);
     max_blocks_.store(0);
+    block_size_.store(0);
     sequences_.clear();
     model_.reset();
-    kv_storage_.reset();
     kv_mgr_.reset();
     backend_.reset();
+}
+
+void Worker::sync_capacity() {
+    if (!kv_mgr_) return;
+    auto s = kv_mgr_->stats();
+    free_blocks_.store(s.block_free);
+    max_blocks_.store(s.block_total);
+    block_size_.store(s.block_size);
 }
 
 // --- Resource init (runs on worker thread) ---
@@ -241,22 +250,21 @@ void Worker::init_resources(const std::string& model_path,
 
         max_blocks_.store(1024);
 
-        kv_mgr_ = std::make_unique<KVCacheManager>();
-        auto kmgr_r = kv_mgr_->init(max_blocks_.load());
-        if (!kmgr_r) {
-            promise->set_value(std::unexpected(kmgr_r.error()));
-            return;
-        }
-
-        kv_storage_ = std::make_unique<KVCacheStorage>();
-        auto kvs_r = kv_storage_->init<__nv_bfloat16>(*backend_, num_layers, max_blocks_.load(),
-                                                      kKVBlockSize, num_kv_heads, head_dim);
+        auto kvs_r = KVCacheStorage::create<__nv_bfloat16>(
+            *backend_, num_layers, max_blocks_.load(), kKVBlockSize, num_kv_heads, head_dim);
         if (!kvs_r) {
             promise->set_value(std::unexpected(kvs_r.error()));
             return;
         }
 
-        free_blocks_.store(max_blocks_.load());
+        kv_mgr_ = std::make_unique<KVCacheManager>();
+        auto kmgr_r = kv_mgr_->init(std::move(*kvs_r), max_blocks_.load(), kKVBlockSize);
+        if (!kmgr_r) {
+            promise->set_value(std::unexpected(kmgr_r.error()));
+            return;
+        }
+
+        sync_capacity();
         initialized_ = true;
         promise->set_value({});
     } catch (const std::exception&) {
@@ -316,13 +324,31 @@ void Worker::process_control(ControlCmd& cmd) {
                     return;
                 }
 
+                auto pr = kv_mgr_->prepare_blocks(c.prompt_tokens, /*namespace_salt=*/0);
+                if (!pr) {
+                    sync_capacity();  // LRU eviction may have freed blocks.
+                    resolve(c.chan, Result<SequenceId>(std::unexpected(pr.error())));
+                    return;
+                }
+
                 SequenceId id = next_seq_id_++;
                 SequenceState state;
                 state.seq_id = id;
                 state.prompt_tokens = std::move(c.prompt_tokens);
                 state.max_context_len = c.max_context_len;
+                state.block_table = std::move(pr->block_table);
+
+                // Shared prefix blocks already have valid KV.
+                int64_t prefix64 =
+                    static_cast<int64_t>(pr->prefix_hit_blocks) * kv_mgr_->block_size();
+                int prefix_tokens = static_cast<int>(
+                    std::min(prefix64, static_cast<int64_t>(state.prompt_tokens.size())));
+                state.kv_written = prefix_tokens;
+                state.prompt_processed = prefix_tokens;
+
                 sequences_[id] = std::move(state);
                 active_sequences_++;
+                sync_capacity();
                 resolve(c.chan, Result<SequenceId>{id});
             } else if constexpr (std::is_same_v<T, CmdReleaseSequence>) {
                 if (!initialized_) {
@@ -356,21 +382,20 @@ void Worker::process_control(ControlCmd& cmd) {
 // --- Sequence state helper ---
 
 Result<void> Worker::release_sequence_state(SeqMapIter it) {
-    int blocks = static_cast<int>(it->second.block_table.size());
-    if (blocks > 0) {
+    if (!it->second.block_table.empty()) {
         auto r = kv_mgr_->release_blocks(it->second.block_table);
         if (!r) return r;
-        free_blocks_ += blocks;
     }
     active_sequences_--;
     sequences_.erase(it);
+    sync_capacity();
     return {};
 }
 
 // --- Batch processing ---
 
 void Worker::process_batch(PendingBatch pending) {
-    if (!initialized_ || !backend_ || !kv_mgr_ || !kv_storage_) {
+    if (!initialized_ || !backend_ || !kv_mgr_) {
         resolve(pending.chan, Result<BatchResult>(std::unexpected(ErrorCode::ServerShuttingDown)));
         return;
     }
@@ -395,43 +420,53 @@ void Worker::process_batch(PendingBatch pending) {
 
         auto tr = translator.translate(pending.batch, sequences_);
         if (!tr) {
+            sync_capacity();  // translate may have evicted LRU blocks.
             resolve(pending.chan, Result<BatchResult>(std::unexpected(tr.error())));
             return;
         }
 
-        // Count allocated blocks and update free_blocks_ immediately.
-        int allocated = 0;
-        for (const auto& pa : tr->per_item) {
-            if (allocated > std::numeric_limits<int>::max() - pa.new_blocks.size()) {
-                translator.rollback(tr->per_item);
-                resolve(pending.chan,
-                        Result<BatchResult>(std::unexpected(ErrorCode::InvalidArgument)));
-                return;
-            }
-            allocated += pa.new_blocks.size();
-        }
-        free_blocks_ -= allocated;
+        sync_capacity();  // reflect allocated blocks before forward.
 
         auto& phys_batch = tr->physical_batch;
         auto& per_item = tr->per_item;
 
-        auto exec_r = ModelRunner::inference<BF16RunnerTraits>(
-            *model_, phys_batch, *backend_, *kv_storage_, pending.batch.sampling);
+        auto exec_r = ModelRunner::inference<BF16RunnerTraits>(*model_, phys_batch, *backend_,
+                                                               *kv_mgr_, pending.batch.sampling);
 
         if (!exec_r) {
-            free_blocks_ += allocated;
             translator.rollback(per_item);
+            sync_capacity();
             resolve(pending.chan, Result<BatchResult>(std::unexpected(exec_r.error())));
             return;
         }
 
         auto commit_r = translator.commit(pending.batch, sequences_, per_item);
         if (!commit_r) {
-            free_blocks_ += allocated;
             translator.rollback(per_item);
+            sync_capacity();
             resolve(pending.chan, Result<BatchResult>(std::unexpected(commit_r.error())));
             return;
         }
+
+        // Cache full blocks into prefix cache for prefill items.
+        for (const auto& item : pending.batch.items) {
+            if (std::holds_alternative<PrefillChunk>(item)) {
+                const auto& pc = std::get<PrefillChunk>(item);
+                auto it = sequences_.find(pc.seq_id);
+                if (it != sequences_.end()) {
+                    const auto& seq = it->second;
+                    auto cf_r = kv_mgr_->cache_full_blocks(seq.block_table, seq.prompt_tokens,
+                                                           seq.kv_written,
+                                                           /*namespace_salt=*/0);
+                    if (!cf_r) {
+                        spdlog::error("cache_full_blocks failed seq={} err={}", seq.seq_id,
+                                      static_cast<int>(cf_r.error()));
+                    }
+                }
+            }
+        }
+
+        sync_capacity();
 
         BatchResult result;
         result.batch_id = pending.batch.batch_id;
@@ -441,6 +476,7 @@ void Worker::process_batch(PendingBatch pending) {
     }
 
     // Dummy mode (no model loaded).
+    // Dummy mode does not mutate SequenceState. It is only for HTTP/control-path smoke tests.
     BatchResult result = generate_dummy_result(pending.batch);
     resolve(pending.chan, Result<BatchResult>(std::move(result)));
 }

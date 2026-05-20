@@ -28,7 +28,6 @@ namespace asio = boost::asio;
 
 class KVCacheManager;
 class Model;
-class KVCacheStorage;
 
 class Worker {
 public:
@@ -91,6 +90,9 @@ private:
     using SeqMapIter = std::unordered_map<SequenceId, SequenceState>::iterator;
     Result<void> release_sequence_state(SeqMapIter it);
 
+    // --- Capacity sync ---
+    void sync_capacity();
+
     // --- Dummy output (no model loaded yet) ---
     BatchResult generate_dummy_result(const ScheduledBatch& batch);
 
@@ -110,10 +112,11 @@ private:
     std::unordered_map<SequenceId, SequenceState> sequences_;
     std::atomic<SequenceId> next_seq_id_{1};
 
-    // --- Cached capacity ---
+    // --- Cached capacity (synced from KVCacheManager::stats()) ---
     std::atomic<int> active_sequences_{0};
     std::atomic<int> free_blocks_{0};
     std::atomic<int> max_blocks_{0};
+    std::atomic<int> block_size_{0};
     static constexpr int kMaxSequences = 64;
 
     bool initialized_ = false;
@@ -122,7 +125,6 @@ private:
     std::unique_ptr<DefaultBackend> backend_;
     std::unique_ptr<Model> model_;
     std::unique_ptr<KVCacheManager> kv_mgr_;
-    std::unique_ptr<KVCacheStorage> kv_storage_;
 };
 
 // --- Template definitions ---

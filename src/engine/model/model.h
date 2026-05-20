@@ -11,7 +11,7 @@ namespace ccinfer {
 namespace engine {
 
 struct ModelConfig;
-class KVCacheStorage;
+class KVCacheManager;
 
 struct ForwardInput {
     // Exactly one of input_embeds_ / token_ids_ must be non-null.
@@ -24,8 +24,8 @@ struct ForwardInput {
 
     ForwardMode mode_ = ForwardMode::Prefill;
 
-    // Paged-attention fields — all mandatory when kv_storage_ is set.
-    KVCacheStorage* kv_storage_ = nullptr;
+    // Paged-attention fields — all mandatory when kv_mgr_ is set.
+    KVCacheManager* kv_mgr_ = nullptr;
     const int32_t* slot_mapping_ = nullptr;     // [num_tokens]
     const int32_t* block_table_ = nullptr;      // [batch, max_blocks_per_req]
     const int32_t* query_start_loc_ = nullptr;  // [batch + 1]

@@ -6,6 +6,7 @@
 #include <unordered_map>
 
 #include "engine/cache/kv_cache_manager.h"
+#include "engine/cache/kv_cache_storage.h"
 #include "engine/common/backend_def.h"
 #include "engine/common/types.h"
 #include "engine/worker/batch_translator.h"
@@ -20,7 +21,12 @@ protected:
         auto b = CudaBackend::create(0);
         ASSERT_TRUE(b.has_value());
         backend_ = std::move(*b);
-        auto r = kv_mgr_.init(32);
+
+        auto sr = KVCacheStorage::create<__nv_bfloat16>(*backend_, /*num_layers=*/1, /*max_blocks=*/32,
+                                                        kBlockSize, /*num_kv_heads=*/4, /*head_dim=*/64);
+        ASSERT_TRUE(sr.has_value());
+
+        auto r = kv_mgr_.init(std::move(*sr), 32, kBlockSize);
         ASSERT_TRUE(r.has_value());
         translator_ = std::make_unique<BatchTranslator>(*backend_, kv_mgr_, kBlockSize);
 

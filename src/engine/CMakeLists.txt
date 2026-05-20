@@ -14,6 +14,8 @@ add_library(engine STATIC
     kernel/attention/prefill_attn.cu
     kernel/attention/decode_attn.cu
     cache/kv_cache_manager.cpp
+    cache/kv_cache_storage.cpp
+    cache/prefix_cache.cpp
     kernel/elementwise/elementwise.cu
     kernel/sampling/sample.cu
     model/loader.cpp

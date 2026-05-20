@@ -7,7 +7,7 @@
 
 #include "engine/backend/backend.h"
 #include "engine/backend/device_buffer.h"
-#include "engine/cache/kv_cache_storage.h"
+#include "engine/cache/kv_cache_manager.h"
 
 namespace ccinfer {
 namespace engine {
@@ -44,12 +44,12 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
         return std::unexpected(ErrorCode::InvalidArgument);
     }
 
-    if (input.kv_storage_ == nullptr || input.slot_mapping_ == nullptr ||
+    if (input.kv_mgr_ == nullptr || input.slot_mapping_ == nullptr ||
         input.block_table_ == nullptr || input.context_lens_ == nullptr || input.batch_size_ <= 0 ||
         input.max_blocks_per_req_ <= 0) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
-    const int cache_block_size = input.kv_storage_->block_size();
+    const int cache_block_size = input.kv_mgr_->block_size();
     if (cache_block_size <= 0) return std::unexpected(ErrorCode::InvalidArgument);
 
     if (input.mode_ == ForwardMode::Prefill && input.query_start_loc_ == nullptr) {
@@ -84,7 +84,7 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
 
     const int qkv_dim = (nq + 2 * nkv) * hd;
     const int attn_dim = nq * hd;
-    const int max_slots = input.kv_storage_->max_slots();
+    const int max_slots = input.kv_mgr_->max_slots();
     const int64_t T64 = T;
     const int64_t D64 = D;
 
@@ -232,8 +232,8 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
             auto r = backend.template write_kv_cache<__nv_bfloat16>(WriteKVCacheParams{
                 .k_new_ = (*k_buf)->data(),
                 .v_new_ = (*v_buf)->data(),
-                .k_cache_ = input.kv_storage_->k_layer(l),
-                .v_cache_ = input.kv_storage_->v_layer(l),
+                .k_cache_ = input.kv_mgr_->k_cache(l),
+                .v_cache_ = input.kv_mgr_->v_cache(l),
                 .slot_mapping_ = input.slot_mapping_,
                 .total_tokens_ = T,
                 .num_kv_heads_ = nkv,
@@ -247,8 +247,8 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
         if (input.mode_ == ForwardMode::Decode) {
             auto r = backend.template decode_attention<__nv_bfloat16>(DecodeAttnParams{
                 .q_ = (*q_buf)->data(),
-                .k_cache_ = input.kv_storage_->k_layer(l),
-                .v_cache_ = input.kv_storage_->v_layer(l),
+                .k_cache_ = input.kv_mgr_->k_cache(l),
+                .v_cache_ = input.kv_mgr_->v_cache(l),
                 .block_table_ = input.block_table_,
                 .context_lens_ = input.context_lens_,
                 .output_ = (*attn_out)->data(),
@@ -263,8 +263,8 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
         } else {
             auto r = backend.template prefill_attention<__nv_bfloat16>(PrefillAttnParams{
                 .q_ = (*q_buf)->data(),
-                .k_cache_ = input.kv_storage_->k_layer(l),
-                .v_cache_ = input.kv_storage_->v_layer(l),
+                .k_cache_ = input.kv_mgr_->k_cache(l),
+                .v_cache_ = input.kv_mgr_->v_cache(l),
                 .block_table_ = input.block_table_,
                 .query_start_loc_ = input.query_start_loc_,
                 .context_lens_ = input.context_lens_,
