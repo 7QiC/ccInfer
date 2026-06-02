@@ -27,8 +27,8 @@ void Engine::shutdown() { executor_->shutdown(); }
 
 EngineCapacity Engine::capacity() const { return executor_->capacity(); }
 
-asio::awaitable<Result<SequenceId>> Engine::create_sequence(std::vector<int32_t> prompt_tokens,
-                                                            int max_context_len) {
+asio::awaitable<Result<CreateSequenceResult>> Engine::create_sequence(
+    std::vector<int32_t> prompt_tokens, int max_context_len) {
     auto chan = std::make_shared<SeqIdChannel>(co_await asio::this_coro::executor, 1);
     executor_->enqueue_create_sequence(std::move(prompt_tokens), max_context_len, chan);
 

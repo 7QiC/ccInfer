@@ -12,7 +12,7 @@ namespace ccinfer {
 namespace asio = boost::asio;
 
 using SeqIdChannel =
-    asio::experimental::channel<void(boost::system::error_code, Result<SequenceId>)>;
+    asio::experimental::channel<void(boost::system::error_code, Result<CreateSequenceResult>)>;
 using VoidChannel = asio::experimental::channel<void(boost::system::error_code, Result<void>)>;
 using BatchChannel =
     asio::experimental::channel<void(boost::system::error_code, Result<BatchResult>)>;

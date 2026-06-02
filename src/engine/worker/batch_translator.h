@@ -31,6 +31,10 @@ public:
     struct PerItemAlloc {
         BlockTable new_blocks;              // blocks allocated by this translation
         std::vector<int32_t> slot_mapping;  // per-token physical slot [new_tokens]
+        int kv_tokens_to_commit = 0;
+        int prompt_tokens_to_commit = 0;
+        bool release_after_forward = false;
+        bool prefix_cache_bootstrap = false;
     };
 
     struct TranslateResult {
@@ -41,7 +45,7 @@ public:
     // Build a GPU-ready PhysicalBatch from the scheduled batch and current
     // SequenceState.  Allocates additional KV blocks as needed.
     Result<TranslateResult> translate(
-        const ScheduledBatch& batch,
+        ScheduledBatch& batch,
         const std::unordered_map<SequenceId, SequenceState>& sequences);
 
     // Persist changes to SequenceState after a successful forward pass.

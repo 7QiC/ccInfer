@@ -31,8 +31,8 @@ public:
     Result<void> init(const std::string& model_path);
     void shutdown();
 
-    asio::awaitable<Result<SequenceId>> create_sequence(std::vector<int32_t> prompt_tokens,
-                                                        int max_context_len);
+    asio::awaitable<Result<CreateSequenceResult>> create_sequence(std::vector<int32_t> prompt_tokens,
+                                                                  int max_context_len);
     asio::awaitable<Result<void>> release_sequence(SequenceId seq_id);
     asio::awaitable<Result<void>> abort_sequence(SequenceId seq_id);
     EngineCapacity capacity() const;

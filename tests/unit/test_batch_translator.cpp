@@ -140,6 +140,60 @@ TEST_F(BatchTranslatorTest, PrefillSpansMultipleBlocks) {
     EXPECT_EQ(sequences_[1].block_table.size(), 2);
 }
 
+TEST_F(BatchTranslatorTest, PartialPrefixHitOnlyRunsUncachedSuffix) {
+    sequences_[1].kv_written = 16;
+    sequences_[1].prompt_processed = 16;
+    auto alloc = kv_mgr_.allocate_blocks(1);
+    ASSERT_TRUE(alloc.has_value());
+    sequences_[1].block_table.push_back((*alloc)[0]);
+
+    ScheduledBatch batch;
+    batch.batch_id = 3;
+    batch.items.push_back(PrefillChunk{1, TokenSpan{0, 20}, std::nullopt, true});
+
+    auto result = translator_->translate(batch, sequences_);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_TRUE(std::holds_alternative<PrefillChunk>(batch.items[0]));
+    const auto& pc = std::get<PrefillChunk>(batch.items[0]);
+    EXPECT_EQ(pc.prompt_span.start, 16);
+    EXPECT_EQ(pc.prompt_span.length, 4);
+    EXPECT_EQ(result->physical_batch.num_tokens, 4);
+
+    auto commit_r = translator_->commit(batch, sequences_, result->per_item);
+    ASSERT_TRUE(commit_r.has_value());
+    EXPECT_EQ(sequences_[1].kv_written, 20);
+    EXPECT_EQ(sequences_[1].prompt_processed, 20);
+    EXPECT_EQ(sequences_[1].block_table.size(), 2);
+}
+
+TEST_F(BatchTranslatorTest, FullPrefixHitBootstrapDoesNotCommitScratchKv) {
+    sequences_[1].prompt_tokens = std::vector<int32_t>(16, 1);
+    sequences_[1].kv_written = 16;
+    sequences_[1].prompt_processed = 16;
+    auto alloc = kv_mgr_.allocate_blocks(1);
+    ASSERT_TRUE(alloc.has_value());
+    sequences_[1].block_table.push_back((*alloc)[0]);
+
+    ScheduledBatch batch;
+    batch.batch_id = 4;
+    batch.items.push_back(PrefillChunk{1, TokenSpan{0, 16}, std::nullopt, true});
+
+    int free_before = kv_mgr_.num_free_blocks();
+    auto result = translator_->translate(batch, sequences_);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_TRUE(std::holds_alternative<DecodeOneToken>(batch.items[0]));
+    EXPECT_EQ(result->physical_batch.mode, ForwardMode::Decode);
+    EXPECT_EQ(result->physical_batch.num_tokens, 1);
+    EXPECT_LT(kv_mgr_.num_free_blocks(), free_before);
+
+    auto commit_r = translator_->commit(batch, sequences_, result->per_item);
+    ASSERT_TRUE(commit_r.has_value());
+    EXPECT_EQ(sequences_[1].kv_written, 16);
+    EXPECT_EQ(sequences_[1].prompt_processed, 16);
+    EXPECT_EQ(sequences_[1].block_table.size(), 1);
+    EXPECT_EQ(kv_mgr_.num_free_blocks(), free_before);
+}
+
 TEST_F(BatchTranslatorTest, EmptyBatchReturnsError) {
     ScheduledBatch batch;
     batch.batch_id = 1;

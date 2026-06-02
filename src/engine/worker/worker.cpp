@@ -61,7 +61,8 @@ void Worker::enqueue_create_sequence(std::vector<int32_t> prompt_tokens, int max
     std::unique_lock lock(queue_mutex_);
     if (!running_) {
         lock.unlock();
-        resolve(chan, Result<SequenceId>(std::unexpected(ErrorCode::ServerShuttingDown)));
+        resolve(chan,
+                Result<CreateSequenceResult>(std::unexpected(ErrorCode::ServerShuttingDown)));
         return;
     }
     queue_.push_back(
@@ -141,7 +142,7 @@ void Worker::worker_loop() {
                                         c.promise->set_value(
                                             std::unexpected(ErrorCode::ServerShuttingDown));
                                     } else if constexpr (std::is_same_v<CT, CmdCreateSequence>) {
-                                        resolve(c.chan, Result<SequenceId>(std::unexpected(
+                                        resolve(c.chan, Result<CreateSequenceResult>(std::unexpected(
                                                             ErrorCode::ServerShuttingDown)));
                                     } else if constexpr (std::is_same_v<CT, CmdReleaseSequence> ||
                                                          std::is_same_v<CT, CmdAbortSequence>) {
@@ -284,50 +285,50 @@ void Worker::process_control(ControlCmd& cmd) {
                 init_resources(std::move(c.model_path), c.promise);
             } else if constexpr (std::is_same_v<T, CmdCreateSequence>) {
                 if (!initialized_ || !backend_) {
-                    resolve(c.chan,
-                            Result<SequenceId>(std::unexpected(ErrorCode::ServerShuttingDown)));
+                    resolve(c.chan, Result<CreateSequenceResult>(
+                                        std::unexpected(ErrorCode::ServerShuttingDown)));
                     return;
                 }
                 if (c.prompt_tokens.empty() || c.max_context_len <= 0) {
-                    resolve(c.chan,
-                            Result<SequenceId>(std::unexpected(ErrorCode::InvalidArgument)));
+                    resolve(c.chan, Result<CreateSequenceResult>(
+                                        std::unexpected(ErrorCode::InvalidArgument)));
                     return;
                 }
                 if (c.prompt_tokens.size() >
                     static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-                    resolve(c.chan,
-                            Result<SequenceId>(std::unexpected(ErrorCode::InvalidArgument)));
+                    resolve(c.chan, Result<CreateSequenceResult>(
+                                        std::unexpected(ErrorCode::InvalidArgument)));
                     return;
                 }
                 if (static_cast<int64_t>(c.max_context_len) <
                     static_cast<int64_t>(c.prompt_tokens.size())) {
-                    resolve(c.chan,
-                            Result<SequenceId>(std::unexpected(ErrorCode::InvalidArgument)));
+                    resolve(c.chan, Result<CreateSequenceResult>(
+                                        std::unexpected(ErrorCode::InvalidArgument)));
                     return;
                 }
                 if (static_cast<int64_t>(c.max_context_len) >
                     static_cast<int64_t>(max_blocks_.load()) * kKVBlockSize) {
-                    resolve(c.chan,
-                            Result<SequenceId>(std::unexpected(ErrorCode::InvalidArgument)));
+                    resolve(c.chan, Result<CreateSequenceResult>(
+                                        std::unexpected(ErrorCode::InvalidArgument)));
                     return;
                 }
                 for (auto tok : c.prompt_tokens) {
                     if (tok < 0) {
-                        resolve(c.chan,
-                                Result<SequenceId>(std::unexpected(ErrorCode::InvalidArgument)));
+                        resolve(c.chan, Result<CreateSequenceResult>(
+                                            std::unexpected(ErrorCode::InvalidArgument)));
                         return;
                     }
                 }
                 if (active_sequences_.load() >= kMaxSequences) {
-                    resolve(c.chan,
-                            Result<SequenceId>(std::unexpected(ErrorCode::MaxSequencesReached)));
+                    resolve(c.chan, Result<CreateSequenceResult>(
+                                        std::unexpected(ErrorCode::MaxSequencesReached)));
                     return;
                 }
 
                 auto pr = kv_mgr_->prepare_blocks(c.prompt_tokens, /*namespace_salt=*/0);
                 if (!pr) {
                     sync_capacity();  // LRU eviction may have freed blocks.
-                    resolve(c.chan, Result<SequenceId>(std::unexpected(pr.error())));
+                    resolve(c.chan, Result<CreateSequenceResult>(std::unexpected(pr.error())));
                     return;
                 }
 
@@ -349,7 +350,9 @@ void Worker::process_control(ControlCmd& cmd) {
                 sequences_[id] = std::move(state);
                 active_sequences_++;
                 sync_capacity();
-                resolve(c.chan, Result<SequenceId>{id});
+                resolve(c.chan, Result<CreateSequenceResult>{
+                                    CreateSequenceResult{.seq_id = id,
+                                                         .prompt_processed = prefix_tokens}});
             } else if constexpr (std::is_same_v<T, CmdReleaseSequence>) {
                 if (!initialized_) {
                     resolve(c.chan, Result<void>{});
@@ -417,6 +420,7 @@ void Worker::process_batch(PendingBatch pending) {
 
     if (model_) {
         BatchTranslator translator(*backend_, *kv_mgr_, kKVBlockSize);
+        const ScheduledBatch requested_batch = pending.batch;
 
         auto tr = translator.translate(pending.batch, sequences_);
         if (!tr) {
@@ -471,6 +475,38 @@ void Worker::process_batch(PendingBatch pending) {
         BatchResult result;
         result.batch_id = pending.batch.batch_id;
         result.items = std::move(*exec_r);
+        for (auto& wr : result.items) {
+            if (wr.item_index < 0 ||
+                static_cast<std::size_t>(wr.item_index) >= requested_batch.items.size() ||
+                static_cast<std::size_t>(wr.item_index) >= per_item.size()) {
+                resolve(pending.chan,
+                        Result<BatchResult>(std::unexpected(ErrorCode::BatchTranslationFailed)));
+                return;
+            }
+
+            const auto& requested_item =
+                requested_batch.items[static_cast<std::size_t>(wr.item_index)];
+            const auto& alloc = per_item[static_cast<std::size_t>(wr.item_index)];
+            const auto* requested_prefill = std::get_if<PrefillChunk>(&requested_item);
+            if (alloc.prefix_cache_bootstrap) {
+                if (requested_prefill == nullptr || wr.kind != WorkKind::DecodeOneToken ||
+                    wr.tokens_consumed != 1) {
+                    resolve(pending.chan,
+                            Result<BatchResult>(std::unexpected(ErrorCode::BatchTranslationFailed)));
+                    return;
+                }
+                wr.kind = WorkKind::PrefillChunk;
+                wr.tokens_consumed = requested_prefill->prompt_span.length;
+            } else if (requested_prefill != nullptr) {
+                if (wr.kind != WorkKind::PrefillChunk ||
+                    wr.tokens_consumed > requested_prefill->prompt_span.length) {
+                    resolve(pending.chan,
+                            Result<BatchResult>(std::unexpected(ErrorCode::BatchTranslationFailed)));
+                    return;
+                }
+                wr.tokens_consumed = requested_prefill->prompt_span.length;
+            }
+        }
         resolve(pending.chan, Result<BatchResult>(std::move(result)));
         return;
     }

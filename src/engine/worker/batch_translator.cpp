@@ -55,7 +55,7 @@ BatchTranslator::BatchTranslator(DefaultBackend& backend, KVCacheManager& kv_mgr
 // ---------------------------------------------------------------------------
 
 Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
-    const ScheduledBatch& batch, const std::unordered_map<SequenceId, SequenceState>& sequences) {
+    ScheduledBatch& batch, const std::unordered_map<SequenceId, SequenceState>& sequences) {
     if (block_size_ <= 0) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
@@ -90,9 +90,6 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
         }
     }
 
-    const ForwardMode mode = std::holds_alternative<PrefillChunk>(batch.items[0])
-                                 ? ForwardMode::Prefill
-                                 : ForwardMode::Decode;
     const int max_blk = kv_mgr_.max_blocks();
 
     // --- Phase 1: per-item validation and KV block allocation ---
@@ -104,21 +101,11 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
     constexpr int kIntMax = std::numeric_limits<int>::max();
 
     for (int i = 0; i < num_items; ++i) {
-        const auto& item = batch.items[i];
+        auto& item = batch.items[i];
 
+        // Resolve seq_id before adjusting the item.
         SequenceId seq_id = 0;
-        int new_tokens = 0;
-        std::visit(
-            [&](const auto& w) {
-                seq_id = w.seq_id;
-                using T = std::decay_t<decltype(w)>;
-                if constexpr (std::is_same_v<T, PrefillChunk>) {
-                    new_tokens = w.prompt_span.length;
-                } else {
-                    new_tokens = 1;
-                }
-            },
-            item);
+        std::visit([&](const auto& w) { seq_id = w.seq_id; }, item);
 
         if (!seen_seq_ids.insert(seq_id).second) {
             return fail(ErrorCode::InvalidArgument);
@@ -134,29 +121,75 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
             return fail(ErrorCode::InvalidArgument);
         }
 
+        // Adjust PrefillChunk for prefix-cache hits.  The scheduler does not
+        // know which tokens were already cached; the worker adjusts the span
+        // (or converts to a decode step if the entire prompt is cached).
+        if (std::holds_alternative<PrefillChunk>(item)) {
+            auto& pc = std::get<PrefillChunk>(item);
+            if (pc.prompt_span.start < seq.prompt_processed) {
+                int skip = seq.prompt_processed - pc.prompt_span.start;
+                if (skip >= pc.prompt_span.length) {
+                    // Entire chunk already cached.  Run a one-token bootstrap
+                    // decode from the last prompt token to produce a sample,
+                    // but do not commit that temporary KV slot; the next real
+                    // decode will write the sampled token at the same logical
+                    // position.
+                    per_item[i].prefix_cache_bootstrap = true;
+                    per_item[i].release_after_forward = true;
+                    item = DecodeOneToken{seq_id, seq.prompt_tokens.back(),
+                                          std::optional<int>(seq.kv_written)};
+                } else {
+                    pc.prompt_span.start += skip;
+                    pc.prompt_span.length -= skip;
+                }
+            }
+        }
+
+        int new_tokens = 0;
+        std::visit(
+            [&](const auto& w) {
+                using T = std::decay_t<decltype(w)>;
+                if constexpr (std::is_same_v<T, PrefillChunk>) {
+                    new_tokens = w.prompt_span.length;
+                } else {
+                    new_tokens = 1;
+                }
+            },
+            item);
+
+        per_item[i].kv_tokens_to_commit = new_tokens;
+        per_item[i].prompt_tokens_to_commit =
+            std::holds_alternative<PrefillChunk>(item) ? new_tokens : 0;
+        if (per_item[i].prefix_cache_bootstrap) {
+            per_item[i].kv_tokens_to_commit = 0;
+            per_item[i].prompt_tokens_to_commit = 0;
+        }
+
         if (std::holds_alternative<PrefillChunk>(item)) {
             const auto& pc = std::get<PrefillChunk>(item);
-            if (pc.prompt_span.start < 0 || pc.prompt_span.length <= 0) {
+            if (pc.prompt_span.start < 0 || pc.prompt_span.length < 0) {
                 return fail(ErrorCode::InvalidArgument);
             }
             if (pc.prompt_span.start != seq.prompt_processed) {
                 return fail(ErrorCode::InvalidArgument);
             }
-            const std::size_t p_size = seq.prompt_tokens.size();
-            if (static_cast<std::size_t>(pc.prompt_span.start) > p_size ||
-                static_cast<std::size_t>(pc.prompt_span.length) >
-                    p_size - static_cast<std::size_t>(pc.prompt_span.start)) {
-                return fail(ErrorCode::InvalidArgument);
-            }
-            if (pc.expected_context_len.has_value() && *pc.expected_context_len != seq.kv_written) {
-                return fail(ErrorCode::InvalidArgument);
-            }
-            // Check only the current chunk's token_ids.
-            const std::size_t chunk_end = static_cast<std::size_t>(pc.prompt_span.start) +
-                                          static_cast<std::size_t>(pc.prompt_span.length);
-            for (std::size_t t = static_cast<std::size_t>(pc.prompt_span.start); t < chunk_end;
-                 ++t) {
-                if (seq.prompt_tokens[t] < 0) return fail(ErrorCode::InvalidArgument);
+            if (pc.prompt_span.length > 0) {
+                const std::size_t p_size = seq.prompt_tokens.size();
+                if (static_cast<std::size_t>(pc.prompt_span.start) > p_size ||
+                    static_cast<std::size_t>(pc.prompt_span.length) >
+                        p_size - static_cast<std::size_t>(pc.prompt_span.start)) {
+                    return fail(ErrorCode::InvalidArgument);
+                }
+                if (pc.expected_context_len.has_value() &&
+                    *pc.expected_context_len != seq.kv_written) {
+                    return fail(ErrorCode::InvalidArgument);
+                }
+                const std::size_t chunk_end = static_cast<std::size_t>(pc.prompt_span.start) +
+                                              static_cast<std::size_t>(pc.prompt_span.length);
+                for (std::size_t t = static_cast<std::size_t>(pc.prompt_span.start); t < chunk_end;
+                     ++t) {
+                    if (seq.prompt_tokens[t] < 0) return fail(ErrorCode::InvalidArgument);
+                }
             }
         } else {
             const auto& d = std::get<DecodeOneToken>(item);
@@ -289,6 +322,11 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
     TranslateResult result;
 
     auto& pb = result.physical_batch;
+    // Recompute mode after Phase 1: prefix-cache hits may have converted
+    // PrefillChunks to DecodeOneToken items.
+    const ForwardMode mode = std::holds_alternative<PrefillChunk>(batch.items[0])
+                                 ? ForwardMode::Prefill
+                                 : ForwardMode::Decode;
     pb.num_tokens = total_tokens;
     pb.batch_size = batch_size;
     pb.max_blocks_per_req = max_blocks_per_req;
@@ -428,6 +466,11 @@ Result<void> BatchTranslator::commit(const ScheduledBatch& batch,
         if (slot_cnt > static_cast<std::size_t>(std::numeric_limits<int>::max()))
             return std::unexpected(ErrorCode::InvalidArgument);
         int new_tokens = static_cast<int>(slot_cnt);
+        if (per_item[i].kv_tokens_to_commit < 0 || per_item[i].prompt_tokens_to_commit < 0 ||
+            per_item[i].kv_tokens_to_commit > new_tokens ||
+            per_item[i].prompt_tokens_to_commit > new_tokens) {
+            return std::unexpected(ErrorCode::InvalidArgument);
+        }
 
         // Verify slot_mapping count matches WorkItem semantics.
         bool ok = false;
@@ -462,7 +505,8 @@ Result<void> BatchTranslator::commit(const ScheduledBatch& batch,
             return std::unexpected(ErrorCode::InvalidArgument);
         }
 
-        const int64_t total_after = static_cast<int64_t>(seq.kv_written) + new_tokens;
+        const int64_t total_after =
+            static_cast<int64_t>(seq.kv_written) + per_item[i].kv_tokens_to_commit;
         if (total_after > static_cast<int64_t>(seq.max_context_len)) {
             return std::unexpected(ErrorCode::RequestTooLong);
         }
@@ -507,7 +551,9 @@ Result<void> BatchTranslator::commit(const ScheduledBatch& batch,
         int64_t total_blocks_after =
             static_cast<int64_t>(seq.block_table.size()) + per_item[i].new_blocks.size();
         int64_t blocks_needed =
-            (static_cast<int64_t>(seq.kv_written) + new_tokens + block_size_ - 1) / block_size_;
+            (static_cast<int64_t>(seq.kv_written) + per_item[i].kv_tokens_to_commit +
+             block_size_ - 1) /
+            block_size_;
         if (total_blocks_after < blocks_needed) return std::unexpected(ErrorCode::InvalidArgument);
 
         to_update[i] = &seq;
@@ -517,16 +563,17 @@ Result<void> BatchTranslator::commit(const ScheduledBatch& batch,
     // --- Phase 2: mutate ---
     for (std::size_t i = 0; i < num_items; ++i) {
         auto& seq = *to_update[i];
-        int new_tokens = new_tokens_per_item[i];
 
-        seq.kv_written += new_tokens;
+        seq.kv_written += per_item[i].kv_tokens_to_commit;
+        seq.prompt_processed += per_item[i].prompt_tokens_to_commit;
 
-        if (std::holds_alternative<PrefillChunk>(batch.items[i])) {
-            seq.prompt_processed += new_tokens;
-        }
-
-        for (int b = 0; b < per_item[i].new_blocks.size(); ++b) {
-            seq.block_table.push_back(per_item[i].new_blocks[b]);
+        if (!per_item[i].release_after_forward) {
+            for (int b = 0; b < per_item[i].new_blocks.size(); ++b) {
+                seq.block_table.push_back(per_item[i].new_blocks[b]);
+            }
+        } else if (per_item[i].new_blocks.size() > 0) {
+            auto r = kv_mgr_.release_blocks(per_item[i].new_blocks);
+            if (!r) return std::unexpected(r.error());
         }
     }
 

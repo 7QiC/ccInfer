@@ -16,6 +16,11 @@ namespace ccinfer {
 // ---------------------------------------------------------------------------
 using SequenceId = uint64_t;
 
+struct CreateSequenceResult {
+    SequenceId seq_id = 0;
+    int prompt_processed = 0;
+};
+
 enum class ForwardMode : uint8_t { Prefill, Decode };
 enum class WorkKind : uint8_t { PrefillChunk, DecodeOneToken };
 

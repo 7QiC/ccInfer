@@ -303,7 +303,7 @@ asio::awaitable<void> Scheduler::drain_pending() {
             pending_or_creating_ids_.erase(req.request_id);
 
             if (result) {
-                auto r = co_await engine_.release_sequence(*result);
+                auto r = co_await engine_.release_sequence(result->seq_id);
                 if (!r) { /* TODO: log release failure */
                 }
             }
@@ -317,7 +317,7 @@ asio::awaitable<void> Scheduler::drain_pending() {
             pending_or_creating_ids_.erase(req.request_id);
 
             if (result) {
-                auto r = co_await engine_.release_sequence(*result);
+                auto r = co_await engine_.release_sequence(result->seq_id);
                 if (!r) { /* TODO: log release failure */
                 }
             }
@@ -336,16 +336,20 @@ asio::awaitable<void> Scheduler::drain_pending() {
 
         auto state = std::make_shared<SchedulerRequestState>();
         state->request_id = std::move(req.request_id);
-        state->seq_id = *result;
+        state->seq_id = result->seq_id;
         state->prompt_tokens = std::move(req.prompt_tokens);
+        const int prompt_len = static_cast<int>(state->prompt_tokens.size());
+        if (result->prompt_processed > 0 && result->prompt_processed < prompt_len) {
+            state->prefill_cursor = result->prompt_processed;
+        }
         state->sampling = req.sampling;
         state->max_context_len = req.max_context_len;
         state->sink = std::move(req.sink);
 
         by_request_id_[state->request_id] = state;
-        seq_to_request_id_[*result] = state->request_id;
-        active_[*result] = state;
-        active_order_.push_back(*result);
+        seq_to_request_id_[result->seq_id] = state->request_id;
+        active_[result->seq_id] = state;
+        active_order_.push_back(result->seq_id);
     }
 
     co_return;
@@ -644,6 +648,14 @@ asio::awaitable<void> Scheduler::apply_and_push(const ScheduledBatch& batch,
                 }
             }
         } else {
+            // Worker may convert PrefillChunk → DecodeOneToken when all
+            // prompt tokens are already in the prefix cache.  In that case
+            // mark prefill as done so the decode loop can start.
+            if (!state->prefill_done) {
+                state->prefill_cursor = static_cast<int>(state->prompt_tokens.size());
+                state->prefill_done = true;
+            }
+
             if (wr.tokens_consumed != 1) {
                 send_error_event(state, ErrorCode::BatchTranslationFailed);
                 continue;
