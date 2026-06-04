@@ -3,6 +3,7 @@
 
 #include <cfloat>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 
 #include "engine/backend/cuda/cuda_utils.h"
@@ -56,19 +57,23 @@ __global__ void prefill_attention_kernel(
     }
 
     // Dynamic shared memory layout:
-    //   q_s:    [head_dim]
-    //   k_s:    [kTileTokens][head_dim]
-    //   scores: [kTileTokens]
+    //   q_s:       [head_dim]
+    //   k_s:       [kTileTokens][head_dim]
+    //   scores:    [kTileTokens]
+    //   kv_offsets:[kTileTokens]
     extern __shared__ __align__(16) unsigned char smem_raw[];
 
     __nv_bfloat16* q_s = reinterpret_cast<__nv_bfloat16*>(smem_raw);
     __nv_bfloat16* k_s = q_s + head_dim;
 
-    const size_t bf16_bytes =
-        static_cast<size_t>(1 + kTileTokens) * head_dim * sizeof(__nv_bfloat16);
-    const size_t score_offset = (bf16_bytes + 3u) & ~static_cast<size_t>(3u);
+    const std::size_t bf16_bytes =
+        static_cast<std::size_t>(1 + kTileTokens) * head_dim * sizeof(__nv_bfloat16);
+    const std::size_t score_offset = align_up(bf16_bytes, alignof(float));
 
     float* scores = reinterpret_cast<float*>(smem_raw + score_offset);
+    const std::size_t scores_bytes = static_cast<std::size_t>(kTileTokens) * sizeof(float);
+    const std::size_t offsets_offset = align_up(score_offset + scores_bytes, alignof(int64_t));
+    int64_t* kv_offsets = reinterpret_cast<int64_t*>(smem_raw + offsets_offset);
 
     // Find request id for this global query token.
     // This is O(batch_size), acceptable for a baseline.
@@ -153,6 +158,9 @@ __global__ void prefill_attention_kernel(
             const bool valid =
                 get_kv_cache_base_offset(ctx_pos, kv_head, head_dim, num_kv_heads, cache_block_size,
                                          max_blocks_per_req, req_blocks, &k_base);
+            if (dim == 0) {
+                kv_offsets[tile_i] = valid ? k_base : -1;
+            }
 
             k_s[linear] = valid ? k_cache[k_base + dim] : __float2bfloat16_rn(0.0f);
         }
@@ -160,12 +168,7 @@ __global__ void prefill_attention_kernel(
 
         // Compute scaled QK scores for this tile.
         for (int tile_i = 0; tile_i < tile_len; ++tile_i) {
-            const int ctx_pos = tile_start + tile_i;
-
-            int64_t k_base = 0;
-            const bool valid =
-                get_kv_cache_base_offset(ctx_pos, kv_head, head_dim, num_kv_heads, cache_block_size,
-                                         max_blocks_per_req, req_blocks, &k_base);
+            const bool valid = kv_offsets[tile_i] >= 0;
 
             float partial = 0.0f;
 
@@ -215,14 +218,9 @@ __global__ void prefill_attention_kernel(
 
         if (has_output_dim) {
             for (int tile_i = 0; tile_i < tile_len; ++tile_i) {
-                const int ctx_pos = tile_start + tile_i;
+                const int64_t v_base = kv_offsets[tile_i];
 
-                int64_t v_base = 0;
-                const bool valid = get_kv_cache_base_offset(
-                    ctx_pos, kv_head, head_dim, num_kv_heads, cache_block_size, max_blocks_per_req,
-                    req_blocks, &v_base);
-
-                if (valid) {
+                if (v_base >= 0) {
                     const float p = expf(scores[tile_i] - new_m);
                     const float v_val = __bfloat162float(v_cache[v_base + out_dim]);
                     tile_acc += p * v_val;
@@ -264,10 +262,12 @@ Result<void> launch_prefill_attention(const __nv_bfloat16* q, const __nv_bfloat1
     dim3 grid(total_query_tokens, num_q_heads);
     dim3 block(kNumThreads);
 
-    const size_t bf16_bytes =
-        static_cast<size_t>(1 + kTileTokens) * head_dim * sizeof(__nv_bfloat16);
-    const size_t score_offset = (bf16_bytes + 3u) & ~static_cast<size_t>(3u);
-    const size_t shared_bytes = score_offset + kTileTokens * sizeof(float);
+    const std::size_t bf16_bytes =
+        static_cast<std::size_t>(1 + kTileTokens) * head_dim * sizeof(__nv_bfloat16);
+    const std::size_t score_offset = align_up(bf16_bytes, alignof(float));
+    const std::size_t scores_bytes = kTileTokens * sizeof(float);
+    const std::size_t offsets_offset = align_up(score_offset + scores_bytes, alignof(int64_t));
+    const std::size_t shared_bytes = offsets_offset + kTileTokens * sizeof(int64_t);
 
     const float scale = 1.0f / sqrtf(static_cast<float>(head_dim));
 

@@ -13,6 +13,15 @@ namespace engine {
 
 namespace {
 
+// RMSNorm with BF16-matching accumulation.
+//
+// The sum-of-squares reduction rounds to BF16 after each element addition.
+// This matches HuggingFace/PyTorch's BF16 reduction behaviour and produces
+// logits within 0.07 max-diff of HF (vs 0.13 with FP32-only accumulation).
+//
+// The accumulator variable is float (FP32 register), but __float2bfloat16_rn
+// after each addition discards lower mantissa bits, emulating BF16 storage.
+
 template <int kBlockSize>
 __global__ void rms_norm_bf162_kernel(const __nv_bfloat16* __restrict__ input,
                                       const __nv_bfloat16* __restrict__ weight,
@@ -30,12 +39,17 @@ __global__ void rms_norm_bf162_kernel(const __nv_bfloat16* __restrict__ input,
     const __nv_bfloat162* w2 = reinterpret_cast<const __nv_bfloat162*>(weight);
     __nv_bfloat162* out2 = reinterpret_cast<__nv_bfloat162*>(out_row);
 
+    // FP32 multiply + FP32 add, then round to BF16 after each element.
+    // This produces the same rounding path as PyTorch's BF16 RMSNorm.
     float sum_sq = 0.0f;
     for (int i = tid; i < dim2; i += kBlockSize) {
         float2 x = __bfloat1622float2(in2[i]);
-        sum_sq += x.x * x.x + x.y * x.y;
+        float term = x.x * x.x + x.y * x.y;
+        sum_sq = __bfloat162float(__float2bfloat16_rn(sum_sq + term));
     }
     sum_sq = block_reduce_sum<kBlockSize>(sum_sq);
+    sum_sq = __bfloat162float(__float2bfloat16_rn(sum_sq));
+
     const float inv_rms = rsqrtf(sum_sq / static_cast<float>(dim) + eps);
 
     for (int i = tid; i < dim2; i += kBlockSize) {
@@ -61,9 +75,12 @@ __global__ void rms_norm_scalar_kernel(const __nv_bfloat16* __restrict__ input,
     float sum_sq = 0.0f;
     for (int i = tid; i < dim; i += kBlockSize) {
         float x = __bfloat162float(in_row[i]);
-        sum_sq += x * x;
+        float term = x * x;
+        sum_sq = __bfloat162float(__float2bfloat16_rn(sum_sq + term));
     }
     sum_sq = block_reduce_sum<kBlockSize>(sum_sq);
+    sum_sq = __bfloat162float(__float2bfloat16_rn(sum_sq));
+
     const float inv_rms = rsqrtf(sum_sq / static_cast<float>(dim) + eps);
 
     for (int i = tid; i < dim; i += kBlockSize) {

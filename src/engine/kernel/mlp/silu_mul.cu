@@ -24,15 +24,15 @@ __global__ void silu_mul_bf162_kernel(const __nv_bfloat16* __restrict__ gate,
 
         float2 g = __bfloat1622float2(__ldg(g2 + idx2));
         float2 u = __bfloat1622float2(__ldg(u2 + idx2));
-        float s0 = g.x / (1.0f + expf(-g.x)) * u.x;
-        float s1 = g.y / (1.0f + expf(-g.y)) * u.y;
+        float s0 = g.x / (1.0f + __expf(-g.x)) * u.x;
+        float s1 = g.y / (1.0f + __expf(-g.y)) * u.y;
         o2[idx2] = make_bfloat162(__float2bfloat16_rn(s0), __float2bfloat16_rn(s1));
     }
     if ((n & 1) && idx2 == n2) {
         int64_t idx = n - 1;
         float g = __bfloat162float(gate[idx]);
         float u = __bfloat162float(up[idx]);
-        output[idx] = __float2bfloat16_rn(g / (1.0f + expf(-g)) * u);
+        output[idx] = __float2bfloat16_rn(g / (1.0f + __expf(-g)) * u);
     }
 }
 
@@ -43,7 +43,7 @@ __global__ void silu_mul_scalar_kernel(const __nv_bfloat16* __restrict__ gate,
     if (idx >= n) return;
     float g = __bfloat162float(gate[idx]);
     float u = __bfloat162float(up[idx]);
-    output[idx] = __float2bfloat16_rn(g / (1.0f + expf(-g)) * u);
+    output[idx] = __float2bfloat16_rn(g / (1.0f + __expf(-g)) * u);
 }
 
 }  // namespace
