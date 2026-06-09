@@ -60,3 +60,6 @@ venv/
 # claude code
 .claude
 /docs
+
+# tools
+/tools
