@@ -6,12 +6,32 @@
 #include <csignal>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <thread>
 
 #include "common/error_code.h"
+#include "common/runtime_config.h"
 #include "engine/engine.h"
 #include "server/server.h"
+
+namespace {
+
+bool parse_nonnegative_int(const char* text, int& value) {
+    if (text == nullptr || *text == '\0') return false;
+    char* end = nullptr;
+    long parsed = std::strtol(text, &end, 10);
+    if (*end != '\0' || parsed < 0 || parsed > std::numeric_limits<int>::max()) return false;
+    value = static_cast<int>(parsed);
+    return true;
+}
+
+void print_usage(const char* argv0) {
+    std::cerr << "Usage: " << argv0
+              << " --model-path PATH [--port PORT] [--prefill-chunk-size N]\n";
+}
+
+}  // namespace
 
 int main(int argc, char* argv[]) {
     // Parse args
@@ -23,6 +43,16 @@ int main(int argc, char* argv[]) {
             port = std::atoi(argv[++i]);
         } else if (arg == "--model-path" && i + 1 < argc) {
             model_path = argv[++i];
+        } else if (arg == "--prefill-chunk-size" && i + 1 < argc) {
+            int chunk_size = 0;
+            if (!parse_nonnegative_int(argv[++i], chunk_size)) {
+                std::cerr << "Invalid prefill chunk size: " << argv[i] << std::endl;
+                return 1;
+            }
+            ccinfer::runtime::set_prefill_chunk_size(chunk_size);
+        } else {
+            print_usage(argv[0]);
+            return 1;
         }
     }
 

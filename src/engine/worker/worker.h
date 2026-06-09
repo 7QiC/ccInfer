@@ -117,6 +117,12 @@ private:
     std::atomic<int> free_blocks_{0};
     std::atomic<int> max_blocks_{0};
     std::atomic<int> block_size_{0};
+    std::atomic<int> block_active_{0};
+    std::atomic<int> block_cached_idle_{0};
+    std::atomic<uint64_t> prefix_lookup_hits_{0};
+    std::atomic<uint64_t> prefix_lookup_misses_{0};
+    std::atomic<uint64_t> prefix_evictions_{0};
+    std::atomic<uint64_t> prefix_cached_blocks_{0};
     static constexpr int kMaxSequences = 64;
 
     bool initialized_ = false;

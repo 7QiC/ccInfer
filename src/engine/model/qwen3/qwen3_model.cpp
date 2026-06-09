@@ -52,7 +52,8 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
     const int cache_block_size = input.kv_mgr_->block_size();
     if (cache_block_size <= 0) return std::unexpected(ErrorCode::InvalidArgument);
 
-    if (input.mode_ == ForwardMode::Prefill && input.query_start_loc_ == nullptr) {
+    if ((input.mode_ == ForwardMode::Prefill || input.mode_ == ForwardMode::Mixed) &&
+        input.query_start_loc_ == nullptr) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
 

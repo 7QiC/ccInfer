@@ -91,7 +91,7 @@ Result<BlockTable> KVCacheManager::allocate_blocks(int num_blocks) {
     return result;
 }
 
-Result<KVCacheManager::PrepareResult> KVCacheManager::prepare_blocks(
+Result<KVCacheManager::PrepareResult> KVCacheManager::lookup_prefix_cache(
     const std::vector<int32_t>& tokens, uint64_t namespace_salt) {
     if (tokens.empty()) return std::unexpected(ErrorCode::InvalidArgument);
 
@@ -109,7 +109,6 @@ Result<KVCacheManager::PrepareResult> KVCacheManager::prepare_blocks(
     int total_blocks_needed = static_cast<int>(blocks64);
     if (total_blocks_needed > max_blocks_) return std::unexpected(ErrorCode::KVBlockExhausted);
 
-    // Phase 1: match prefix cache.
     auto hashes = PrefixCache::chain_hashes(tokens, block_size_, namespace_salt);
     for (std::size_t i = 0; i < hashes.size(); ++i) {
         auto opt_id = prefix_cache_->lookup(hashes[i]);
@@ -143,7 +142,21 @@ Result<KVCacheManager::PrepareResult> KVCacheManager::prepare_blocks(
         result.prefix_hit_blocks++;
     }
 
-    // Phase 2: allocate remaining blocks. Rollback prefix hits on failure.
+    table.set_shared_count(result.prefix_hit_blocks);
+    return result;
+}
+
+Result<KVCacheManager::PrepareResult> KVCacheManager::prepare_blocks(
+    const std::vector<int32_t>& tokens, uint64_t namespace_salt) {
+    auto lookup = lookup_prefix_cache(tokens, namespace_salt);
+    if (!lookup) return std::unexpected(lookup.error());
+
+    PrepareResult result = std::move(*lookup);
+    auto& table = result.block_table;
+
+    int64_t total_tokens = static_cast<int64_t>(tokens.size());
+    int total_blocks_needed = static_cast<int>((total_tokens + block_size_ - 1) / block_size_);
+
     int remaining = total_blocks_needed - table.size();
     if (remaining > 0) {
         auto alloc = allocate_blocks(remaining);

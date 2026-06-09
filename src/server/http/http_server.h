@@ -74,6 +74,7 @@ private:
 
     asio::awaitable<void> handle_health(asio::ip::tcp::socket& socket);
     asio::awaitable<void> handle_models(asio::ip::tcp::socket& socket);
+    asio::awaitable<void> handle_metrics(asio::ip::tcp::socket& socket);
     asio::awaitable<void> handle_chat(asio::ip::tcp::socket& socket, std::string body,
                                       const std::shared_ptr<ActiveConn>& conn);
 

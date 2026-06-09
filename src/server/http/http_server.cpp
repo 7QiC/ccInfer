@@ -81,6 +81,18 @@ std::string sse_error_frame(ErrorCode err) {
     return "data: " + j.dump() + "\n\n";
 }
 
+std::string json_response(const nlohmann::json& body) {
+    std::string payload = body.dump();
+    return "HTTP/1.1 200 OK\r\n"
+           "Content-Type: application/json\r\n"
+           "Content-Length: " +
+           std::to_string(payload.size()) +
+           "\r\n"
+           "Connection: close\r\n"
+           "\r\n" +
+           payload;
+}
+
 bool starts_with_ci(std::string_view s, std::string_view prefix) {
     if (s.size() < prefix.size()) return false;
     return std::equal(prefix.begin(), prefix.end(), s.begin(), [](char a, char b) {
@@ -372,6 +384,12 @@ asio::awaitable<void> HttpServer::handle_connection_impl(asio::ip::tcp::socket& 
             co_return;
         }
         co_await handle_models(socket);
+    } else if (path == "/metrics") {
+        if (method != "GET") {
+            co_await write_response(socket, kMethodNotAllowed);
+            co_return;
+        }
+        co_await handle_metrics(socket);
     } else if (path == "/v1/chat/completions") {
         if (method != "POST") {
             co_await write_response(socket, kMethodNotAllowed);
@@ -409,6 +427,39 @@ asio::awaitable<void> HttpServer::handle_health(asio::ip::tcp::socket& socket) {
 
 asio::awaitable<void> HttpServer::handle_models(asio::ip::tcp::socket& socket) {
     co_await write_response(socket, kModelsResponse);
+}
+
+asio::awaitable<void> HttpServer::handle_metrics(asio::ip::tcp::socket& socket) {
+    auto cap = scheduler_.capacity();
+    nlohmann::json j;
+    j["engine"] = {
+        {"max_sequences", cap.max_sequences},
+        {"active_sequences", cap.active_sequences},
+    };
+
+    double pool_util = 0.0;
+    if (cap.max_blocks > 0) {
+        pool_util = static_cast<double>(cap.block_active + cap.block_cached_idle) /
+                    static_cast<double>(cap.max_blocks);
+    }
+    j["kv_cache"] = {
+        {"block_total", cap.max_blocks},
+        {"block_free", cap.free_blocks},
+        {"block_active", cap.block_active},
+        {"block_cached_idle", cap.block_cached_idle},
+        {"block_size", cap.block_size},
+        {"pool_utilization", pool_util},
+        {"active_capacity_tokens", cap.block_active * cap.block_size},
+        {"cached_capacity_tokens", cap.block_cached_idle * cap.block_size},
+    };
+    j["prefix_cache"] = {
+        {"lookup_hits", cap.prefix_lookup_hits},
+        {"lookup_misses", cap.prefix_lookup_misses},
+        {"evictions", cap.prefix_evictions},
+        {"cached_blocks", cap.prefix_cached_blocks},
+    };
+
+    co_await write_response(socket, json_response(j));
 }
 
 namespace {

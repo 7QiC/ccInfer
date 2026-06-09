@@ -56,14 +56,15 @@ public:
             return std::unexpected(ErrorCode::InvalidArgument);
         }
 
-        if (batch.mode != ForwardMode::Prefill && batch.mode != ForwardMode::Decode) {
+        if (batch.mode != ForwardMode::Prefill && batch.mode != ForwardMode::Decode &&
+            batch.mode != ForwardMode::Mixed) {
             return std::unexpected(ErrorCode::InvalidArgument);
         }
         if (batch.mode == ForwardMode::Decode && T != B) {
             return std::unexpected(ErrorCode::ModelShapeMismatch);
         }
 
-        {
+        if (batch.mode != ForwardMode::Mixed) {
             const WorkKind expected = batch.mode == ForwardMode::Prefill ? WorkKind::PrefillChunk
                                                                          : WorkKind::DecodeOneToken;
             for (int i = 0; i < B; ++i) {
@@ -111,6 +112,8 @@ public:
                 int len = qsl_host[i + 1] - qsl_host[i];
                 if (len <= 0) return std::unexpected(ErrorCode::InvalidArgument);
                 if (batch.mode == ForwardMode::Decode && len != 1)
+                    return std::unexpected(ErrorCode::InvalidArgument);
+                if (batch.item_kinds[i] == WorkKind::DecodeOneToken && len != 1)
                     return std::unexpected(ErrorCode::InvalidArgument);
             }
         }
@@ -162,7 +165,8 @@ public:
                     return std::unexpected(ErrorCode::InvalidArgument);
                 if (batch.mode == ForwardMode::Decode && li_host[i] != i)
                     return std::unexpected(ErrorCode::InvalidArgument);
-                if (batch.mode == ForwardMode::Prefill && li_host[i] != qsl_host[i + 1] - 1)
+                if ((batch.mode == ForwardMode::Prefill || batch.mode == ForwardMode::Mixed) &&
+                    li_host[i] != qsl_host[i + 1] - 1)
                     return std::unexpected(ErrorCode::InvalidArgument);
             }
         }

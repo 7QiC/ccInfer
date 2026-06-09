@@ -42,6 +42,7 @@ public:
     void submit(SchedulerRequest req);
     void cancel(std::string request_id);
     void start();
+    EngineCapacity capacity() const;
 
     // Fire-and-forget shutdown.  Prefer shutdown_async() for waitable shutdown.
     void shutdown();

@@ -13,12 +13,17 @@
 #include <utility>
 #include <variant>
 
+#include "common/runtime_config.h"
+
 namespace ccinfer {
 namespace server {
 
 namespace {
 using asio::as_tuple;
 using asio::deferred;
+
+constexpr int kMaxActiveScheduledSeqs = 16;
+constexpr int kScheduleComputeBudget = 4096;
 }  // namespace
 
 Scheduler::Scheduler(asio::io_context& io, Engine& engine)
@@ -56,6 +61,8 @@ void Scheduler::cancel(std::string request_id) {
         wake_on_scheduler_thread();
     });
 }
+
+EngineCapacity Scheduler::capacity() const { return engine_.capacity(); }
 
 void Scheduler::start() {
     // Phase 4.1: one-shot.  After shutdown, start() is a no-op to prevent
@@ -139,14 +146,8 @@ void Scheduler::complete_shutdown_on_scheduler_thread() {
 // ---------------------------------------------------------------------------
 
 // send_event returns false only when sink.channel has already expired
-// (synchronous failure).  try_send failures (buffer full) are asynchronous
-// and converge via on_send_failed → cancel().  Callers that set
-// state->cancelled based on the return value therefore only handle the
-// immediate-expired case; the buffer-full path is handled by the cancel
-// callback.
-//
-// Phase 4.1: try_send buffer-full → treated as cancelled request.
-// Future: async_send / HTTP-side queue for real back-pressure.
+// synchronously.  A full channel is normal HTTP/SSE back-pressure, not a
+// request failure: async_send waits until the HTTP coroutine receives space.
 bool Scheduler::send_event(const TokenSink& sink, Result<GeneratedToken> result) {
     if (sink.channel.expired()) {
         return false;
@@ -159,10 +160,10 @@ bool Scheduler::send_event(const TokenSink& sink, Result<GeneratedToken> result)
             if (on_send_failed) on_send_failed();
             return;
         }
-        bool ok = ch->try_send(boost::system::error_code{}, std::move(result));
-        if (!ok && on_send_failed) {
-            on_send_failed();
-        }
+        ch->async_send(boost::system::error_code{}, std::move(result),
+                       [on_send_failed](boost::system::error_code ec) {
+                           if (ec && on_send_failed) on_send_failed();
+                       });
     });
 
     return true;
@@ -369,19 +370,13 @@ asio::awaitable<void> Scheduler::wait_for_work() {
 }
 
 // ---------------------------------------------------------------------------
-// Build multi-WorkItem batch (Phase 4.1 → 4.2)
+// Build multi-WorkItem batch
 // ---------------------------------------------------------------------------
 //
-// Homogeneous batches only — all prefill or all decode.
-// Mixed prefill+decode requires per-item forward mode in BatchTranslator/model
-// (deferred to Phase 4.2).
-//
-// Round-robin: prefill items served first (budget-limited, chunked),
-// then compatible decode items up to KV budget.
-
-namespace {
-constexpr int kMaxPrefillTokensPerChunk = 512;
-}  // namespace
+// Mixed scheduling uses one compute budget per engine step. Decode items cost
+// one budget unit each; prefill items cost their chunk token count. Existing
+// decode and in-progress prefill work can continue, while new prefill admission
+// is capped to avoid overfilling KV with too many live sequences.
 
 ScheduledBatch Scheduler::build_scheduled_batch() {
     ScheduledBatch batch;
@@ -398,22 +393,52 @@ ScheduledBatch Scheduler::build_scheduled_batch() {
         }
         return batch;
     }
-    int budget = cap.free_blocks;
+    // KVCacheManager can satisfy new block allocations by evicting cached-idle
+    // prefix blocks, not only by consuming currently free blocks. Keep the
+    // scheduler's admission budget aligned with allocator behavior.
+    int budget = cap.free_blocks + cap.block_cached_idle;
+    int compute_budget = kScheduleComputeBudget;
     std::vector<SequenceId> included;
     bool sampling_set = false;
+    const int configured_chunk_size = runtime::prefill_chunk_size();
 
-    // Alternate prefill/decode to avoid starvation.  Prefill items are
-    // chunked (≤512 tokens), so interleaving is natural: after one chunk,
-    // the next round serves decode before the remaining prefill chunks.
-    bool prefer_decode = (next_batch_id_ % 2) == 0;
+    auto is_schedulable_state = [](const StatePtr& state) {
+        return state && !state->finished && !state->cancelled;
+    };
+    auto has_started_execution = [](const StatePtr& state) {
+        return state && (state->prefill_done || state->prefill_cursor > 0);
+    };
+    auto count_started_active = [&]() {
+        int count = 0;
+        for (const auto& [_, state] : active_) {
+            if (is_schedulable_state(state) && has_started_execution(state)) ++count;
+        }
+        return count;
+    };
+
+    int started_active = count_started_active();
+
+    auto has_prefill_work = [&]() {
+        for (SequenceId id : active_order_) {
+            auto it = active_.find(id);
+            if (it == active_.end()) continue;
+            auto& state = it->second;
+            if (!is_schedulable_state(state) || state->prefill_done) continue;
+            int prompt_len = static_cast<int>(state->prompt_tokens.size());
+            int cursor = std::max(state->prefill_cursor, 0);
+            if (cursor < prompt_len) return true;
+        }
+        return false;
+    };
 
     auto build_decode_batch = [&]() {
         for (SequenceId id : active_order_) {
+            if (compute_budget <= 0) break;
             auto it = active_.find(id);
             if (it == active_.end()) continue;
 
             auto& state = it->second;
-            if (!state || state->finished || state->cancelled || !state->prefill_done) continue;
+            if (!is_schedulable_state(state) || !state->prefill_done) continue;
             if (state->tokens_generated >= state->sampling.max_tokens) {
                 state->finished = true;
                 continue;
@@ -458,83 +483,90 @@ ScheduledBatch Scheduler::build_scheduled_batch() {
             batch.items.push_back(
                 DecodeOneToken{id, state->last_token, std::optional<int>(expected_ctx)});
             budget -= decode_blocks;
+            compute_budget -= 1;
             included.push_back(id);
         }
     };
     auto build_prefill_batch = [&]() {
         auto ceil_div = [](int a, int b) { return (a + b - 1) / b; };
 
-    for (size_t idx = 0; idx < active_order_.size(); ++idx) {
-        SequenceId id = active_order_[idx];
-        auto it = active_.find(id);
-        if (it == active_.end()) continue;
+        for (size_t idx = 0; idx < active_order_.size(); ++idx) {
+            SequenceId id = active_order_[idx];
+            auto it = active_.find(id);
+            if (it == active_.end()) continue;
 
-        auto& state = it->second;
-        if (!state || state->finished || state->cancelled || state->prefill_done) continue;
+            auto& state = it->second;
+            if (!is_schedulable_state(state) || state->prefill_done) continue;
+            const bool already_started = has_started_execution(state);
+            if (!already_started && started_active >= kMaxActiveScheduledSeqs) continue;
 
-        int prompt_len = static_cast<int>(state->prompt_tokens.size());
-        if (state->prefill_cursor < 0) state->prefill_cursor = 0;
-        if (state->prefill_cursor > prompt_len) {
-            state->finished = true;
-            send_error_event(state, ErrorCode::InvalidArgument);
-            continue;
-        }
-
-        int remaining = prompt_len - state->prefill_cursor;
-        if (remaining <= 0) {
-            state->prefill_done = true;
-            continue;
-        }
-
-        // Chunked prefill: limit tokens per batch to bound per-step latency.
-        int chunk_len = std::min(remaining, kMaxPrefillTokensPerChunk);
-
-        // Incremental blocks: only count blocks beyond what's already owned.
-        int cur_blocks = ceil_div(state->prefill_cursor, bs);
-        int total_blocks = ceil_div(state->prefill_cursor + chunk_len, bs);
-        int additional = total_blocks - cur_blocks;
-        if (additional > budget) {
-            // Shrink chunk to fit in available budget.
-            int max_tokens_fit = (cur_blocks + budget) * bs - state->prefill_cursor;
-            if (max_tokens_fit <= 0) {
-                budget_blocked_.push_back(id);
+            int prompt_len = static_cast<int>(state->prompt_tokens.size());
+            if (state->prefill_cursor < 0) state->prefill_cursor = 0;
+            if (state->prefill_cursor > prompt_len) {
+                state->finished = true;
+                send_error_event(state, ErrorCode::InvalidArgument);
                 continue;
             }
-            chunk_len = max_tokens_fit;
-            total_blocks = ceil_div(state->prefill_cursor + chunk_len, bs);
-            additional = total_blocks - cur_blocks;
-        }
 
-        // Phase 4.1: shared sampling per batch.  Use first item's sampling;
-        // skip items with incompatible params (future: per-item sampling).
-        if (sampling_set) {
-            if (state->sampling.temperature != batch.sampling.temperature ||
-                state->sampling.top_p != batch.sampling.top_p ||
-                state->sampling.top_k != batch.sampling.top_k ||
-                state->sampling.seed != batch.sampling.seed)
+            int remaining = prompt_len - state->prefill_cursor;
+            if (remaining <= 0) {
+                state->prefill_done = true;
                 continue;
-        } else {
-            batch.sampling = state->sampling;
-            sampling_set = true;
-        }
+            }
 
-        bool is_final = (state->prefill_cursor + chunk_len >= prompt_len);
-        batch.items.push_back(PrefillChunk{id, TokenSpan{state->prefill_cursor, chunk_len},
-                                           std::optional<int>(state->prefill_cursor), is_final});
-        budget -= additional;
-        included.push_back(id);
-    }
+            // Chunked prefill: limit tokens per batch to bound per-step latency.
+            // A configured size of 0 disables chunking for benchmark ablations.
+            int chunk_len = remaining;
+            if (configured_chunk_size > 0) {
+                chunk_len = std::min(remaining, configured_chunk_size);
+            }
+            if (compute_budget <= 0) break;
+            chunk_len = std::min(chunk_len, compute_budget);
+
+            // Incremental blocks: only count blocks beyond what's already owned.
+            int cur_blocks = ceil_div(state->prefill_cursor, bs);
+            int total_blocks = ceil_div(state->prefill_cursor + chunk_len, bs);
+            int additional = total_blocks - cur_blocks;
+            if (additional > budget) {
+                // Shrink chunk to fit in available budget.
+                int max_tokens_fit = (cur_blocks + budget) * bs - state->prefill_cursor;
+                if (max_tokens_fit <= 0) {
+                    budget_blocked_.push_back(id);
+                    continue;
+                }
+                chunk_len = max_tokens_fit;
+                total_blocks = ceil_div(state->prefill_cursor + chunk_len, bs);
+                additional = total_blocks - cur_blocks;
+            }
+
+            // Phase 4.1: shared sampling per batch.  Use first item's sampling;
+            // skip items with incompatible params (future: per-item sampling).
+            if (sampling_set) {
+                if (state->sampling.temperature != batch.sampling.temperature ||
+                    state->sampling.top_p != batch.sampling.top_p ||
+                    state->sampling.top_k != batch.sampling.top_k ||
+                    state->sampling.seed != batch.sampling.seed)
+                    continue;
+            } else {
+                batch.sampling = state->sampling;
+                sampling_set = true;
+            }
+
+            bool is_final = (state->prefill_cursor + chunk_len >= prompt_len);
+            batch.items.push_back(PrefillChunk{id, TokenSpan{state->prefill_cursor, chunk_len},
+                                               std::optional<int>(state->prefill_cursor),
+                                               is_final});
+            budget -= additional;
+            compute_budget -= chunk_len;
+            if (!already_started) ++started_active;
+            included.push_back(id);
+        }
     };  // build_prefill_batch lambda
 
-    // Alternate phases to interleave prefill chunks with decode.
-    if (prefer_decode) {
-        build_decode_batch();
-        if (!batch.items.empty()) { reorder_after_batch(included); return batch; }
+    const bool prefill_available = has_prefill_work();
+    build_decode_batch();
+    if (prefill_available && compute_budget > 0) {
         build_prefill_batch();
-    } else {
-        build_prefill_batch();
-        if (!batch.items.empty()) { reorder_after_batch(included); return batch; }
-        build_decode_batch();
     }
 
     if (!batch.items.empty()) {

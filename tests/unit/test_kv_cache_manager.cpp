@@ -119,6 +119,26 @@ TEST_F(KVCacheManagerTest, PrepareBlocksWithPrefixHit) {
     EXPECT_EQ(mgr_.num_free_blocks(), free_after_release);
 }
 
+TEST_F(KVCacheManagerTest, LookupPrefixCacheDoesNotAllocateSuffixBlocks) {
+    std::vector<int32_t> cached_prefix(16, 7);
+    auto pr1 = mgr_.prepare_blocks(cached_prefix);
+    ASSERT_TRUE(pr1.has_value());
+    ASSERT_TRUE(mgr_.cache_full_blocks(pr1->block_table, cached_prefix, 16).has_value());
+    ASSERT_TRUE(mgr_.release_blocks(pr1->block_table).has_value());
+
+    int free_before = mgr_.num_free_blocks();
+    std::vector<int32_t> longer_tokens(32, 7);
+    auto lookup = mgr_.lookup_prefix_cache(longer_tokens);
+    ASSERT_TRUE(lookup.has_value());
+
+    EXPECT_EQ(lookup->prefix_hit_blocks, 1);
+    EXPECT_EQ(lookup->block_table.size(), 1);
+    EXPECT_EQ(lookup->block_table.shared_count(), 1);
+    EXPECT_EQ(mgr_.num_free_blocks(), free_before);
+
+    ASSERT_TRUE(mgr_.release_blocks(lookup->block_table).has_value());
+}
+
 TEST_F(KVCacheManagerTest, PrefixHitRefCountBumped) {
     std::vector<int32_t> tokens(16, 7);  // 1 block
     auto pr1 = mgr_.prepare_blocks(tokens);

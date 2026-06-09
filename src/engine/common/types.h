@@ -18,6 +18,12 @@ struct DeviceCapacity {
     int free_blocks = 0;
     int max_blocks = 0;
     int block_size = 0;
+    int block_active = 0;
+    int block_cached_idle = 0;
+    uint64_t prefix_lookup_hits = 0;
+    uint64_t prefix_lookup_misses = 0;
+    uint64_t prefix_evictions = 0;
+    uint64_t prefix_cached_blocks = 0;
 };
 
 // ---------------------------------------------------------------------------

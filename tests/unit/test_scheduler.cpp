@@ -294,9 +294,9 @@ TEST_F(SchedulerTest, MaxContextNotExceededIncluded) {
 // Prefill vs decode priority
 // ---------------------------------------------------------------------------
 
-TEST_F(SchedulerTest, AlternatesPrefillAndDecode) {
-    // With prefill and decode both pending, alternating order ensures
-    // both get served — two consecutive calls produce one of each.
+TEST_F(SchedulerTest, MixedBatchDecodesThenPrefills) {
+    // With prefill and decode both pending, decode should be selected first
+    // and prefill should use the remaining compute budget in the same batch.
     auto prefill = std::make_shared<SchedulerRequestState>();
     prefill->seq_id = 1;
     prefill->prefill_done = false;
@@ -315,20 +315,17 @@ TEST_F(SchedulerTest, AlternatesPrefillAndDecode) {
     scheduler_->active_order_ = {1, 2};
 
     auto batch1 = scheduler_->build_scheduled_batch();
-    ASSERT_EQ(batch1.items.size(), 1u);
-    bool b1_is_prefill = std::holds_alternative<PrefillChunk>(batch1.items[0]);
-    bool b1_is_decode = std::holds_alternative<DecodeOneToken>(batch1.items[0]);
-    EXPECT_TRUE(b1_is_prefill || b1_is_decode);
+    ASSERT_EQ(batch1.items.size(), 2u);
+    ASSERT_TRUE(std::holds_alternative<DecodeOneToken>(batch1.items[0]));
+    EXPECT_EQ(std::get<DecodeOneToken>(batch1.items[0]).seq_id, 2u);
+    ASSERT_TRUE(std::holds_alternative<PrefillChunk>(batch1.items[1]));
+    EXPECT_EQ(std::get<PrefillChunk>(batch1.items[1]).seq_id, 1u);
 
-    // After first batch, the included item moves to back. Second call
-    // should produce the OTHER kind (since phases alternate).
+    decode->finished = true;
     auto batch2 = scheduler_->build_scheduled_batch();
     ASSERT_EQ(batch2.items.size(), 1u);
-    bool b2_is_prefill = std::holds_alternative<PrefillChunk>(batch2.items[0]);
-    bool b2_is_decode = std::holds_alternative<DecodeOneToken>(batch2.items[0]);
-
-    EXPECT_NE(b1_is_prefill, b2_is_prefill)
-        << "Two consecutive calls should produce one prefill and one decode";
+    ASSERT_TRUE(std::holds_alternative<PrefillChunk>(batch2.items[0]));
+    EXPECT_EQ(std::get<PrefillChunk>(batch2.items[0]).seq_id, 1u);
 }
 
 // ---------------------------------------------------------------------------
@@ -442,6 +439,61 @@ TEST_F(SchedulerTest, PrefillChunkFromNonzeroCursor) {
     EXPECT_EQ(p->prompt_span.length, 512);  // min(800-256=544, 512)
     EXPECT_EQ(p->prompt_span.start, 256);
     EXPECT_EQ(p->expected_context_len, 256);
+}
+
+TEST_F(SchedulerTest, MaxActiveScheduledSeqsBlocksOnlyNewPrefill) {
+    for (int id = 1; id <= 16; ++id) {
+        auto state = std::make_shared<SchedulerRequestState>();
+        state->seq_id = id;
+        state->prefill_done = true;
+        state->last_token = id;
+        state->prompt_tokens = {1};
+        state->sampling.max_tokens = 10;
+        scheduler_->active_[id] = state;
+        scheduler_->active_order_.push_back(id);
+    }
+
+    auto new_prefill = std::make_shared<SchedulerRequestState>();
+    new_prefill->seq_id = 100;
+    new_prefill->prefill_done = false;
+    new_prefill->prefill_cursor = 0;
+    new_prefill->prompt_tokens = std::vector<int32_t>(64, 1);
+    new_prefill->sampling.max_tokens = 10;
+    scheduler_->active_[100] = new_prefill;
+    scheduler_->active_order_.push_back(100);
+
+    auto started_prefill = std::make_shared<SchedulerRequestState>();
+    started_prefill->seq_id = 101;
+    started_prefill->prefill_done = false;
+    started_prefill->prefill_cursor = 16;
+    started_prefill->prompt_tokens = std::vector<int32_t>(64, 1);
+    started_prefill->sampling.max_tokens = 10;
+    scheduler_->active_[101] = started_prefill;
+    scheduler_->active_order_.push_back(101);
+
+    auto batch = scheduler_->build_scheduled_batch();
+
+    bool saw_new_prefill = false;
+    bool saw_started_prefill = false;
+    int decode_count = 0;
+    for (const auto& item : batch.items) {
+        if (auto* d = std::get_if<DecodeOneToken>(&item)) {
+            ++decode_count;
+            EXPECT_GE(d->seq_id, 1u);
+            EXPECT_LE(d->seq_id, 16u);
+        } else if (auto* p = std::get_if<PrefillChunk>(&item)) {
+            if (p->seq_id == 100) saw_new_prefill = true;
+            if (p->seq_id == 101) {
+                saw_started_prefill = true;
+                EXPECT_EQ(p->prompt_span.start, 16);
+                EXPECT_EQ(p->prompt_span.length, 48);
+            }
+        }
+    }
+
+    EXPECT_EQ(decode_count, 16);
+    EXPECT_FALSE(saw_new_prefill);
+    EXPECT_TRUE(saw_started_prefill);
 }
 
 // ---------------------------------------------------------------------------

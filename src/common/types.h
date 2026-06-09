@@ -21,7 +21,7 @@ struct CreateSequenceResult {
     int prompt_processed = 0;
 };
 
-enum class ForwardMode : uint8_t { Prefill, Decode };
+enum class ForwardMode : uint8_t { Prefill, Decode, Mixed };
 enum class WorkKind : uint8_t { PrefillChunk, DecodeOneToken };
 
 struct TokenSpan {
@@ -88,6 +88,12 @@ struct EngineCapacity {
     int free_blocks = 0;
     int max_blocks = 0;
     int block_size = 0;
+    int block_active = 0;
+    int block_cached_idle = 0;
+    uint64_t prefix_lookup_hits = 0;
+    uint64_t prefix_lookup_misses = 0;
+    uint64_t prefix_evictions = 0;
+    uint64_t prefix_cached_blocks = 0;
 };
 
 }  // namespace ccinfer

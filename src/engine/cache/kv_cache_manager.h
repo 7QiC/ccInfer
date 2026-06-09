@@ -41,6 +41,8 @@ public:
         BlockTable block_table;
         int prefix_hit_blocks = 0;
     };
+    Result<PrepareResult> lookup_prefix_cache(const std::vector<int32_t>& tokens,
+                                              uint64_t namespace_salt = 0);
     Result<PrepareResult> prepare_blocks(const std::vector<int32_t>& tokens,
                                          uint64_t namespace_salt = 0);
 

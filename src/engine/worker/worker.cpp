@@ -2,6 +2,7 @@
 
 #include <cuda_bf16.h>
 
+#include <algorithm>
 #include <fstream>
 #include <limits>
 #include <mutex>
@@ -109,7 +110,10 @@ void Worker::enqueue_execute_batch(ScheduledBatch batch, std::shared_ptr<BatchCh
 
 DeviceCapacity Worker::capacity() const {
     return DeviceCapacity{kMaxSequences, active_sequences_.load(), free_blocks_.load(),
-                          max_blocks_.load(), block_size_.load()};
+                          max_blocks_.load(), block_size_.load(), block_active_.load(),
+                          block_cached_idle_.load(), prefix_lookup_hits_.load(),
+                          prefix_lookup_misses_.load(), prefix_evictions_.load(),
+                          prefix_cached_blocks_.load()};
 }
 
 // --- Worker loop ---
@@ -178,6 +182,12 @@ void Worker::worker_loop() {
     free_blocks_.store(0);
     max_blocks_.store(0);
     block_size_.store(0);
+    block_active_.store(0);
+    block_cached_idle_.store(0);
+    prefix_lookup_hits_.store(0);
+    prefix_lookup_misses_.store(0);
+    prefix_evictions_.store(0);
+    prefix_cached_blocks_.store(0);
     sequences_.clear();
     model_.reset();
     kv_mgr_.reset();
@@ -190,6 +200,12 @@ void Worker::sync_capacity() {
     free_blocks_.store(s.block_free);
     max_blocks_.store(s.block_total);
     block_size_.store(s.block_size);
+    block_active_.store(s.block_active);
+    block_cached_idle_.store(s.block_cached_idle);
+    prefix_lookup_hits_.store(s.prefix.lookup_hits);
+    prefix_lookup_misses_.store(s.prefix.lookup_misses);
+    prefix_evictions_.store(s.prefix.evictions);
+    prefix_cached_blocks_.store(static_cast<uint64_t>(s.prefix.cached_blocks));
 }
 
 // --- Resource init (runs on worker thread) ---
@@ -325,9 +341,9 @@ void Worker::process_control(ControlCmd& cmd) {
                     return;
                 }
 
-                auto pr = kv_mgr_->prepare_blocks(c.prompt_tokens, /*namespace_salt=*/0);
+                auto pr = kv_mgr_->lookup_prefix_cache(c.prompt_tokens, /*namespace_salt=*/0);
                 if (!pr) {
-                    sync_capacity();  // LRU eviction may have freed blocks.
+                    sync_capacity();
                     resolve(c.chan, Result<CreateSequenceResult>(std::unexpected(pr.error())));
                     return;
                 }
@@ -339,7 +355,6 @@ void Worker::process_control(ControlCmd& cmd) {
                 state.max_context_len = c.max_context_len;
                 state.block_table = std::move(pr->block_table);
 
-                // Shared prefix blocks already have valid KV.
                 int64_t prefix64 =
                     static_cast<int64_t>(pr->prefix_hit_blocks) * kv_mgr_->block_size();
                 int prefix_tokens = static_cast<int>(

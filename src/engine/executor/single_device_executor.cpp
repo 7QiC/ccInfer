@@ -42,7 +42,9 @@ void SingleDeviceExecutor::enqueue_execute_batch(ScheduledBatch batch,
 EngineCapacity SingleDeviceExecutor::capacity() const {
     auto cap = worker_->capacity();
     return EngineCapacity{cap.max_sequences, cap.active_sequences, cap.free_blocks, cap.max_blocks,
-                          cap.block_size};
+                          cap.block_size, cap.block_active, cap.block_cached_idle,
+                          cap.prefix_lookup_hits, cap.prefix_lookup_misses,
+                          cap.prefix_evictions, cap.prefix_cached_blocks};
 }
 
 std::unique_ptr<Executor> Executor::create(boost::asio::io_context& io) {

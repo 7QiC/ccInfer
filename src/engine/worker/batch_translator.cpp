@@ -75,21 +75,6 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
         return std::unexpected(ec);
     };
 
-    // --- Phase 0: reject mixed Prefill/Decode before any KV allocation ---
-    {
-        bool has_prefill = false;
-        bool has_decode = false;
-        for (const auto& item : batch.items) {
-            if (std::holds_alternative<PrefillChunk>(item))
-                has_prefill = true;
-            else
-                has_decode = true;
-        }
-        if (has_prefill && has_decode) {
-            return std::unexpected(ErrorCode::InvalidArgument);
-        }
-    }
-
     const int max_blk = kv_mgr_.max_blocks();
 
     // --- Phase 1: per-item validation and KV block allocation ---
@@ -324,9 +309,17 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
     auto& pb = result.physical_batch;
     // Recompute mode after Phase 1: prefix-cache hits may have converted
     // PrefillChunks to DecodeOneToken items.
-    const ForwardMode mode = std::holds_alternative<PrefillChunk>(batch.items[0])
-                                 ? ForwardMode::Prefill
-                                 : ForwardMode::Decode;
+    bool has_prefill = false;
+    bool has_decode = false;
+    for (const auto& item : batch.items) {
+        if (std::holds_alternative<PrefillChunk>(item))
+            has_prefill = true;
+        else
+            has_decode = true;
+    }
+    const ForwardMode mode = has_prefill && has_decode
+                                 ? ForwardMode::Mixed
+                                 : (has_prefill ? ForwardMode::Prefill : ForwardMode::Decode);
     pb.num_tokens = total_tokens;
     pb.batch_size = batch_size;
     pb.max_blocks_per_req = max_blocks_per_req;

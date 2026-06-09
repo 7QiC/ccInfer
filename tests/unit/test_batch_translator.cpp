@@ -122,6 +122,41 @@ TEST_F(BatchTranslatorTest, DecodeNoNewBlock) {
     EXPECT_EQ(sequences_[1].block_table.size(), 1);  // unchanged
 }
 
+TEST_F(BatchTranslatorTest, MixedBatchTranslatesDecodeAndPrefill) {
+    SequenceState decode_seq;
+    decode_seq.seq_id = 2;
+    decode_seq.prompt_tokens = std::vector<int32_t>(8, 1);
+    decode_seq.kv_written = 8;
+    decode_seq.prompt_processed = 8;
+    decode_seq.max_context_len = 64;
+    auto alloc = kv_mgr_.allocate_blocks(1);
+    ASSERT_TRUE(alloc.has_value());
+    decode_seq.block_table.push_back((*alloc)[0]);
+    sequences_[2] = std::move(decode_seq);
+
+    ScheduledBatch batch;
+    batch.batch_id = 5;
+    batch.items.push_back(DecodeOneToken{2, 42, std::nullopt});
+    batch.items.push_back(PrefillChunk{1, TokenSpan{0, 16}, std::nullopt});
+
+    auto result = translator_->translate(batch, sequences_);
+    ASSERT_TRUE(result.has_value());
+
+    const auto& pb = result->physical_batch;
+    EXPECT_EQ(pb.mode, ForwardMode::Mixed);
+    EXPECT_EQ(pb.num_tokens, 17);
+    EXPECT_EQ(pb.batch_size, 2);
+    ASSERT_EQ(pb.item_kinds.size(), 2u);
+    EXPECT_EQ(pb.item_kinds[0], WorkKind::DecodeOneToken);
+    EXPECT_EQ(pb.item_kinds[1], WorkKind::PrefillChunk);
+
+    auto commit_r = translator_->commit(batch, sequences_, result->per_item);
+    ASSERT_TRUE(commit_r.has_value());
+    EXPECT_EQ(sequences_[2].kv_written, 9);
+    EXPECT_EQ(sequences_[1].kv_written, 16);
+    EXPECT_EQ(sequences_[1].prompt_processed, 16);
+}
+
 TEST_F(BatchTranslatorTest, PrefillSpansMultipleBlocks) {
     ScheduledBatch batch;
     batch.batch_id = 1;
