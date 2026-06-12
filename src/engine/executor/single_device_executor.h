@@ -19,11 +19,13 @@ public:
     Result<void> init(const std::string& model_path) override;
     void shutdown() override;
 
-    void enqueue_create_sequence(std::vector<int32_t> prompt_tokens, int max_context_len,
-                                 std::shared_ptr<SeqIdChannel> chan) override;
-    void enqueue_release_sequence(SequenceId seq_id, std::shared_ptr<VoidChannel> chan) override;
-    void enqueue_abort_sequence(SequenceId seq_id, std::shared_ptr<VoidChannel> chan) override;
-    void enqueue_execute_batch(ScheduledBatch batch, std::shared_ptr<BatchChannel> chan) override;
+    asio::awaitable<Result<CreateSequenceResult>> create_sequence(
+        std::vector<int32_t> prompt_tokens, int max_context_len) override;
+    asio::awaitable<Result<SuspendSequenceResult>> suspend_sequence(
+        SequenceId seq_id, std::vector<int32_t> prompt_tokens, int max_context_len) override;
+    asio::awaitable<Result<void>> release_sequence(SequenceId seq_id) override;
+    asio::awaitable<Result<void>> abort_sequence(SequenceId seq_id) override;
+    asio::awaitable<Result<BatchResult>> execute_batch(ScheduledBatch batch) override;
 
     EngineCapacity capacity() const override;
 

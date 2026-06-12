@@ -42,6 +42,8 @@ public:
 
     void enqueue_create_sequence(std::vector<int32_t> prompt_tokens, int max_context_len,
                                  std::shared_ptr<SeqIdChannel> chan);
+    void enqueue_suspend_sequence(SequenceId seq_id, std::vector<int32_t> prompt_tokens,
+                                  int max_context_len, std::shared_ptr<SuspendChannel> chan);
     void enqueue_release_sequence(SequenceId seq_id, std::shared_ptr<VoidChannel> chan);
     void enqueue_abort_sequence(SequenceId seq_id, std::shared_ptr<VoidChannel> chan);
     void enqueue_execute_batch(ScheduledBatch batch, std::shared_ptr<BatchChannel> chan);
@@ -59,6 +61,12 @@ private:
         int max_context_len;
         std::shared_ptr<SeqIdChannel> chan;
     };
+    struct CmdSuspendSequence {
+        SequenceId seq_id;
+        std::vector<int32_t> prompt_tokens;
+        int max_context_len;
+        std::shared_ptr<SuspendChannel> chan;
+    };
     struct CmdReleaseSequence {
         SequenceId seq_id;
         std::shared_ptr<VoidChannel> chan;
@@ -67,8 +75,8 @@ private:
         SequenceId seq_id;
         std::shared_ptr<VoidChannel> chan;
     };
-    using ControlCmd =
-        std::variant<CmdInitResources, CmdCreateSequence, CmdReleaseSequence, CmdAbortSequence>;
+    using ControlCmd = std::variant<CmdInitResources, CmdCreateSequence, CmdSuspendSequence,
+                                    CmdReleaseSequence, CmdAbortSequence>;
 
     struct PendingBatch {
         ScheduledBatch batch;

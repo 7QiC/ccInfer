@@ -6,7 +6,7 @@
 #include <memory>
 
 #include "common/error_code.h"
-#include "engine/engine.h"
+#include "engine/executor/executor.h"
 #include "server/http/http_server.h"
 #include "server/scheduler/scheduler.h"
 #include "server/tokenizer/tokenizer.h"
@@ -17,7 +17,7 @@ namespace server {
 struct Server::Impl {
     asio::io_context& http_io;
     asio::io_context& scheduler_io;
-    engine::Engine& engine;
+    engine::Executor& executor;
     uint16_t port;
     std::string model_dir;
 
@@ -30,14 +30,15 @@ struct Server::Impl {
     std::atomic<bool> shutdown_started{false};
     std::atomic<bool> started{false};
 
-    Impl(asio::io_context& hi, asio::io_context& si, engine::Engine& e, uint16_t p,
+    Impl(asio::io_context& hi, asio::io_context& si, engine::Executor& e, uint16_t p,
          const std::string& md)
-        : http_io(hi), scheduler_io(si), engine(e), port(p), model_dir(md) {}
+        : http_io(hi), scheduler_io(si), executor(e), port(p), model_dir(md) {}
 };
 
-Server::Server(asio::io_context& http_io, asio::io_context& scheduler_io, engine::Engine& engine,
+Server::Server(asio::io_context& http_io, asio::io_context& scheduler_io,
+               engine::Executor& executor,
                uint16_t port, const std::string& model_dir)
-    : impl_(std::make_unique<Impl>(http_io, scheduler_io, engine, port, model_dir)) {}
+    : impl_(std::make_unique<Impl>(http_io, scheduler_io, executor, port, model_dir)) {}
 
 // Owner must call shutdown() + wait_shutdown() before destroying Server.
 Server::~Server() = default;
@@ -54,7 +55,7 @@ Result<void> Server::start() {
     if (!tok_r) return std::unexpected(tok_r.error());
     impl_->tokenizer = std::move(*tok_r);
 
-    impl_->scheduler = std::make_unique<Scheduler>(impl_->scheduler_io, impl_->engine);
+    impl_->scheduler = std::make_unique<Scheduler>(impl_->scheduler_io, impl_->executor);
     impl_->scheduler->start();
 
     impl_->http = std::make_unique<HttpServer>(impl_->http_io, impl_->port, *impl_->scheduler,

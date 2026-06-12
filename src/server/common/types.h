@@ -45,12 +45,16 @@ struct SchedulerRequestState {
     std::string request_id;
     SequenceId seq_id = 0;
 
+    std::vector<int32_t> initial_prompt_tokens;
     std::vector<int32_t> prompt_tokens;
     int prefill_cursor = 0;  // number of prompt tokens already consumed / committed
     bool prefill_done = false;
+    bool suspended = false;
+    int generated_in_prompt = 0;
 
     int32_t last_token = -1;   // next decode input; sampled but not yet in KV cache
     int tokens_generated = 0;  // output tokens already sent to client
+    std::vector<int32_t> generated_tokens;
     bool finished = false;
     bool cancelled = false;
 

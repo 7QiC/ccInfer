@@ -12,7 +12,7 @@
 
 #include "common/error_code.h"
 #include "common/runtime_config.h"
-#include "engine/engine.h"
+#include "engine/executor/executor.h"
 #include "server/server.h"
 
 namespace {
@@ -72,20 +72,20 @@ int main(int argc, char* argv[]) {
     auto http_guard = boost::asio::make_work_guard(http_io);
     auto scheduler_guard = boost::asio::make_work_guard(scheduler_io);
 
-    // Engine (engine layer)
-    ccinfer::engine::Engine engine(scheduler_io);
-    if (auto r = engine.init(model_path); !r) {
-        std::cerr << "Engine init failed: " << ccinfer::error_message(r.error()) << std::endl;
+    // Executor (runtime layer)
+    auto executor = ccinfer::engine::Executor::create(scheduler_io);
+    if (auto r = executor->init(model_path); !r) {
+        std::cerr << "Executor init failed: " << ccinfer::error_message(r.error()) << std::endl;
         return 1;
     }
 
     // Server (server layer)
-    ccinfer::server::Server server(http_io, scheduler_io, engine, static_cast<uint16_t>(port),
+    ccinfer::server::Server server(http_io, scheduler_io, *executor, static_cast<uint16_t>(port),
                                    model_path);
     auto sr = server.start();
     if (!sr) {
         std::cerr << "Server start failed: " << ccinfer::error_message(sr.error()) << std::endl;
-        engine.shutdown();
+        executor->shutdown();
         return 1;
     }
 
@@ -111,14 +111,14 @@ int main(int argc, char* argv[]) {
     //   2. server.wait_shutdown() — waits for HTTP drain, then triggers and
     //      waits for Scheduler cleanup (releases sequences, sends terminal
     //      events through already-draining channels).
-    //   3. engine.shutdown() — all sequences released, safe to stop Engine.
+    //   3. executor.shutdown() — all sequences released, safe to stop Executor.
     //   4. Reset work guards + stop io_contexts + join threads.
     std::cout << "Shutting down..." << std::endl;
 
     server.shutdown();
     server.wait_shutdown();
 
-    engine.shutdown();
+    executor->shutdown();
 
     http_guard.reset();
     scheduler_guard.reset();

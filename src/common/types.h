@@ -11,13 +11,17 @@
 namespace ccinfer {
 
 // ---------------------------------------------------------------------------
-// Shared types used by Engine, Executor, DeviceWorker, Scheduler, and HTTP.
+// Shared types used by Executor, DeviceWorker, Scheduler, and HTTP.
 // No CUDA or ASIO dependency.
 // ---------------------------------------------------------------------------
 using SequenceId = uint64_t;
 
 struct CreateSequenceResult {
     SequenceId seq_id = 0;
+    int prompt_processed = 0;
+};
+
+struct SuspendSequenceResult {
     int prompt_processed = 0;
 };
 

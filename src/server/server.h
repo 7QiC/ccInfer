@@ -10,7 +10,7 @@
 namespace ccinfer {
 
 namespace engine {
-class Engine;
+class Executor;
 }
 
 namespace server {
@@ -21,7 +21,7 @@ class Tokenizer;
 
 class Server {
 public:
-    Server(asio::io_context& http_io, asio::io_context& scheduler_io, engine::Engine& engine,
+    Server(asio::io_context& http_io, asio::io_context& scheduler_io, engine::Executor& executor,
            uint16_t port, const std::string& model_dir);
     ~Server();
 
@@ -35,11 +35,11 @@ public:
     // Initiates shutdown of HttpServer only (closes sockets, channels).
     // Scheduler shutdown is deferred to wait_shutdown() — invoked after
     // HTTP drain completes, ensuring Scheduler outlives all HTTP callbacks.
-    // Does NOT stop io_contexts, shutdown Engine, or destroy objects.
+    // Does NOT stop io_contexts, shutdown Executor, or destroy objects.
     void shutdown();
 
     // Blocks until both HttpServer and Scheduler have completed shutdown.
-    // Must be called after shutdown() and before engine.shutdown().
+    // Must be called after shutdown() and before executor.shutdown().
     // Must NOT be called from http_io or scheduler_io threads (would deadlock).
     //
     // Order: waits for HTTP drain (sockets/channels closed, SSE coroutines

@@ -14,14 +14,14 @@
 #include <unordered_set>
 #include <vector>
 
-#include "engine/engine.h"
+#include "engine/executor/executor.h"
 #include "server/common/types.h"
 
 namespace ccinfer {
 namespace server {
 
 namespace asio = boost::asio;
-using engine::Engine;
+using engine::Executor;
 
 // Scheduler must outlive the detached do_work() coroutine.
 // Server shutdown must call shutdown() and keep io_context running
@@ -32,7 +32,7 @@ using engine::Engine;
 
 class Scheduler {
 public:
-    Scheduler(asio::io_context& io, Engine& engine);
+    Scheduler(asio::io_context& io, Executor& executor);
     ~Scheduler();
 
     Scheduler(const Scheduler&) = delete;
@@ -67,6 +67,7 @@ private:
     asio::awaitable<void> apply_and_push(const ScheduledBatch& batch, const BatchResult& result);
     asio::awaitable<void> cleanup_cancelled_or_finished();
     asio::awaitable<void> fail_batch(const ScheduledBatch& batch, ErrorCode err);
+    asio::awaitable<void> suspend_sequence_for_replay(StatePtr& state);
     void fail_all_pending_on_scheduler_thread(ErrorCode err);
     asio::awaitable<void> cleanup_all_active(ErrorCode shutdown_err);
     asio::awaitable<void> wait_for_work();
@@ -80,7 +81,7 @@ private:
     bool send_error_event(StatePtr& state, ErrorCode err);
 
     asio::io_context& io_;
-    Engine& engine_;
+    Executor& executor_;
     asio::steady_timer idle_timer_;
 
     // Only accessed on scheduler_io thread — no mutex needed.

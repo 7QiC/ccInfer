@@ -26,32 +26,32 @@ protected:
             suite_skip_ = true;
             return;
         }
-        engine_ = std::make_unique<Engine>(io_);
-        if (auto r = engine_->init(path); !r) {
+        executor_ = engine::Executor::create(io_);
+        if (auto r = executor_->init(path); !r) {
             suite_skip_ = true;
-            engine_.reset();
+            executor_.reset();
             return;
         }
     }
 
-    static void TearDownTestSuite() { engine_.reset(); }
+    static void TearDownTestSuite() { executor_.reset(); }
 
     void SetUp() override {
-        if (suite_skip_) GTEST_SKIP() << "Engine init failed (check CCINFER_TEST_MODEL_PATH)";
-        scheduler_ = std::make_unique<Scheduler>(io_, *engine_);
+        if (suite_skip_) GTEST_SKIP() << "Executor init failed (check CCINFER_TEST_MODEL_PATH)";
+        scheduler_ = std::make_unique<Scheduler>(io_, *executor_);
     }
 
     void TearDown() override { scheduler_.reset(); }
 
     static boost::asio::io_context io_;
-    static std::unique_ptr<Engine> engine_;
+    static std::unique_ptr<engine::Executor> executor_;
     static bool suite_skip_;
 
     std::unique_ptr<Scheduler> scheduler_;
 };
 
 boost::asio::io_context SchedulerTest::io_{};
-std::unique_ptr<Engine> SchedulerTest::engine_;
+std::unique_ptr<engine::Executor> SchedulerTest::executor_;
 bool SchedulerTest::suite_skip_ = false;
 
 // ---------------------------------------------------------------------------
@@ -496,6 +496,58 @@ TEST_F(SchedulerTest, MaxActiveScheduledSeqsBlocksOnlyNewPrefill) {
     EXPECT_TRUE(saw_started_prefill);
 }
 
+TEST_F(SchedulerTest, SuspendedSeqCountsAsActiveAndReplaysWithoutSampling) {
+    for (int id = 1; id <= 16; ++id) {
+        auto state = std::make_shared<SchedulerRequestState>();
+        state->seq_id = id;
+        state->prefill_done = true;
+        state->last_token = id;
+        state->prompt_tokens = {1};
+        state->sampling.max_tokens = 10;
+        scheduler_->active_[id] = state;
+        scheduler_->active_order_.push_back(id);
+    }
+
+    auto suspended = std::make_shared<SchedulerRequestState>();
+    suspended->seq_id = 100;
+    suspended->prefill_done = false;
+    suspended->prefill_cursor = 0;
+    suspended->suspended = true;
+    suspended->prompt_tokens = std::vector<int32_t>(32, 1);
+    suspended->generated_tokens = {42};
+    suspended->generated_in_prompt = 0;
+    suspended->last_token = 42;
+    suspended->tokens_generated = 1;
+    suspended->sampling.max_tokens = 10;
+    scheduler_->active_[100] = suspended;
+    scheduler_->active_order_.push_back(100);
+
+    auto fresh = std::make_shared<SchedulerRequestState>();
+    fresh->seq_id = 101;
+    fresh->prefill_done = false;
+    fresh->prompt_tokens = std::vector<int32_t>(32, 1);
+    fresh->sampling.max_tokens = 10;
+    scheduler_->active_[101] = fresh;
+    scheduler_->active_order_.push_back(101);
+
+    auto batch = scheduler_->build_scheduled_batch();
+
+    bool saw_suspended = false;
+    bool saw_fresh = false;
+    for (const auto& item : batch.items) {
+        if (auto* p = std::get_if<PrefillChunk>(&item)) {
+            if (p->seq_id == 100) {
+                saw_suspended = true;
+                EXPECT_FALSE(p->needs_sample);
+            }
+            if (p->seq_id == 101) saw_fresh = true;
+        }
+    }
+
+    EXPECT_TRUE(saw_suspended);
+    EXPECT_FALSE(saw_fresh);
+}
+
 // ---------------------------------------------------------------------------
 // expected_context_len in DecodeOneToken
 // ---------------------------------------------------------------------------
@@ -507,6 +559,27 @@ TEST_F(SchedulerTest, DecodeExpectedContextLen) {
     state->last_token = 7;
     state->prompt_tokens = {1, 2, 3};  // prompt_len = 3
     state->tokens_generated = 2;        // expected_ctx = 3+2-1 = 4
+    state->sampling.max_tokens = 10;
+
+    scheduler_->active_[1] = state;
+    scheduler_->active_order_.push_back(1);
+
+    auto batch = scheduler_->build_scheduled_batch();
+    ASSERT_EQ(batch.items.size(), 1u);
+    auto* d = std::get_if<DecodeOneToken>(&batch.items[0]);
+    ASSERT_NE(d, nullptr);
+    ASSERT_TRUE(d->expected_context_len.has_value());
+    EXPECT_EQ(*d->expected_context_len, 4);
+}
+
+TEST_F(SchedulerTest, DecodeExpectedContextLenAccountsForReplayPrompt) {
+    auto state = std::make_shared<SchedulerRequestState>();
+    state->seq_id = 1;
+    state->prefill_done = true;
+    state->last_token = 9;
+    state->prompt_tokens = {1, 2, 3, 7};  // original prompt + one generated token replayed
+    state->generated_in_prompt = 1;
+    state->tokens_generated = 2;
     state->sampling.max_tokens = 10;
 
     scheduler_->active_[1] = state;
@@ -551,9 +624,9 @@ TEST_F(SchedulerTest, PrefillBudgetBlockedTracked) {
 TEST_F(SchedulerTest, ZeroBlockSizeFailsAllActive) {
     // We can't easily mock capacity() to return bs=0, but we can test the
     // guard directly: it fails all active with InternalError.
-    // Since our engine has valid block_size, this test verifies the code path
+    // Since our executor has valid block_size, this test verifies the code path
     // isn't triggered in normal operation.
-    auto cap = scheduler_->engine_.capacity();
+    auto cap = scheduler_->executor_.capacity();
     EXPECT_GT(cap.block_size, 0);
 }
 

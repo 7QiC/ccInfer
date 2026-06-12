@@ -72,6 +72,22 @@ void Worker::enqueue_create_sequence(std::vector<int32_t> prompt_tokens, int max
     cv_.notify_one();
 }
 
+void Worker::enqueue_suspend_sequence(SequenceId seq_id, std::vector<int32_t> prompt_tokens,
+                                      int max_context_len,
+                                      std::shared_ptr<SuspendChannel> chan) {
+    std::unique_lock lock(queue_mutex_);
+    if (!running_) {
+        lock.unlock();
+        resolve(chan,
+                Result<SuspendSequenceResult>(std::unexpected(ErrorCode::ServerShuttingDown)));
+        return;
+    }
+    queue_.push_back(ControlCmd{
+        CmdSuspendSequence{seq_id, std::move(prompt_tokens), max_context_len, std::move(chan)}});
+    lock.unlock();
+    cv_.notify_one();
+}
+
 void Worker::enqueue_release_sequence(SequenceId seq_id, std::shared_ptr<VoidChannel> chan) {
     std::unique_lock lock(queue_mutex_);
     if (!running_) {
@@ -368,6 +384,71 @@ void Worker::process_control(ControlCmd& cmd) {
                 resolve(c.chan, Result<CreateSequenceResult>{
                                     CreateSequenceResult{.seq_id = id,
                                                          .prompt_processed = prefix_tokens}});
+            } else if constexpr (std::is_same_v<T, CmdSuspendSequence>) {
+                if (!initialized_ || !backend_) {
+                    resolve(c.chan, Result<SuspendSequenceResult>(
+                                        std::unexpected(ErrorCode::ServerShuttingDown)));
+                    return;
+                }
+                auto it = sequences_.find(c.seq_id);
+                if (it == sequences_.end()) {
+                    resolve(c.chan, Result<SuspendSequenceResult>(
+                                        std::unexpected(ErrorCode::InvalidArgument)));
+                    return;
+                }
+                if (c.prompt_tokens.empty() || c.max_context_len <= 0 ||
+                    c.prompt_tokens.size() >
+                        static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+                    static_cast<int64_t>(c.max_context_len) <
+                        static_cast<int64_t>(c.prompt_tokens.size()) ||
+                    static_cast<int64_t>(c.max_context_len) >
+                        static_cast<int64_t>(max_blocks_.load()) * kKVBlockSize) {
+                    resolve(c.chan, Result<SuspendSequenceResult>(
+                                        std::unexpected(ErrorCode::InvalidArgument)));
+                    return;
+                }
+                for (auto tok : c.prompt_tokens) {
+                    if (tok < 0) {
+                        resolve(c.chan, Result<SuspendSequenceResult>(
+                                            std::unexpected(ErrorCode::InvalidArgument)));
+                        return;
+                    }
+                }
+
+                if (!it->second.block_table.empty()) {
+                    auto r = kv_mgr_->release_blocks(it->second.block_table);
+                    if (!r) {
+                        sync_capacity();
+                        resolve(c.chan, Result<SuspendSequenceResult>(std::unexpected(r.error())));
+                        return;
+                    }
+                    it->second.block_table = {};
+                    it->second.kv_written = 0;
+                    it->second.prompt_processed = 0;
+                }
+
+                auto pr = kv_mgr_->lookup_prefix_cache(c.prompt_tokens, /*namespace_salt=*/0);
+                if (!pr) {
+                    sync_capacity();
+                    resolve(c.chan, Result<SuspendSequenceResult>(std::unexpected(pr.error())));
+                    return;
+                }
+
+                auto& state = it->second;
+                state.prompt_tokens = std::move(c.prompt_tokens);
+                state.max_context_len = c.max_context_len;
+                state.block_table = std::move(pr->block_table);
+
+                int64_t prefix64 =
+                    static_cast<int64_t>(pr->prefix_hit_blocks) * kv_mgr_->block_size();
+                int prefix_tokens = static_cast<int>(
+                    std::min(prefix64, static_cast<int64_t>(state.prompt_tokens.size())));
+                state.kv_written = prefix_tokens;
+                state.prompt_processed = prefix_tokens;
+
+                sync_capacity();
+                resolve(c.chan, Result<SuspendSequenceResult>{
+                                    SuspendSequenceResult{.prompt_processed = prefix_tokens}});
             } else if constexpr (std::is_same_v<T, CmdReleaseSequence>) {
                 if (!initialized_) {
                     resolve(c.chan, Result<void>{});
