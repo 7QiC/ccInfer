@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-#include "server/tokenizer/byte_level_bpe_tokenizer.h"
+#include "tokenizer/byte_level_bpe_tokenizer.h"
 
 // Tokenizer alignment test: compares ccInfer's simplified byte-level BPE
 // tokenizer against HuggingFace reference data.
@@ -67,7 +67,7 @@ protected:
         return kKnownLimitationPrompts.count(prompt) > 0;
     }
 
-    ccinfer::server::ByteLevelBpeTokenizer tokenizer_;
+    ccinfer::ByteLevelBpeTokenizer tokenizer_;
     nlohmann::json reference_;
     std::string tokenizer_path_;
 };

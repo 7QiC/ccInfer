@@ -5,10 +5,9 @@
 #include <cmath>
 #include <vector>
 
-#include "engine/kernel/cuda_kernels.h"
+#include "kernel/cuda_kernels.h"
 
 using namespace ccinfer;
-using namespace ccinfer::engine;
 
 namespace {
 

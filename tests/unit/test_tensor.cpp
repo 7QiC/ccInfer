@@ -3,7 +3,6 @@
 #include "core/tensor.h"
 
 using namespace ccinfer;
-using namespace ccinfer::engine;
 
 TEST(TensorTest, MakeAndShape) {
     float data[24] = {};

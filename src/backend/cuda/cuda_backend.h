@@ -1,0 +1,85 @@
+#pragma once
+
+#include <cublas_v2.h>
+#include <cuda_runtime.h>
+
+#include <cstddef>
+#include <memory>
+
+#include "base/result.h"
+#include "backend/backend.h"
+#include "backend/device_buffer.h"
+#include "backend/params.h"
+
+namespace ccinfer {
+
+class CudaBackend final : public DeviceBackend<CudaBackend> {
+public:
+    // Only way to obtain an initialized backend.
+    static Result<std::unique_ptr<CudaBackend>> create(int device_id);
+
+    ~CudaBackend();
+
+    CudaBackend(const CudaBackend&) = delete;
+    CudaBackend& operator=(const CudaBackend&) = delete;
+    CudaBackend(CudaBackend&&) = delete;
+    CudaBackend& operator=(CudaBackend&&) = delete;
+
+private:
+    friend class DeviceBackend<CudaBackend>;
+
+    Result<void> embed_impl(const EmbedParams& p);
+
+    template <typename DType>
+    Result<void> gemm_impl(const GemmParams& p);
+
+    template <typename DType>
+    Result<void> rms_norm_impl(const RmsNormParams& p);
+
+    template <typename DType>
+    Result<void> rope_impl(const RopeParams& p);
+
+    template <typename DType>
+    Result<void> silu_mul_impl(const SiluMulParams& p);
+
+    template <typename DType>
+    Result<void> element_add_impl(const ElementAddParams& p);
+
+    template <typename DType>
+    Result<void> split_qkv_impl(const SplitQkvParams& p);
+
+    template <typename DType>
+    Result<void> naive_attention_impl(const NaiveAttnParams& p);
+
+    template <typename DType>
+    Result<void> prefill_attention_impl(const PrefillAttnParams& p);
+
+    template <typename DType>
+    Result<void> decode_attention_impl(const DecodeAttnParams& p);
+
+    template <typename DType>
+    Result<void> write_kv_cache_impl(const WriteKVCacheParams& p);
+
+    Result<void> gemm_logits_impl(const GemmParams& p);
+    Result<void> sample_impl(const SampleParams& p);
+
+    Result<std::unique_ptr<DeviceBuffer>> allocate_buffer_impl(std::size_t bytes);
+
+    Result<void> memcpy_h2d_impl(void* dst, const void* src, std::size_t count);
+    Result<void> memcpy_d2h_impl(void* dst, const void* src, std::size_t count);
+    Result<void> memcpy_d2d_impl(void* dst, const void* src, std::size_t count);
+
+    void* stream_impl();
+
+    Result<void> synchronize_impl();
+
+    CudaBackend() = default;
+
+    Result<void> init(int device_id);
+    void reset() noexcept;
+
+    cudaStream_t stream_ = nullptr;
+    cublasHandle_t cublas_handle_ = nullptr;
+};
+
+}  // namespace ccinfer

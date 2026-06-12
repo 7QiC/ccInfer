@@ -7,14 +7,13 @@
 #include <cstdlib>
 #include <vector>
 
-#include "engine/backend/cuda/cuda_backend.h"
-#include "engine/cache/block.h"
-#include "engine/cache/kv_cache_manager.h"
-#include "engine/cache/kv_cache_storage.h"
-#include "engine/kernel/cuda_kernels.h"
+#include "backend/cuda/cuda_backend.h"
+#include "cache/block.h"
+#include "cache/kv_cache_manager.h"
+#include "cache/kv_cache_storage.h"
+#include "kernel/cuda_kernels.h"
 
 namespace ccinfer {
-namespace engine {
 namespace {
 
 // Full lifecycle test: alloc → write → prefill → decode → release
@@ -240,5 +239,4 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
 }
 
 }  // namespace
-}  // namespace engine
 }  // namespace ccinfer

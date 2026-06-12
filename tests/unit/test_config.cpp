@@ -5,7 +5,6 @@
 #include "model/config.h"
 
 using namespace ccinfer;
-using namespace ccinfer::engine;
 
 TEST(ModelConfigTest, FromQwen3Json) {
     nlohmann::json j = {{"architectures", {"Qwen3ForCausalLM"}},

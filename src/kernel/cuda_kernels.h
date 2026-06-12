@@ -1,0 +1,93 @@
+#pragma once
+
+#include <cuda_bf16.h>
+#include <cuda_runtime.h>
+
+#include <cstdint>
+
+#include "base/result.h"
+
+namespace ccinfer {
+
+// ---------------------------------------------------------------------------
+// Embedding gather
+// ---------------------------------------------------------------------------
+Result<void> launch_embed(const __nv_bfloat16* embed_table, const int32_t* token_ids,
+                          __nv_bfloat16* input_embeds, int num_tokens, int d_model,
+                          cudaStream_t stream);
+
+// ---------------------------------------------------------------------------
+// RMSNorm
+// ---------------------------------------------------------------------------
+Result<void> launch_rms_norm(const __nv_bfloat16* input, const __nv_bfloat16* weight,
+                             __nv_bfloat16* output, int rows, int dim, float eps,
+                             cudaStream_t stream);
+
+// ---------------------------------------------------------------------------
+// RoPE
+// ---------------------------------------------------------------------------
+Result<void> launch_rope(__nv_bfloat16* q, __nv_bfloat16* k, const int32_t* positions,
+                         const float2* rope_cache, int num_tokens, int num_q_heads,
+                         int num_kv_heads, int head_dim, int rotary_dim,
+                         int rope_cache_max_position, cudaStream_t stream);
+
+// ---------------------------------------------------------------------------
+// SiLU-mul
+// ---------------------------------------------------------------------------
+Result<void> launch_silu_mul(const __nv_bfloat16* gate, const __nv_bfloat16* up,
+                             __nv_bfloat16* output, int64_t n, cudaStream_t stream);
+
+// ---------------------------------------------------------------------------
+// Naive causal attention
+// ---------------------------------------------------------------------------
+Result<void> launch_naive_attention(const __nv_bfloat16* q, const __nv_bfloat16* k,
+                                    const __nv_bfloat16* v, __nv_bfloat16* output, int num_tokens,
+                                    int n_q_heads, int n_kv_heads, int head_dim,
+                                    cudaStream_t stream);
+
+// ---------------------------------------------------------------------------
+// Elementwise helpers
+// ---------------------------------------------------------------------------
+Result<void> launch_element_add(__nv_bfloat16* dst, const __nv_bfloat16* src, int64_t n,
+                                cudaStream_t stream);
+
+Result<void> launch_split_qkv(const __nv_bfloat16* qkv, __nv_bfloat16* q, __nv_bfloat16* k,
+                              __nv_bfloat16* v, int T, int nq, int nkv, int hd,
+                              cudaStream_t stream);
+
+// ---------------------------------------------------------------------------
+// Prefill attention
+// ---------------------------------------------------------------------------
+Result<void> launch_prefill_attention(const __nv_bfloat16* q, const __nv_bfloat16* k_cache,
+                                      const __nv_bfloat16* v_cache, const int32_t* block_table,
+                                      const int32_t* query_start_loc, const int32_t* context_lens,
+                                      __nv_bfloat16* output, int batch_size, int total_query_tokens,
+                                      int max_blocks_per_req, int num_q_heads, int num_kv_heads,
+                                      int head_dim, int cache_block_size, cudaStream_t stream);
+
+// ---------------------------------------------------------------------------
+// Decode attention
+// ---------------------------------------------------------------------------
+Result<void> launch_decode_attention(const __nv_bfloat16* q, const __nv_bfloat16* k_cache,
+                                     const __nv_bfloat16* v_cache, const int32_t* block_table,
+                                     const int32_t* context_lens, __nv_bfloat16* output,
+                                     int batch_size, int max_blocks_per_req, int num_q_heads,
+                                     int num_kv_heads, int head_dim, int cache_block_size,
+                                     cudaStream_t stream);
+
+// ---------------------------------------------------------------------------
+// Write KV cache
+// ---------------------------------------------------------------------------
+Result<void> launch_write_kv_cache(const __nv_bfloat16* k_new, const __nv_bfloat16* v_new,
+                                   __nv_bfloat16* k_cache, __nv_bfloat16* v_cache,
+                                   const int32_t* slot_mapping, int total_tokens, int n_kv_heads,
+                                   int head_dim, int max_slots, cudaStream_t stream);
+
+// ---------------------------------------------------------------------------
+// Sampling
+// ---------------------------------------------------------------------------
+Result<void> launch_greedy_sample(const float* logits, int32_t* tokens,
+                                  const int32_t* logits_indices, int batch_size, int vocab_size,
+                                  int num_tokens, cudaStream_t stream);
+
+}  // namespace ccinfer

@@ -5,10 +5,9 @@
 #include <cmath>
 #include <vector>
 
-#include "engine/kernel/cuda_kernels.h"
+#include "kernel/cuda_kernels.h"
 
 using namespace ccinfer;
-using namespace ccinfer::engine;
 
 // CPU reference
 static std::vector<__nv_bfloat16> rms_norm_cpu(const __nv_bfloat16* input, const __nv_bfloat16* weight, int rows, int dim,

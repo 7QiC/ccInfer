@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "common/result.h"
+#include "base/result.h"
 
 using namespace ccinfer;
 

@@ -7,12 +7,11 @@
 #include <cmath>
 #include <vector>
 
-#include "engine/backend/cuda/cuda_backend.h"
-#include "engine/cache/block.h"
-#include "engine/kernel/cuda_kernels.h"
+#include "backend/cuda/cuda_backend.h"
+#include "cache/block.h"
+#include "kernel/cuda_kernels.h"
 
 namespace ccinfer {
-namespace engine {
 namespace {
 
 void fill_bf16(__nv_bfloat16* d, const std::vector<float>& h, cudaStream_t stream) {
@@ -326,5 +325,4 @@ TEST(DecodeAttnKernelTest, NullPointers) {
 }
 
 }  // namespace
-}  // namespace engine
 }  // namespace ccinfer

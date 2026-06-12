@@ -5,12 +5,11 @@
 
 #include <vector>
 
-#include "engine/backend/cuda/cuda_backend.h"
-#include "engine/cache/block.h"
-#include "engine/kernel/cuda_kernels.h"
+#include "backend/cuda/cuda_backend.h"
+#include "cache/block.h"
+#include "kernel/cuda_kernels.h"
 
 namespace ccinfer {
-namespace engine {
 namespace {
 
 TEST(WriteKVCacheKernelTest, WriteAndReadbackNonContiguousSlots) {
@@ -112,5 +111,4 @@ TEST(WriteKVCacheKernelTest, NullPointerReturnsError) {
 }
 
 }  // namespace
-}  // namespace engine
 }  // namespace ccinfer

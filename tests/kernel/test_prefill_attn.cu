@@ -6,12 +6,11 @@
 #include <numeric>
 #include <vector>
 
-#include "engine/backend/cuda/cuda_backend.h"
-#include "engine/cache/block.h"
-#include "engine/kernel/cuda_kernels.h"
+#include "backend/cuda/cuda_backend.h"
+#include "cache/block.h"
+#include "kernel/cuda_kernels.h"
 
 namespace ccinfer {
-namespace engine {
 namespace {
 
 void fill_random_bf16(__nv_bfloat16* d_data, int64_t n, cudaStream_t stream) {
@@ -121,5 +120,4 @@ TEST(PrefillAttnKernelTest, RejectsNullPointers) {
 }
 
 }  // namespace
-}  // namespace engine
 }  // namespace ccinfer

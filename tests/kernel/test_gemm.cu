@@ -5,10 +5,9 @@
 #include <cmath>
 #include <vector>
 
-#include "engine/backend/cuda/cuda_backend.h"
+#include "backend/cuda/cuda_backend.h"
 
 using namespace ccinfer;
-using namespace ccinfer::engine;
 
 // C = A @ B  with A[M][K], B[K][N], C[M][N] in row-major.
 // Verifies cuBLAS produces the correct result via the column-major reinterpretation.

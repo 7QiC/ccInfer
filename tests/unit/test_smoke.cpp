@@ -3,15 +3,14 @@
 
 #include <vector>
 
-#include "engine/backend/cuda/cuda_backend.h"
-#include "engine/backend/device_buffer.h"
+#include "backend/cuda/cuda_backend.h"
+#include "backend/device_buffer.h"
 #include "core/tensor.h"
-#include "engine/common/dtype.h"
-#include "engine/model/config.h"
-#include "common/result.h"
+#include "core/dtype.h"
+#include "model/config.h"
+#include "base/result.h"
 
 using namespace ccinfer;
-using namespace ccinfer::engine;
 
 TEST(SmokeTest, GPUAccessible) {
     int device;

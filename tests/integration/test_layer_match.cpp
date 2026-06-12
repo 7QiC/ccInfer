@@ -8,22 +8,21 @@
 #include <string>
 #include <vector>
 
-#include "engine/backend/backend.h"
-#include "engine/backend/cuda/cuda_backend.h"
-#include "engine/backend/device_buffer.h"
-#include "engine/cache/block.h"
-#include "engine/cache/kv_cache_manager.h"
-#include "engine/cache/kv_cache_storage.h"
-#include "engine/kernel/cuda_kernels.h"
-#include "engine/model/config.h"
-#include "engine/model/loader.h"
-#include "engine/model/registry.h"
-#include "engine/model/rope/rope_cache.h"
-#include "server/tokenizer/byte_level_bpe_tokenizer.h"
+#include "backend/backend.h"
+#include "backend/cuda/cuda_backend.h"
+#include "backend/cuda/cuda_utils.h"
+#include "backend/device_buffer.h"
+#include "cache/block.h"
+#include "cache/kv_cache_manager.h"
+#include "cache/kv_cache_storage.h"
+#include "kernel/cuda_kernels.h"
+#include "model/config.h"
+#include "model/loader.h"
+#include "model/registry.h"
+#include "model/rope/rope_cache.h"
+#include "tokenizer/byte_level_bpe_tokenizer.h"
 
 using namespace ccinfer;
-using namespace ccinfer::engine;
-using namespace ccinfer::server;
 
 namespace {
 

@@ -5,14 +5,13 @@
 #include <memory>
 #include <unordered_map>
 
-#include "engine/cache/kv_cache_manager.h"
-#include "engine/cache/kv_cache_storage.h"
-#include "engine/common/backend_def.h"
-#include "engine/common/types.h"
-#include "engine/worker/batch_translator.h"
+#include "cache/kv_cache_manager.h"
+#include "cache/kv_cache_storage.h"
+#include "backend/default_backend.h"
+#include "base/execution.h"
+#include "worker/batch_translator.h"
 
 namespace ccinfer {
-namespace engine {
 namespace {
 
 class BatchTranslatorTest : public ::testing::Test {
@@ -247,5 +246,4 @@ TEST_F(BatchTranslatorTest, MissingSequenceReturnsError) {
 }
 
 }  // namespace
-}  // namespace engine
 }  // namespace ccinfer

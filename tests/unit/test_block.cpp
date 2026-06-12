@@ -1,9 +1,8 @@
 #include <gtest/gtest.h>
 
-#include "engine/cache/block.h"
+#include "cache/block.h"
 
 namespace ccinfer {
-namespace engine {
 namespace {
 
 TEST(BlockTest, InitialState) {
@@ -85,5 +84,4 @@ TEST(BlockTableTest, DataPointer) {
 }
 
 }  // namespace
-}  // namespace engine
 }  // namespace ccinfer

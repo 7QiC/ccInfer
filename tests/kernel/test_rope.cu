@@ -5,12 +5,11 @@
 #include <cmath>
 #include <vector>
 
-#include "engine/backend/cuda/cuda_backend.h"
-#include "engine/kernel/cuda_kernels.h"
-#include "engine/model/rope/rope_cache.h"
+#include "backend/cuda/cuda_backend.h"
+#include "kernel/cuda_kernels.h"
+#include "model/rope/rope_cache.h"
 
 using namespace ccinfer;
-using namespace ccinfer::engine;
 
 // CPU reference — split-half RoPE with rope_cache
 static std::vector<float2> build_rope_cache_cpu(int max_position, int rotary_dim, float rope_theta) {

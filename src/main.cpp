@@ -5,15 +5,19 @@
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <future>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <string>
 #include <thread>
 
-#include "common/error_code.h"
-#include "common/runtime_config.h"
-#include "engine/executor/executor.h"
-#include "server/server.h"
+#include "base/error_code.h"
+#include "base/runtime_config.h"
+#include "executor/executor.h"
+#include "http/http_server.h"
+#include "scheduler/scheduler.h"
+#include "tokenizer/tokenizer.h"
 
 namespace {
 
@@ -73,21 +77,35 @@ int main(int argc, char* argv[]) {
     auto scheduler_guard = boost::asio::make_work_guard(scheduler_io);
 
     // Executor (runtime layer)
-    auto executor = ccinfer::engine::Executor::create(scheduler_io);
+    auto executor = ccinfer::Executor::create(scheduler_io);
     if (auto r = executor->init(model_path); !r) {
         std::cerr << "Executor init failed: " << ccinfer::error_message(r.error()) << std::endl;
         return 1;
     }
 
-    // Server (server layer)
-    ccinfer::server::Server server(http_io, scheduler_io, *executor, static_cast<uint16_t>(port),
-                                   model_path);
-    auto sr = server.start();
-    if (!sr) {
-        std::cerr << "Server start failed: " << ccinfer::error_message(sr.error()) << std::endl;
+    auto tok_r = ccinfer::create_tokenizer(model_path);
+    if (!tok_r) {
+        std::cerr << "Tokenizer init failed: " << ccinfer::error_message(tok_r.error())
+                  << std::endl;
         executor->shutdown();
         return 1;
     }
+    auto tokenizer = std::move(*tok_r);
+
+    ccinfer::Scheduler scheduler(scheduler_io, *executor);
+    scheduler.start();
+
+    ccinfer::HttpServer http_server(http_io, static_cast<uint16_t>(port), scheduler, *tokenizer);
+    auto sr = http_server.start();
+    if (!sr) {
+        std::cerr << "HTTP server start failed: " << ccinfer::error_message(sr.error())
+                  << std::endl;
+        auto scheduler_shutdown = scheduler.shutdown_async();
+        if (scheduler_shutdown.valid()) scheduler_shutdown.wait();
+        executor->shutdown();
+        return 1;
+    }
+    std::cout << "Server listening on port " << port << std::endl;
 
     // Signal handling — only sets a flag; no complex work in signal handler.
     std::atomic<bool> shutdown_flag{false};
@@ -106,17 +124,18 @@ int main(int argc, char* argv[]) {
     }
 
     // Graceful shutdown.
-    //   1. server.shutdown() — triggers HttpServer shutdown (closes sockets,
-    //      channels, drains SSE coroutines).
-    //   2. server.wait_shutdown() — waits for HTTP drain, then triggers and
-    //      waits for Scheduler cleanup (releases sequences, sends terminal
-    //      events through already-draining channels).
-    //   3. executor.shutdown() — all sequences released, safe to stop Executor.
+    //   1. HttpServer shutdown closes sockets/channels and drains HTTP coroutines.
+    //   2. Scheduler shutdown runs after HTTP drain, so no TokenSink callbacks can
+    //      race with scheduler cleanup.
+    //   3. Executor shutdown runs after all sequences have been released.
     //   4. Reset work guards + stop io_contexts + join threads.
     std::cout << "Shutting down..." << std::endl;
 
-    server.shutdown();
-    server.wait_shutdown();
+    auto http_shutdown = http_server.shutdown_async();
+    if (http_shutdown.valid()) http_shutdown.wait();
+
+    auto scheduler_shutdown = scheduler.shutdown_async();
+    if (scheduler_shutdown.valid()) scheduler_shutdown.wait();
 
     executor->shutdown();
 

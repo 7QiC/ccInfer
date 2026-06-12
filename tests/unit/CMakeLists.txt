@@ -31,11 +31,11 @@ target_link_libraries(test_smoke PRIVATE engine gtest_main CUDA::cudart)
 gtest_discover_tests(test_smoke)
 
 add_executable(test_tokenizer test_tokenizer.cpp)
-target_link_libraries(test_tokenizer PRIVATE engine server gtest_main)
+target_link_libraries(test_tokenizer PRIVATE engine gtest_main)
 gtest_discover_tests(test_tokenizer)
 
 add_executable(test_tokenizer_alignment test_tokenizer_alignment.cpp)
-target_link_libraries(test_tokenizer_alignment PRIVATE engine server gtest_main)
+target_link_libraries(test_tokenizer_alignment PRIVATE engine gtest_main)
 target_compile_definitions(test_tokenizer_alignment PRIVATE
     REFERENCE_PATH="${CMAKE_SOURCE_DIR}/tests/unit/tokenizer_alignment_reference.json")
 gtest_discover_tests(test_tokenizer_alignment)
@@ -45,7 +45,7 @@ target_link_libraries(test_batch_translator PRIVATE engine gtest_main CUDA::cuda
 gtest_discover_tests(test_batch_translator)
 
 add_executable(test_scheduler test_scheduler.cpp)
-target_link_libraries(test_scheduler PRIVATE engine server gtest_main)
+target_link_libraries(test_scheduler PRIVATE engine gtest_main)
 gtest_discover_tests(test_scheduler)
 
 add_executable(test_prefix_cache test_prefix_cache.cpp)

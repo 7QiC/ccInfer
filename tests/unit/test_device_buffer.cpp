@@ -3,11 +3,10 @@
 
 #include <vector>
 
-#include "engine/backend/cuda/cuda_backend.h"
-#include "engine/backend/device_buffer.h"
+#include "backend/cuda/cuda_backend.h"
+#include "backend/device_buffer.h"
 
 using namespace ccinfer;
-using namespace ccinfer::engine;
 
 TEST(DeviceBufferTest, DefaultConstruction) {
     std::unique_ptr<DeviceBuffer> buf;

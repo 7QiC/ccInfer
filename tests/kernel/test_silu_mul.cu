@@ -5,10 +5,9 @@
 #include <cmath>
 #include <vector>
 
-#include "engine/kernel/cuda_kernels.h"
+#include "kernel/cuda_kernels.h"
 
 using namespace ccinfer;
-using namespace ccinfer::engine;
 
 static std::vector<__nv_bfloat16> silu_mul_cpu(const __nv_bfloat16* gate, const __nv_bfloat16* up, int64_t n) {
     std::vector<__nv_bfloat16> out(n);

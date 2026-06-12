@@ -3,9 +3,9 @@
 
 #include <vector>
 
-#include "engine/kernel/cuda_kernels.h"
+#include "kernel/cuda_kernels.h"
 
-using namespace ccinfer::engine;
+using namespace ccinfer;
 
 class SampleKernelTest : public ::testing::Test {
 protected:

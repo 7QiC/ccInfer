@@ -1,9 +1,8 @@
 #include <gtest/gtest.h>
 
-#include "engine/cache/prefix_cache.h"
+#include "cache/prefix_cache.h"
 
 namespace ccinfer {
-namespace engine {
 namespace {
 
 TEST(PrefixCacheTest, ChainHashesDeterministic) {
@@ -144,5 +143,4 @@ TEST(PrefixCacheTest, CachedBlocksCount) {
 }
 
 }  // namespace
-}  // namespace engine
 }  // namespace ccinfer

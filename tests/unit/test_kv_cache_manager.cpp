@@ -2,12 +2,11 @@
 
 #include <cuda_bf16.h>
 
-#include "engine/backend/cuda/cuda_backend.h"
-#include "engine/cache/kv_cache_manager.h"
-#include "engine/cache/kv_cache_storage.h"
+#include "backend/cuda/cuda_backend.h"
+#include "cache/kv_cache_manager.h"
+#include "cache/kv_cache_storage.h"
 
 namespace ccinfer {
-namespace engine {
 namespace {
 
 class KVCacheManagerTest : public ::testing::Test {
@@ -237,5 +236,4 @@ TEST_F(KVCacheManagerTest, ReleaseUncachedGoesToFree) {
 }
 
 }  // namespace
-}  // namespace engine
 }  // namespace ccinfer

@@ -5,13 +5,12 @@
 #include <string>
 
 #define private public
-#include "server/scheduler/scheduler.h"
+#include "scheduler/scheduler.h"
 #undef private
 
-#include "common/types.h"
+#include "base/types.h"
 
 namespace ccinfer {
-namespace server {
 namespace {
 
 class SchedulerTest : public ::testing::Test {
@@ -26,7 +25,7 @@ protected:
             suite_skip_ = true;
             return;
         }
-        executor_ = engine::Executor::create(io_);
+        executor_ = Executor::create(io_);
         if (auto r = executor_->init(path); !r) {
             suite_skip_ = true;
             executor_.reset();
@@ -44,14 +43,14 @@ protected:
     void TearDown() override { scheduler_.reset(); }
 
     static boost::asio::io_context io_;
-    static std::unique_ptr<engine::Executor> executor_;
+    static std::unique_ptr<Executor> executor_;
     static bool suite_skip_;
 
     std::unique_ptr<Scheduler> scheduler_;
 };
 
 boost::asio::io_context SchedulerTest::io_{};
-std::unique_ptr<engine::Executor> SchedulerTest::executor_;
+std::unique_ptr<Executor> SchedulerTest::executor_;
 bool SchedulerTest::suite_skip_ = false;
 
 // ---------------------------------------------------------------------------
@@ -631,5 +630,4 @@ TEST_F(SchedulerTest, ZeroBlockSizeFailsAllActive) {
 }
 
 }  // namespace
-}  // namespace server
 }  // namespace ccinfer

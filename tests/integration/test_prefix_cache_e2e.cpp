@@ -6,13 +6,12 @@
 #include <cmath>
 #include <vector>
 
-#include "engine/backend/cuda/cuda_backend.h"
-#include "engine/cache/kv_cache_manager.h"
-#include "engine/cache/kv_cache_storage.h"
-#include "engine/kernel/cuda_kernels.h"
+#include "backend/cuda/cuda_backend.h"
+#include "cache/kv_cache_manager.h"
+#include "cache/kv_cache_storage.h"
+#include "kernel/cuda_kernels.h"
 
 namespace ccinfer {
-namespace engine {
 namespace {
 
 // Full lifecycle: prepare_blocks → cache_full_blocks → release →
@@ -169,5 +168,4 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
 }
 
 }  // namespace
-}  // namespace engine
 }  // namespace ccinfer

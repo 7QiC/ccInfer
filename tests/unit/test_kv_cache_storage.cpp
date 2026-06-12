@@ -5,12 +5,11 @@
 
 #include <vector>
 
-#include "engine/backend/cuda/cuda_backend.h"
-#include "engine/cache/block.h"
-#include "engine/cache/kv_cache_storage.h"
+#include "backend/cuda/cuda_backend.h"
+#include "cache/block.h"
+#include "cache/kv_cache_storage.h"
 
 namespace ccinfer {
-namespace engine {
 namespace {
 
 TEST(KVCacheStorageTest, LayerOffsetsAreCorrect) {
@@ -160,5 +159,4 @@ TEST(KVCacheStorageTest, ZeroInitialized) {
 }
 
 }  // namespace
-}  // namespace engine
 }  // namespace ccinfer
