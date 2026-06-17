@@ -26,8 +26,9 @@ struct DeviceCapacity {
 };
 
 // ---------------------------------------------------------------------------
-// SequenceState — per-sequence state owned by the DeviceWorker.
-// CUDA-free: uses only CPU-side types (BlockTable is CPU metadata).
+// SequenceState — worker-local execution view used by BatchTranslator.
+// Logical fields are copied from Executor-owned SequenceSnapshot; block_table
+// is worker/device-local metadata owned by the Worker.
 // ---------------------------------------------------------------------------
 struct SequenceState {
     SequenceId seq_id = 0;

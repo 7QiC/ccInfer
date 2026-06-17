@@ -22,7 +22,6 @@ add_library(engine STATIC
     model/qwen3/qwen3_model.cpp
     model/qwen3/qwen3_weights.cpp
     scheduler/scheduler.cpp
-    tokenizer/byte_level_bpe_tokenizer.cpp
 )
 
 target_include_directories(engine
@@ -46,17 +45,18 @@ target_link_libraries(engine
 )
 
 if(BUILD_SERVER)
-    add_library(http STATIC
+    add_library(server STATIC
         http/http_server.cpp
+        tokenizer/byte_level_bpe_tokenizer.cpp
     )
 
-    target_include_directories(http
+    target_include_directories(server
         PUBLIC
             ${CMAKE_SOURCE_DIR}/src
             ${Boost_INCLUDE_DIRS}
     )
 
-    target_link_libraries(http
+    target_link_libraries(server
         PUBLIC
             engine
     )
@@ -67,7 +67,7 @@ if(BUILD_SERVER)
 
     target_link_libraries(ccinfer-server
         PRIVATE
-            http
+            server
             engine
     )
 endif()

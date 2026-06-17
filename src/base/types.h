@@ -79,6 +79,30 @@ struct BatchResult {
     std::vector<WorkItemResult> items;
 };
 
+// Executor -> Worker logical sequence snapshot.  This intentionally contains
+// no physical KV block table: block ids are worker/device-local resources.
+struct SequenceSnapshot {
+    SequenceId seq_id = 0;
+    std::vector<int32_t> prompt_tokens;
+    int max_context_len = 0;
+    int kv_written = 0;
+    int prompt_processed = 0;
+    bool aborted = false;
+};
+
+// Worker -> Executor logical progress delta.  Physical block-table mutations
+// stay in the Worker; Executor only updates sequence progress.
+struct SequenceDelta {
+    SequenceId seq_id = 0;
+    int kv_tokens_committed = 0;
+    int prompt_tokens_committed = 0;
+};
+
+struct WorkerBatchResult {
+    BatchResult batch;
+    std::vector<SequenceDelta> deltas;
+};
+
 struct GeneratedToken {
     int32_t token_id = -1;
     std::string text;

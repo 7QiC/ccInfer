@@ -5,14 +5,12 @@
 #include <boost/asio/post.hpp>
 #include <condition_variable>
 #include <deque>
-#include <future>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include "base/channel.h"
@@ -39,63 +37,34 @@ public:
     Result<void> init(const std::string& model_path);
     void shutdown();
 
-    void enqueue_create_sequence(std::vector<int32_t> prompt_tokens, int max_context_len,
-                                 std::shared_ptr<SeqIdChannel> chan);
-    void enqueue_suspend_sequence(SequenceId seq_id, std::vector<int32_t> prompt_tokens,
-                                  int max_context_len, std::shared_ptr<SuspendChannel> chan);
-    void enqueue_release_sequence(SequenceId seq_id, std::shared_ptr<VoidChannel> chan);
-    void enqueue_abort_sequence(SequenceId seq_id, std::shared_ptr<VoidChannel> chan);
-    void enqueue_execute_batch(ScheduledBatch batch, std::shared_ptr<BatchChannel> chan);
+    Result<CreateSequenceResult> prepare_sequence_resources(
+        SequenceId seq_id, const std::vector<int32_t>& prompt_tokens, int max_context_len);
+    Result<SuspendSequenceResult> reset_sequence_resources(
+        SequenceId seq_id, const std::vector<int32_t>& prompt_tokens, int max_context_len);
+    Result<void> release_sequence_resources(SequenceId seq_id);
+    void enqueue_execute_batch(ScheduledBatch batch, std::vector<SequenceSnapshot> sequences,
+                               std::shared_ptr<BatchChannel> chan);
 
     DeviceCapacity capacity() const;
 
 private:
-    // --- Queue entries ---
-    struct CmdInitResources {
-        std::string model_path;
-        std::shared_ptr<std::promise<Result<void>>> promise;
-    };
-    struct CmdCreateSequence {
-        std::vector<int32_t> prompt_tokens;
-        int max_context_len;
-        std::shared_ptr<SeqIdChannel> chan;
-    };
-    struct CmdSuspendSequence {
-        SequenceId seq_id;
-        std::vector<int32_t> prompt_tokens;
-        int max_context_len;
-        std::shared_ptr<SuspendChannel> chan;
-    };
-    struct CmdReleaseSequence {
-        SequenceId seq_id;
-        std::shared_ptr<VoidChannel> chan;
-    };
-    struct CmdAbortSequence {
-        SequenceId seq_id;
-        std::shared_ptr<VoidChannel> chan;
-    };
-    using ControlCmd = std::variant<CmdInitResources, CmdCreateSequence, CmdSuspendSequence,
-                                    CmdReleaseSequence, CmdAbortSequence>;
-
     struct PendingBatch {
         ScheduledBatch batch;
+        std::vector<SequenceSnapshot> sequences;
         std::shared_ptr<BatchChannel> chan;
     };
 
-    using QueueEntry = std::variant<ControlCmd, PendingBatch>;
-
     // --- Worker thread ---
     void worker_loop();
-    void process_control(ControlCmd& cmd);
     void process_batch(PendingBatch pending);
 
-    // --- Resource lifecycle (runs on worker thread) ---
-    void init_resources(const std::string& model_path,
-                        std::shared_ptr<std::promise<Result<void>>> promise);
+    // --- Resource lifecycle ---
+    Result<void> init_resources(const std::string& model_path);
+    void reset_resources();
 
     // --- Sequence helpers ---
-    using SeqMapIter = std::unordered_map<SequenceId, SequenceState>::iterator;
-    Result<void> release_sequence_state(SeqMapIter it);
+    using BlockTableIter = std::unordered_map<SequenceId, BlockTable>::iterator;
+    Result<void> release_sequence_blocks(BlockTableIter it);
 
     // --- Capacity sync ---
     void sync_capacity();
@@ -110,14 +79,14 @@ private:
     // --- State ---
     asio::io_context& io_;
 
-    std::deque<QueueEntry> queue_;
+    std::deque<PendingBatch> queue_;
     std::mutex queue_mutex_;
     std::condition_variable cv_;
     std::thread worker_thread_;
     std::atomic<bool> running_{false};
 
-    std::unordered_map<SequenceId, SequenceState> sequences_;
-    std::atomic<SequenceId> next_seq_id_{1};
+    std::mutex resource_mutex_;
+    std::unordered_map<SequenceId, BlockTable> block_tables_;
 
     // --- Cached capacity (synced from KVCacheManager::stats()) ---
     std::atomic<int> active_sequences_{0};
@@ -134,7 +103,7 @@ private:
 
     bool initialized_ = false;
 
-    // --- Resources (owned by worker thread after init_resources) ---
+    // --- Device resources protected by resource_mutex_ ---
     std::unique_ptr<DefaultBackend> backend_;
     std::unique_ptr<Model> model_;
     std::unique_ptr<KVCacheManager> kv_mgr_;

@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "executor/executor.h"
@@ -29,6 +30,8 @@ public:
     EngineCapacity capacity() const override;
 
 private:
+    std::unordered_map<SequenceId, SequenceSnapshot> sequences_;
+    SequenceId next_seq_id_{1};
     std::unique_ptr<Worker> worker_;
 };
 
