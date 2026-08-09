@@ -1,46 +1,32 @@
-# ccInfer
+# Repository Guidelines
 
-High-performance C++23 LLM inference framework targeting CUDA GPUs, with PagedAttention KV cache, continuous batching, prefix caching, and an OpenAI-compatible HTTP server.
+Contributor guide for ccInfer, a high-performance C++23 LLM inference framework targeting CUDA GPUs.
 
-## Build
+## Project Structure & Module Organization
+
+- `src/` — Source code. `base/` holds common types (`Result<T>`, error codes); `backend/` abstracts the GPU backend with `DeviceBuffer<T>` RAII; `cache/` implements the paged KV cache and prefix cache; `core/` defines tensors and dtypes; `executor/`, `worker/`, and `scheduler/` form the execution pipeline; `kernel/` contains CUDA kernels; `model/` handles model loading and Qwen3; `http/` and `tokenizer/` make up the server layer; `main.cpp` is the server entry point.
+- `tests/` — `unit/` GTest tests, `kernel/` CUDA kernel tests (`.cu`), `integration/` end-to-end tests.
+- `docs/`, `scripts/`, `models/`, `tools/` — Architecture docs, Python benchmark/profiling scripts, downloaded model weights, and helper utilities.
+
+## Build, Test, and Development Commands
 
 ```bash
+conda activate llm-infer
 cmake -S . -B build -DCMAKE_CUDA_ARCHITECTURES=89
 make -C build -j$(nproc)
 ctest --test-dir build
 ```
 
-Requires: CUDA Toolkit 11.8+, GCC 13+, CMake 3.20+, Boost 1.83+, nlohmann-json, fmt, spdlog.
+Configure with `-DBUILD_SERVER=ON` to build the HTTP server (`BUILD_TESTS` defaults to ON). Run the server with `./build/src/ccinfer-server --port 8080 --model-path ./models/qwen3-0.6B`. Requires CUDA Toolkit 11.8+, GCC 13+, CMake 3.20+, Boost 1.83+, nlohmann-json, fmt, spdlog.
 
-## Python env
+## Coding Style & Naming Conventions
 
-```bash
-conda activate llm-infer
-```
-Activate the Python environment by default and execute tasks in this environment by default.
+C++23 with the `ccinfer` namespace. `.clang-format` enforces Google base style: 100-column limit, 4-space indentation, no tabs; run `clang-format` on changed files before committing. Classes/enums use PascalCase; functions, variables, and files use snake_case; members end with an underscore (e.g. `int count_;`). Parameter semantics: read-only parameters use `const T&`; parameters that are written (outputs/in-place) take a pointer `T*`, never a reference. Headers use `.h` with `#pragma once` and sorted includes (C std → C++ std → third-party → project). Errors use `Result<T> = std::expected<T, ErrorCode>`; never throw in hot paths. Device memory is owned by the framework-side `Buffer` (`backend/buffer.h`).
 
-## Architecture
+## Testing Guidelines
 
-- `src/common/`  — Project-level utilities
-- `src/engine/`  — Inference engine
-- `src/server/`  — HTTP server, scheduler
-- `tests/unit/`  — Unit tests (GTest)
-- `tests/kernel` — Kernel tests
+Tests use GTest, one test file per module, named `test_<module>.cpp` (`.cu` for kernel tests). Unit tests should run without a GPU; kernel tests must synchronize and assert CUDA errors. Run everything with `ctest --test-dir build`, or a single suite with `ctest --test-dir build -R test_scheduler`. Integration tests require a local Qwen3-0.6B model. Never weaken assertions or relax tolerances to make a failing test pass — fix the root cause.
 
-## Principles
+## Commit & Pull Request Guidelines
 
-- **Never lower standards to pass tests.** If a test doesn't pass, find and fix the root cause — don't relax tolerances, weaken assertions, or bypass checks.
-- **Never sacrifice performance for convenience.** No host-side fallbacks that defeat GPU parallelism, no unnecessary allocations or copies.
-- **Keep code clean and consistent.** Match existing patterns, avoid clutter, delete dead code. This applies to all files including CMakeLists.txt.
-- **High cohesion, low coupling.** Keep related functionality together within a module; modules communicate through abstract interfaces. Avoid circular dependencies and implicit coupling.
-
-## Code Style
-
-- **C++23** with `ccinfer` namespace
-- **Naming:** PascalCase for classes/enums/structs, snake_case for functions/variables/files
-- **Headers:** `.h` extension, `#pragma once`, sorted includes (C std → C++ std → third-party → project)
-- **IWYU:** explicit includes, forward-declare in headers, no indirect relies
-- **Members:** snake_case with trailing underscore, e.g. `int count_;`
-- **Error handling:** `Result<T>` = `std::expected<T, ErrorCode>`, no exceptions in hot paths
-- **CUDA:** Device memory via `DeviceBuffer<T>` RAII
-- **Tests:** GTest, test file per module
+History follows Conventional Commits: `feat:`, `fix:`, `refactor:`, `perf:`, `test:`, `docs:`, `chore:`. Use a lowercase imperative subject under 72 characters, e.g. `feat: add prefix-cache LRU eviction`. Keep PRs to one logical change, describe what and why, link the relevant issue, and include benchmark or correctness evidence for performance changes.

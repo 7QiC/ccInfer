@@ -57,7 +57,9 @@ venv/
 # clang cache
 .cache
 
-# claude code
+# agent
+.agents
+.codex
 .claude
 /docs
 
