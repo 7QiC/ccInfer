@@ -18,6 +18,24 @@ find_package(Boost REQUIRED)
 option(BUILD_TESTS "Build tests" ON)
 option(BUILD_SERVER "Build server" OFF)
 
+# ---------------------------------------------------------------------------
+# Third-party operator library: ccop (https://github.com/7QiC/ccop), pinned as
+# a git submodule at third_party/ccop.
+#
+# On a fresh clone, initialize it with:
+#   git submodule update --init --recursive
+#
+# ccop tests are built inside the ccop project itself (CCop_BUILD_TESTS), not
+# in this build tree.
+# ---------------------------------------------------------------------------
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ccop/CMakeLists.txt")
+    message(FATAL_ERROR
+        "ccop submodule missing at third_party/ccop. "
+        "Run: git submodule update --init --recursive")
+endif()
+
+add_subdirectory(third_party/ccop ccop)
+
 add_subdirectory(src)
 
 if(BUILD_TESTS)
