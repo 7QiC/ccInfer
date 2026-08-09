@@ -28,7 +28,7 @@ public:
                                                          const SamplingParams& sampling = {}) {
         static_assert(runner_traits_valid_v<Traits>, "RunnerTraits has unknown dtype tags");
 
-        // Phase 4.1: only BF16 weights / activations / KV + FP32 logits.
+        // Only BF16 weights / activations / KV + FP32 logits.
         if constexpr (!std::is_same_v<typename Traits::WeightTag, ops::BFloat16Tag> ||
                       !std::is_same_v<typename Traits::KVTag, ops::BFloat16Tag> ||
                       !std::is_same_v<typename Traits::ActivationTag, ops::BFloat16Tag> ||
@@ -37,7 +37,7 @@ public:
             return std::unexpected(ErrorCode::Unsupported);
         }
 
-        // --- Validate physical batch ---
+        // Validate physical batch.
         if (!batch.token_ids || !batch.positions || !batch.slot_mapping || !batch.block_table ||
             !batch.query_start_loc || !batch.context_lens || !batch.logits_indices) {
             return std::unexpected(ErrorCode::InvalidArgument);
@@ -83,7 +83,7 @@ public:
         const int V = cfg.vocab_size_;
         if (V <= 0) return std::unexpected(ErrorCode::ModelConfigInvalid);
 
-        // --- Validate sampling params ---
+        // Validate sampling params.
         if (sampling.top_k < 0 || sampling.top_k > V) {
             return std::unexpected(ErrorCode::InvalidArgument);
         }
@@ -99,7 +99,7 @@ public:
             return std::unexpected(ErrorCode::Unsupported);
         }
 
-        // --- D2H: query_start_loc (validate + reuse later) ---
+        // D2H: query_start_loc (validate + reuse later).
         std::vector<int32_t> qsl_host(B + 1);
         {
             auto r = backend.memcpy_d2h(qsl_host.data(), batch.query_start_loc->data(),
@@ -117,7 +117,7 @@ public:
             }
         }
 
-        // --- D2H: positions (validate + compute max_position_id) ---
+        // D2H: positions (validate + compute max_position_id).
         int max_pos = 0;
         {
             std::vector<int32_t> pos_host(T);
@@ -130,7 +130,7 @@ public:
             }
         }
 
-        // --- D2H: context_lens (validate) ---
+        // D2H: context_lens (validate).
         {
             const int block_sz = kv_mgr.block_size();
             const int max_slots = kv_mgr.max_slots();
@@ -152,7 +152,7 @@ public:
             }
         }
 
-        // --- D2H: logits_indices (validate, before forward to avoid KV side-effects) ---
+        // D2H: logits_indices (validate before forward to avoid KV side-effects).
         std::vector<int32_t> li_host(B);
         {
             auto r = backend.memcpy_d2h(li_host.data(), batch.logits_indices->data(),
@@ -170,7 +170,7 @@ public:
             }
         }
 
-        // --- Build ForwardInput ---
+        // Build ForwardInput.
         ForwardInput input;
         input.token_ids_ = static_cast<const int32_t*>(batch.token_ids->data());
         input.positions_ = static_cast<const int32_t*>(batch.positions->data());

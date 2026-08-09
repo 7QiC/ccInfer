@@ -9,7 +9,6 @@
 namespace ccinfer {
 namespace {
 
-// dst[i] = dst[i] + src[i] (residual add)
 __global__ void element_add_kernel(__nv_bfloat16* dst, const __nv_bfloat16* src, int64_t n) {
     const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
 
@@ -63,7 +62,6 @@ __global__ void split_qkv_kernel(const __nv_bfloat16* __restrict__ qkv,
     }
 }
 
-// Gather embedding rows: input_embeds[t, d] = embed_table[token_ids[t], d]
 __global__ void embed_kernel(const __nv_bfloat16* embed_table, const int32_t* token_ids,
                              __nv_bfloat16* input_embeds, int num_tokens, int d_model) {
     const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;

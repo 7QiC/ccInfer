@@ -7,13 +7,11 @@
 
 namespace ccinfer {
 
-// -----------------------------------------------------------------------------
 // DType profile: compile-time dtype configuration for a model run.
 //
 // dtype tags come from ccop (single source of truth). CUDA native types are
 // obtained via ops::native_t<Tag> after including <ccop/cuda/dtype_cuda.h>
 // inside CUDA translation units.
-// -----------------------------------------------------------------------------
 
 template <typename WeightTagT, typename KVTagT, typename ActivationTagT, typename AccumTagT,
           typename LogitsTagT>
@@ -50,9 +48,7 @@ using Int8WeightBF16KVDTypeProfile =
     DTypeProfile<ops::Int8Tag, ops::BFloat16Tag, ops::BFloat16Tag, ops::Float32Tag,
                  ops::Float32Tag>;
 
-// -----------------------------------------------------------------------------
 // Quantization policy tags.
-// -----------------------------------------------------------------------------
 
 struct NoQuantPolicy {
     static constexpr bool is_quantized = false;
@@ -69,9 +65,7 @@ struct Int4WeightOnlyPolicy {
     static constexpr std::string_view name = "int4_weight_only";
 };
 
-// -----------------------------------------------------------------------------
 // RunnerTraits = dtype profile + quantization policy.
-// -----------------------------------------------------------------------------
 
 template <typename ProfileT, typename QuantPolicyT = NoQuantPolicy>
 struct RunnerTraits {
@@ -93,9 +87,7 @@ using FP16WeightBF16KVRunnerTraits = RunnerTraits<FP16WeightBF16KVDTypeProfile>;
 using Int8WeightBF16KVRunnerTraits =
     RunnerTraits<Int8WeightBF16KVDTypeProfile, Int8WeightOnlyPolicy>;
 
-// -----------------------------------------------------------------------------
 // Helper predicates.
-// -----------------------------------------------------------------------------
 
 template <typename Traits>
 inline constexpr bool runner_traits_valid_v =

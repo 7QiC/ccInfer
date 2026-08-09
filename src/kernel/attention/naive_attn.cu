@@ -34,7 +34,6 @@ namespace {
 //   1. scores[key] = dot(q[query, q_head], k[key, kv_head]) / sqrt(D)
 //   2. causal softmax over key <= query
 //   3. output[query, q_head, d] = sum_key probs[key] * v[key, kv_head, d]
-// -----------------------------------------------------------------------------
 
 template <int kBlockSize>
 __global__ void naive_attention_token_major_kernel(const __nv_bfloat16* __restrict__ q,
@@ -62,9 +61,7 @@ __global__ void naive_attention_token_major_kernel(const __nv_bfloat16* __restri
     const __nv_bfloat16* q_vec =
         q + (static_cast<int64_t>(query_token) * n_q_heads + q_head) * head_dim;
 
-    // -------------------------------------------------------------------------
     // Step 1: compute attention scores for all valid causal keys.
-    // -------------------------------------------------------------------------
 
     float local_max = -FLT_MAX;
 
@@ -90,9 +87,7 @@ __global__ void naive_attention_token_major_kernel(const __nv_bfloat16* __restri
 
     // block_reduce_max already contains synchronization, so scores are visible.
 
-    // -------------------------------------------------------------------------
     // Step 2: softmax over key <= query_token.
-    // -------------------------------------------------------------------------
 
     float local_sum = 0.0f;
 
@@ -111,11 +106,7 @@ __global__ void naive_attention_token_major_kernel(const __nv_bfloat16* __restri
 
     __syncthreads();
 
-    // -------------------------------------------------------------------------
-    // Step 3: weighted sum over V.
-    //
-    // Each thread computes one or more output dimensions.
-    // -------------------------------------------------------------------------
+    // Step 3: weighted sum over V; each thread handles one or more output dims.
 
     __nv_bfloat16* out_vec =
         output + (static_cast<int64_t>(query_token) * n_q_heads + q_head) * head_dim;

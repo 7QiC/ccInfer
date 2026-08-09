@@ -29,10 +29,8 @@ def main():
     our_dir = os.path.join(args.model, "our_layer_outputs")
     hf_dir = os.path.join(args.model, "layer_outputs")
 
-    # Determine T and D from the embedding file
     our_embed = load_raw_bin(os.path.join(our_dir, "embedding.bin"), (-1,))
     T = len(our_embed)
-    # Get D from config
     import json
     with open(os.path.join(args.model, "config.json")) as f:
         cfg = json.load(f)
@@ -40,7 +38,6 @@ def main():
     T = len(our_embed) // D  # Should be 1 for single token
     print(f"Config: D={D}, T={T}")
 
-    # Compare layer outputs
     n_layers = cfg["num_hidden_layers"]
     print(f"\n{'Layer':<10} {'Max Diff':<14} {'Mean Diff':<14} {'RMSE':<14} {'First Bad Idx':<16} {'Our val':<14} {'HF val':<14}")
     print("-" * 110)
@@ -86,7 +83,6 @@ def main():
     else:
         print(f"\nNo layer exceeds threshold {threshold}")
 
-    # Compare final norm
     print(f"\n--- Final norm ---")
     our_final = load_raw_bin(os.path.join(our_dir, "final_norm.bin"), (T, D))
     hf_final = load_npy(os.path.join(hf_dir, "final_norm.npy"))
@@ -97,9 +93,7 @@ def main():
           f"(our={our_final.flat[max_idx]:.6f} hf={hf_final.flat[max_idx]:.6f})")
     print(f"  mean_diff={np.mean(diff):.6f} rmse={np.sqrt(np.mean(diff**2)):.6f}")
 
-    # Also show sampling result comparison
     print(f"\n--- Logits comparison ---")
-    # Load our logits from the existing test
     our_logits_path = os.path.join(our_dir, "logits.bin")
     if os.path.exists(our_logits_path):
         our_logits = load_raw_bin(our_logits_path, (-1,))

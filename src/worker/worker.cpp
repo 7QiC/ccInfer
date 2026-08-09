@@ -52,8 +52,6 @@ void Worker::shutdown() {
     if (worker_thread_.joinable()) worker_thread_.join();
 }
 
-// --- Resource helpers ---
-
 Result<CreateSequenceResult> Worker::prepare_sequence_resources(
     SequenceId seq_id, const std::vector<int32_t>& prompt_tokens, int max_context_len) {
     std::lock_guard lock(resource_mutex_);
@@ -173,8 +171,6 @@ DeviceCapacity Worker::capacity() const {
                           prefix_cached_blocks_.load()};
 }
 
-// --- Worker loop ---
-
 void Worker::worker_loop() {
     while (true) {
         std::deque<PendingBatch> local_queue;
@@ -217,8 +213,6 @@ void Worker::sync_capacity() {
     prefix_evictions_.store(s.prefix.evictions);
     prefix_cached_blocks_.store(static_cast<uint64_t>(s.prefix.cached_blocks));
 }
-
-// --- Resource init ---
 
 Result<void> Worker::init_resources(const std::string& model_path) {
     std::lock_guard lock(resource_mutex_);
@@ -312,8 +306,6 @@ void Worker::reset_resources() {
     backend_.reset();
 }
 
-// --- Sequence state helper ---
-
 Result<void> Worker::release_sequence_blocks(BlockTableIter it) {
     if (!it->second.empty()) {
         auto r = kv_mgr_->release_blocks(it->second);
@@ -324,8 +316,6 @@ Result<void> Worker::release_sequence_blocks(BlockTableIter it) {
     sync_capacity();
     return {};
 }
-
-// --- Batch processing ---
 
 void Worker::process_batch(PendingBatch pending) {
     std::lock_guard resource_lock(resource_mutex_);

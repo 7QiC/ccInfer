@@ -72,13 +72,11 @@ TEST_F(RopeTest, SingleTokenNoGQA) {
     constexpr int tokens = 1, heads = 2, dim = 8;
     constexpr int max_pos = 16, rotary_dim = 8;
 
-    // Build cache
     auto cache_cpu = build_rope_cache_cpu(max_pos, rotary_dim, 10000.0f);
     float2* cache_d;
     cudaMalloc(&cache_d, cache_cpu.size() * sizeof(float2));
     cudaMemcpy(cache_d, cache_cpu.data(), cache_cpu.size() * sizeof(float2), cudaMemcpyHostToDevice);
 
-    // Input data
     int total_q = tokens * heads * dim;
     int total_k = tokens * heads * dim;
     std::vector<__nv_bfloat16> q_h(total_q), k_h(total_q), q_expected(total_q), k_expected(total_k);

@@ -1,6 +1,5 @@
 #pragma once
 
-// -----------------------------------------------------------------------------
 // Operator library facade — the ONLY place the framework names the operator
 // library (currently ccop). Framework code includes "ops/ops.h" and uses
 // ccinfer::ops symbols.
@@ -9,7 +8,6 @@
 // alias below (plus the submodule pointer / CMake link in src/CMakeLists.txt).
 // If the replacement library has a different API shape, adapter forwarding
 // functions go here too.
-// -----------------------------------------------------------------------------
 
 #include <ccop/device.h>
 #include <ccop/dtype.h>

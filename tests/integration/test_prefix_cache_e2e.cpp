@@ -97,7 +97,6 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
     cudaMemcpyAsync(d_q, h_q.data(), q_elems * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice,
                     stream);
 
-    // Build prefill params.
     std::vector<int32_t> h_query_start_loc = {0, kNumTokens};
     std::vector<int32_t> h_context_lens = {kNumTokens};
     std::vector<int32_t> h_block_table(1 * (kMaxBlocks), -1);
@@ -123,7 +122,6 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
     ASSERT_TRUE(attn_r.has_value());
     cudaStreamSynchronize(stream);
 
-    // Verify output is finite.
     std::vector<float> h_out(q_elems);
     cudaMemcpy(h_out.data(), d_output, q_elems * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost);
     for (int64_t i = 0; i < q_elems; ++i) {
@@ -158,7 +156,6 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
         EXPECT_GT(stats_after.prefix.evictions, stats_before.prefix.evictions);
     }
 
-    // Cleanup.
     cudaFree(d_q);
     cudaFree(d_output);
     cudaFree(d_qsl);

@@ -139,7 +139,6 @@ TEST(DecodeAttnKernelTest, SingleDecodeStep) {
     ASSERT_TRUE(r.has_value());
     cudaStreamSynchronize(stream);
 
-    // Verify output is finite
     std::vector<__nv_bfloat16> h_out(q_elems);
     cudaMemcpy(h_out.data(), d_out, q_elems * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost);
 
@@ -210,7 +209,6 @@ TEST(DecodeAttnKernelTest, GQA) {
 
     // Heads with same kv_head should produce same output (all inputs equal)
     for (int h = 1; h < kNumQHeads; ++h) {
-        // Compare head h's first element with head 0's first element
         int64_t off0 = 0;
         int64_t off_h = static_cast<int64_t>(h) * kHeadDim;
         EXPECT_NEAR(__bfloat162float(h_out[off_h]),

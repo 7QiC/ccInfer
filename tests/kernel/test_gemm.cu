@@ -44,13 +44,11 @@ TEST_F(GemmTest, SmallMatrices2x3Times3x2) {
                                   11.0f, 12.0f};
     float expected[4] = {58.0f, 64.0f, 139.0f, 154.0f};
 
-    // Convert to bf16
     std::vector<__nv_bfloat16> a_bf16(M * K);
     std::vector<__nv_bfloat16> b_bf16(K * N);
     for (int i = 0; i < M * K; ++i) a_bf16[i] = __float2bfloat16(a_host[i]);
     for (int i = 0; i < K * N; ++i) b_bf16[i] = __float2bfloat16(b_host[i]);
 
-    // Upload to GPU
     __nv_bfloat16 *a_d, *b_d, *c_d;
     cudaMalloc(&a_d, M * K * sizeof(__nv_bfloat16));
     cudaMalloc(&b_d, K * N * sizeof(__nv_bfloat16));
@@ -72,7 +70,6 @@ TEST_F(GemmTest, SmallMatrices2x3Times3x2) {
     auto r = backend_->gemm(ops::DType::kBFloat16, p);
     ASSERT_TRUE(r.has_value());
 
-    // Download and verify.
     std::vector<__nv_bfloat16> c_bf16(M * N);
     cudaMemcpy(c_bf16.data(), c_d, M * N * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost);
 

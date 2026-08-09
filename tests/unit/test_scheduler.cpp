@@ -53,10 +53,6 @@ boost::asio::io_context SchedulerTest::io_{};
 std::unique_ptr<Executor> SchedulerTest::executor_;
 bool SchedulerTest::suite_skip_ = false;
 
-// ---------------------------------------------------------------------------
-// Basic batch-building
-// ---------------------------------------------------------------------------
-
 TEST_F(SchedulerTest, EmptyBatchWhenNoActiveSequences) {
     auto batch = scheduler_->build_scheduled_batch();
     EXPECT_TRUE(batch.items.empty());
@@ -94,10 +90,6 @@ TEST_F(SchedulerTest, SingleDecodeItem) {
     EXPECT_EQ(d->expected_context_len, 0);  // 1 + 0 - 1 = 0
 }
 
-// ---------------------------------------------------------------------------
-// Finished / cancelled filtering
-// ---------------------------------------------------------------------------
-
 TEST_F(SchedulerTest, SkipsFinishedAndCancelled) {
     auto finished = std::make_shared<SchedulerRequestState>();
     finished->seq_id = 1; finished->prefill_done = true; finished->finished = true;
@@ -120,10 +112,6 @@ TEST_F(SchedulerTest, SkipsFinishedAndCancelled) {
     EXPECT_EQ(std::get<DecodeOneToken>(batch.items[0]).seq_id, 3u);
 }
 
-// ---------------------------------------------------------------------------
-// Multi-item batching
-// ---------------------------------------------------------------------------
-
 TEST_F(SchedulerTest, MultipleDecodeItemsBatched) {
     auto mk = [](int id) {
         auto s = std::make_shared<SchedulerRequestState>();
@@ -142,10 +130,6 @@ TEST_F(SchedulerTest, MultipleDecodeItemsBatched) {
     for (size_t i = 0; i < 3; ++i)
         ASSERT_TRUE(std::holds_alternative<DecodeOneToken>(batch.items[i]));
 }
-
-// ---------------------------------------------------------------------------
-// Sampling compatibility
-// ---------------------------------------------------------------------------
 
 TEST_F(SchedulerTest, SkipsIncompatibleTemperature) {
     auto s1 = std::make_shared<SchedulerRequestState>();
@@ -180,7 +164,7 @@ TEST_F(SchedulerTest, SkipsIncompatibleSeed) {
     s2->seq_id = 2; s2->prefill_done = true;
     s2->last_token = 20; s2->prompt_tokens = {1};
     s2->sampling.max_tokens = 10;
-    s2->sampling.seed = 99;  // different seed
+    s2->sampling.seed = 99;
 
     scheduler_->active_[1] = s1;
     scheduler_->active_[2] = s2;
@@ -217,10 +201,6 @@ TEST_F(SchedulerTest, AllIncompatibleSamplingReturnsEmpty) {
     EXPECT_EQ(std::get<DecodeOneToken>(batch.items[0]).seq_id, 2u);
 }
 
-// ---------------------------------------------------------------------------
-// Max tokens guard
-// ---------------------------------------------------------------------------
-
 TEST_F(SchedulerTest, SkipsMaxTokensReached) {
     auto state = std::make_shared<SchedulerRequestState>();
     state->seq_id = 1; state->prefill_done = true;
@@ -242,7 +222,7 @@ TEST_F(SchedulerTest, MaxTokensNotReachedIncluded) {
     state->seq_id = 1; state->prefill_done = true;
     state->last_token = 7;
     state->prompt_tokens = {1};
-    state->tokens_generated = 9;  // one under limit
+    state->tokens_generated = 9;
     state->sampling.max_tokens = 10;
 
     scheduler_->active_[1] = state;
@@ -251,10 +231,6 @@ TEST_F(SchedulerTest, MaxTokensNotReachedIncluded) {
     auto batch = scheduler_->build_scheduled_batch();
     ASSERT_EQ(batch.items.size(), 1u);
 }
-
-// ---------------------------------------------------------------------------
-// Max context guard
-// ---------------------------------------------------------------------------
 
 TEST_F(SchedulerTest, MaxContextExceededTriggersTerminal) {
     auto state = std::make_shared<SchedulerRequestState>();
@@ -289,10 +265,6 @@ TEST_F(SchedulerTest, MaxContextNotExceededIncluded) {
     ASSERT_EQ(batch.items.size(), 1u);
 }
 
-// ---------------------------------------------------------------------------
-// Prefill vs decode priority
-// ---------------------------------------------------------------------------
-
 TEST_F(SchedulerTest, MixedBatchDecodesThenPrefills) {
     // With prefill and decode both pending, decode should be selected first
     // and prefill should use the remaining compute budget in the same batch.
@@ -326,10 +298,6 @@ TEST_F(SchedulerTest, MixedBatchDecodesThenPrefills) {
     ASSERT_TRUE(std::holds_alternative<PrefillChunk>(batch2.items[0]));
     EXPECT_EQ(std::get<PrefillChunk>(batch2.items[0]).seq_id, 1u);
 }
-
-// ---------------------------------------------------------------------------
-// Round-robin reorder
-// ---------------------------------------------------------------------------
 
 TEST_F(SchedulerTest, RoundRobinReordersAfterDecodeBatch) {
     auto mk = [](int id) {
@@ -379,10 +347,6 @@ TEST_F(SchedulerTest, ReorderWithMixedIncludedAndSkipped) {
     EXPECT_EQ(scheduler_->active_order_[0], 1u);
     EXPECT_EQ(scheduler_->active_order_[1], 3u);
 }
-
-// ---------------------------------------------------------------------------
-// Chunked prefill
-// ---------------------------------------------------------------------------
 
 TEST_F(SchedulerTest, PrefillChunkLimitedTo512Tokens) {
     auto state = std::make_shared<SchedulerRequestState>();
@@ -547,10 +511,6 @@ TEST_F(SchedulerTest, SuspendedSeqCountsAsActiveAndReplaysWithoutSampling) {
     EXPECT_FALSE(saw_fresh);
 }
 
-// ---------------------------------------------------------------------------
-// expected_context_len in DecodeOneToken
-// ---------------------------------------------------------------------------
-
 TEST_F(SchedulerTest, DecodeExpectedContextLen) {
     // expected_ctx = prompt_len + tokens_generated - 1
     auto state = std::make_shared<SchedulerRequestState>();
@@ -592,18 +552,9 @@ TEST_F(SchedulerTest, DecodeExpectedContextLenAccountsForReplayPrompt) {
     EXPECT_EQ(*d->expected_context_len, 4);
 }
 
-// ---------------------------------------------------------------------------
-// Budget tracking
-// ---------------------------------------------------------------------------
-
 TEST_F(SchedulerTest, PrefillBudgetBlockedTracked) {
-    // Create a prefill that needs more blocks than free_blocks.
-    // The engine init'd with max_blocks=1024, free_blocks≈1024. A prefill
-    // of block_size*1025 tokens would need 1025 blocks → blocked.
-    // But that's huge and impractical. Instead: test that budget_blocked_ is
-    // empty when budget is sufficient and non-empty when blocked.
-    //
-    // With sufficient budget: nothing should be blocked.
+    // A prefill needing more blocks than free_blocks is impractical to build
+    // here; verify that a small prompt is not budget-blocked.
     auto state = std::make_shared<SchedulerRequestState>();
     state->seq_id = 1; state->prefill_done = false;
     state->prompt_tokens = {1, 2, 3, 4, 5};
@@ -616,15 +567,9 @@ TEST_F(SchedulerTest, PrefillBudgetBlockedTracked) {
     EXPECT_TRUE(scheduler_->budget_blocked_.empty());
 }
 
-// ---------------------------------------------------------------------------
-// block_size <= 0 guard
-// ---------------------------------------------------------------------------
-
 TEST_F(SchedulerTest, ZeroBlockSizeFailsAllActive) {
-    // We can't easily mock capacity() to return bs=0, but we can test the
-    // guard directly: it fails all active with InternalError.
-    // Since our executor has valid block_size, this test verifies the code path
-    // isn't triggered in normal operation.
+    // capacity() cannot be mocked to bs=0; this verifies the guard path stays
+    // inert in normal operation.
     auto cap = scheduler_->executor_.capacity();
     EXPECT_GT(cap.block_size, 0);
 }

@@ -52,7 +52,6 @@ std::string read_file(const std::string& path) {
     return content;
 }
 
-// ---------------------------------------------------------------------------
 // Mini paged-KV-cache harness for correctness testing.
 //
 // Qwen3Model::forward() requires a fully populated ForwardInput including
@@ -60,7 +59,6 @@ std::string read_file(const std::string& path) {
 //   1. Create a KVCacheStorage with enough blocks for T tokens
 //   2. Allocate those blocks and fill slot_mapping / block_table
 //   3. Let the model embed token_ids internally (no manual embed step)
-// ---------------------------------------------------------------------------
 
 struct ForwardFixture {
     std::unique_ptr<KVCacheManager> kv_mgr;
@@ -104,7 +102,6 @@ ForwardFixture prepare_single_prefill(Backend& backend, const ModelConfig& confi
     }
     fixture.max_blocks_per_req = blocks->size();
 
-    // Build host metadata arrays.
     std::vector<int32_t> positions_host(static_cast<size_t>(T));
     std::vector<int32_t> slot_mapping_host(static_cast<size_t>(T));
     for (int i = 0; i < T; ++i) {
@@ -115,7 +112,6 @@ ForwardFixture prepare_single_prefill(Backend& backend, const ModelConfig& confi
     const std::vector<int32_t> query_start_loc_host{0, T};
     const std::vector<int32_t> context_lens_host{T};
 
-    // Allocate device buffers.
     fixture.token_ids = alloc_buf(backend, static_cast<size_t>(T) * sizeof(int32_t));
     fixture.positions = alloc_buf(backend, static_cast<size_t>(T) * sizeof(int32_t));
     fixture.slot_mapping = alloc_buf(backend, static_cast<size_t>(T) * sizeof(int32_t));
@@ -123,7 +119,6 @@ ForwardFixture prepare_single_prefill(Backend& backend, const ModelConfig& confi
     fixture.query_start_loc = alloc_buf(backend, 2 * sizeof(int32_t));
     fixture.context_lens = alloc_buf(backend, sizeof(int32_t));
 
-    // Upload to device.
     cudaMemcpy(fixture.token_ids->data(), token_ids_host.data(), T * sizeof(int32_t),
                cudaMemcpyHostToDevice);
     cudaMemcpy(fixture.positions->data(), positions_host.data(), T * sizeof(int32_t),
@@ -192,9 +187,7 @@ std::vector<float> run_prefill_logits(Backend& backend, const ModelConfig& confi
     return logits;
 }
 
-// ---------------------------------------------------------------------------
 // Greedy generation: prefill + decode loop
-// ---------------------------------------------------------------------------
 
 struct GenFixture {
     std::unique_ptr<KVCacheManager> kv_mgr;
@@ -236,7 +229,6 @@ GenFixture prepare_generation(Backend& backend, const ModelConfig& config,
     for (int i = 0; i < blocks->size(); ++i)
         f.block_ids[static_cast<size_t>(i)] = (*blocks)[i];
 
-    // Allocate device buffers
     f.token_ids = alloc_buf(backend, sizeof(int32_t));
     f.positions = alloc_buf(backend, sizeof(int32_t));
     f.slot_mapping = alloc_buf(backend, sizeof(int32_t));
@@ -244,7 +236,6 @@ GenFixture prepare_generation(Backend& backend, const ModelConfig& config,
     f.query_start_loc = alloc_buf(backend, 2 * sizeof(int32_t));
     f.context_lens = alloc_buf(backend, sizeof(int32_t));
 
-    // Upload block table (static across all steps)
     cudaMemcpy(f.block_table->data(), f.block_ids.data(),
                static_cast<size_t>(f.max_blocks_per_req) * sizeof(int32_t),
                cudaMemcpyHostToDevice);
@@ -262,7 +253,6 @@ std::vector<float> run_decode_step(Backend& backend, const ModelConfig& config,
     const int pos = f.current_context_len;
     const int slot = f.next_slot;
 
-    // Upload single-token metadata
     cudaMemcpy(f.token_ids->data(), &token_id, sizeof(int32_t), cudaMemcpyHostToDevice);
     cudaMemcpy(f.positions->data(), &pos, sizeof(int32_t), cudaMemcpyHostToDevice);
     cudaMemcpy(f.slot_mapping->data(), &slot, sizeof(int32_t), cudaMemcpyHostToDevice);
@@ -307,7 +297,6 @@ std::vector<float> run_decode_step(Backend& backend, const ModelConfig& config,
     return logits;
 }
 
-// CPU-side greedy argmax
 int32_t argmax(const std::vector<float>& v) {
     int32_t best = 0;
     float best_val = v[0];
@@ -339,12 +328,10 @@ std::vector<int32_t> run_greedy_generation(Backend& backend,
     const int prompt_len = static_cast<int>(prompt_tokens.size());
     const int V = config.vocab_size_;
 
-    // ---- Prefill: write all prompt tokens into KV cache ----
     {
         auto prefill_logits_buf = alloc_buf(backend,
             static_cast<size_t>(prompt_len) * V * sizeof(float));
 
-        // Build prefill metadata
         std::vector<int32_t> positions_host(static_cast<size_t>(prompt_len));
         std::vector<int32_t> slot_mapping_host(static_cast<size_t>(prompt_len));
         for (int i = 0; i < prompt_len; ++i) {
@@ -396,7 +383,6 @@ std::vector<int32_t> run_greedy_generation(Backend& backend,
         f.current_context_len = prompt_len;
         f.next_slot = prompt_len;
 
-        // Sample first token from prefill's last logit
         std::vector<float> last_logits(static_cast<size_t>(V));
         cudaMemcpy(last_logits.data(),
                    static_cast<float*>(prefill_logits_buf->data())
@@ -407,7 +393,6 @@ std::vector<int32_t> run_greedy_generation(Backend& backend,
         std::vector<int32_t> generated;
         generated.push_back(first_token);
 
-        // ---- Decode loop ----
         int32_t current_token = first_token;
         for (int step = 1; step < max_new_tokens; ++step) {
             auto logits = run_decode_step(backend, config, *model, f, current_token);
@@ -423,10 +408,6 @@ std::vector<int32_t> run_greedy_generation(Backend& backend,
 }
 
 }  // namespace
-
-// ============================================================================
-// Test Fixture
-// ============================================================================
 
 class LogitsMatchTest : public ::testing::Test {
 protected:
@@ -471,10 +452,6 @@ protected:
     std::unique_ptr<Backend> backend_;
     cudaStream_t stream_{};
 };
-
-// ============================================================================
-// Test Cases
-// ============================================================================
 
 TEST_F(LogitsMatchTest, SingleToken) {
     const std::string prompt = "Hello";
@@ -550,7 +527,6 @@ TEST_F(LogitsMatchTest, CompareWithReference) {
                                << ": ccinfer=" << logits[static_cast<size_t>(max_idx)]
                                << " ref=" << ref_logits[static_cast<size_t>(max_idx)];
 
-    // Top-5 overlap check
     std::vector<int> our_idx(static_cast<size_t>(V)), ref_idx(static_cast<size_t>(V));
     for (int i = 0; i < V; ++i) {
         our_idx[static_cast<size_t>(i)] = i;

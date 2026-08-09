@@ -35,7 +35,7 @@ def main():
         hidden_states = model.model.embed_tokens(input_ids)
         results["embed"] = hidden_states.detach().float().cpu().numpy()
 
-        # --- Attention block ---
+        # Attention block.
         residual = hidden_states
         normed = l0.input_layernorm(hidden_states)
         results["l0_attn_norm"] = normed.detach().float().cpu().numpy()
@@ -66,7 +66,7 @@ def main():
         hidden_states = residual + attn_out
         results["l0_attn_residual"] = hidden_states.detach().float().cpu().numpy()
 
-        # --- FFN block ---
+        # FFN block.
         residual = hidden_states
         normed_ffn = l0.post_attention_layernorm(hidden_states)
         results["l0_ffn_norm"] = normed_ffn.detach().float().cpu().numpy()

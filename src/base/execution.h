@@ -25,11 +25,9 @@ struct DeviceCapacity {
     uint64_t prefix_cached_blocks = 0;
 };
 
-// ---------------------------------------------------------------------------
 // SequenceState — worker-local execution view used by BatchTranslator.
 // Logical fields are copied from Executor-owned SequenceSnapshot; block_table
 // is worker/device-local metadata owned by the Worker.
-// ---------------------------------------------------------------------------
 struct SequenceState {
     SequenceId seq_id = 0;
     std::vector<int32_t> prompt_tokens;
@@ -40,9 +38,7 @@ struct SequenceState {
     bool aborted = false;
 };
 
-// ---------------------------------------------------------------------------
 // PhysicalBatch — GPU-ready data for ModelRunner::inference.
-// ---------------------------------------------------------------------------
 struct PhysicalBatch {
     int num_tokens = 0;
     std::shared_ptr<Buffer> token_ids;     // [num_tokens]

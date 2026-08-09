@@ -10,10 +10,8 @@
 
 namespace ccinfer {
 
-// ---------------------------------------------------------------------------
 // Shared types used by Executor, DeviceWorker, Scheduler, and HTTP.
 // No CUDA or ASIO dependency.
-// ---------------------------------------------------------------------------
 using SequenceId = uint64_t;
 
 struct CreateSequenceResult {
@@ -49,8 +47,7 @@ struct DecodeOneToken {
 using WorkItem = std::variant<PrefillChunk, DecodeOneToken>;
 
 // Sampling parameters — user-facing, per-request.
-// Phase 4.1: shared by all sequences in a batch.
-// Future: per-sequence via std::vector<SamplingParams>.
+// Shared by all sequences in a batch.
 struct SamplingParams {
     int max_tokens = 256;      // scheduler-level generation limit
     int top_k = 0;             // 0 = disabled (greedy)

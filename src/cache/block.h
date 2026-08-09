@@ -47,14 +47,12 @@ struct Block {
     Block(Block&&) = delete;
     Block& operator=(Block&&) = delete;
 
-    // ---- Queries ----
     bool is_free() const noexcept { return has_flag(flags, BlockFlags::kInFreeList); }
     bool is_cached() const noexcept { return has_flag(flags, BlockFlags::kCached); }
     bool is_in_lru() const noexcept { return has_flag(flags, BlockFlags::kInLRU); }
     bool is_active() const noexcept { return ref_count > 0; }
     bool is_cached_idle() const noexcept { return is_cached() && is_in_lru() && ref_count == 0; }
 
-    // ---- Flag mutations ----
     void set_flag(BlockFlags f) noexcept { flags |= static_cast<uint32_t>(f); }
     void clear_flag(BlockFlags f) noexcept { flags &= ~static_cast<uint32_t>(f); }
 };

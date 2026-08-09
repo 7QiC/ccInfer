@@ -25,7 +25,6 @@ public:
 
     Result<void> init(std::unique_ptr<KVCacheStorage> storage, int max_blocks, int block_size);
 
-    // ---- Data pointers for kernel launches ----
     void* k_cache(int layer);
     void* v_cache(int layer);
     const void* k_cache(int layer) const;
@@ -33,7 +32,6 @@ public:
 
     int max_slots() const;
 
-    // ---- Block allocation ----
     Result<BlockTable> allocate_blocks(int num_blocks);
 
     struct PrepareResult {
@@ -50,7 +48,6 @@ public:
 
     Result<void> release_blocks(const BlockTable& table);
 
-    // ---- Capacity and stats ----
     int max_blocks() const { return max_blocks_; }
     int block_size() const { return block_size_; }
     int num_free_blocks() const { return static_cast<int>(free_list_.size()); }

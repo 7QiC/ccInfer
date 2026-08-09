@@ -45,13 +45,9 @@ bool check_seq_invariant(const SequenceState& seq, int block_size, int max_block
 BatchTranslator::BatchTranslator(Backend& backend, KVCacheManager& kv_mgr, int block_size)
     : backend_(backend), kv_mgr_(kv_mgr), block_size_(block_size) {}
 
-// ---------------------------------------------------------------------------
-// translate
-//
 // Calling convention: if translate succeeds but the caller subsequently fails
 // (forward or commit), the caller must invoke rollback(per_item) to release
 // any KV blocks that were allocated.
-// ---------------------------------------------------------------------------
 
 Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
     ScheduledBatch& batch, const std::unordered_map<SequenceId, SequenceState>& sequences) {
@@ -76,7 +72,7 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
 
     const int max_blk = kv_mgr_.max_blocks();
 
-    // --- Phase 1: per-item validation and KV block allocation ---
+    // Phase 1: per-item validation and KV block allocation.
     int total_tokens = 0;
     int batch_size = 0;
     int max_blocks_per_req = 0;
@@ -210,7 +206,6 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
             }
         }
 
-        // Compute slot_mapping for the new tokens.
         per_item[i].slot_mapping.resize(static_cast<std::size_t>(new_tokens));
         for (int t = 0; t < new_tokens; ++t) {
             int global_pos = seq.kv_written + t;
@@ -233,7 +228,7 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
     const std::size_t T_sz = static_cast<std::size_t>(total_tokens);
     constexpr std::size_t kMax = std::numeric_limits<std::size_t>::max();
 
-    // --- Phase 2: build host staging arrays ---
+    // Phase 2: build host staging arrays.
     if (MBPR_sz == 0) return fail(ErrorCode::InvalidArgument);
     // Overflow-check block_table_host size before allocation.
     if (B_sz > kMax / MBPR_sz) return fail(ErrorCode::InvalidArgument);
@@ -302,7 +297,7 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
         }
     }
 
-    // --- Phase 3: allocate device buffers and upload ---
+    // Phase 3: allocate device buffers and upload.
     TranslateResult result;
 
     auto& pb = result.physical_batch;
@@ -434,10 +429,6 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
     return result;
 }
 
-// ---------------------------------------------------------------------------
-// commit
-// ---------------------------------------------------------------------------
-
 Result<void> BatchTranslator::commit(const ScheduledBatch& batch,
                                      std::unordered_map<SequenceId, SequenceState>& sequences,
                                      const std::vector<PerItemAlloc>& per_item) const {
@@ -448,7 +439,7 @@ Result<void> BatchTranslator::commit(const ScheduledBatch& batch,
     const std::size_t num_items = batch.items.size();
     const int max_blk = kv_mgr_.max_blocks();
 
-    // --- Phase 1: validate all items before mutating any SequenceState ---
+    // Phase 1: validate all items before mutating any SequenceState.
     std::unordered_set<SequenceId> seen_seq_ids;
     std::vector<SequenceState*> to_update(num_items);
     std::vector<int> new_tokens_per_item(num_items);
@@ -552,7 +543,7 @@ Result<void> BatchTranslator::commit(const ScheduledBatch& batch,
         new_tokens_per_item[i] = new_tokens;
     }
 
-    // --- Phase 2: mutate ---
+    // Phase 2: mutate.
     for (std::size_t i = 0; i < num_items; ++i) {
         auto& seq = *to_update[i];
 
@@ -571,10 +562,6 @@ Result<void> BatchTranslator::commit(const ScheduledBatch& batch,
 
     return {};
 }
-
-// ---------------------------------------------------------------------------
-// rollback
-// ---------------------------------------------------------------------------
 
 void BatchTranslator::rollback(const std::vector<PerItemAlloc>& per_item) const {
     for (const auto& alloc : per_item) {

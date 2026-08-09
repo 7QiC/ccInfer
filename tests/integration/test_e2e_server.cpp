@@ -24,8 +24,6 @@ protected:
 
     static std::string g_server_binary;
 
-    // --- socket helpers ---
-
     static void set_socket_timeout(int fd, int sec) {
         timeval tv{};
         tv.tv_sec = sec;
@@ -91,8 +89,6 @@ protected:
         return strstr(resp, "200 OK") != nullptr;
     }
 
-    // --- SSE ---
-
     struct SSEStats {
         int tokens = 0;
         bool has_done = false;
@@ -111,8 +107,6 @@ protected:
         }
         return s;
     }
-
-    // --- HTTP ---
 
     static std::string escape_json(const std::string& s) {
         std::string out;
@@ -162,8 +156,6 @@ protected:
         for (int i = 0; i < approx_tokens; ++i) oss << " hello";
         return oss.str();
     }
-
-    // --- test lifecycle ---
 
     void SetUp() override {
         model_path_ = std::getenv("CCINFER_TEST_MODEL_PATH")
@@ -235,10 +227,6 @@ std::string E2EServerTest::g_server_binary = CCINFER_SERVER_BINARY;
 std::string E2EServerTest::g_server_binary = "./src/ccinfer-server";
 #endif
 
-// ---------------------------------------------------------------------------
-// Health & routing
-// ---------------------------------------------------------------------------
-
 TEST_F(E2EServerTest, HealthEndpoint) {
     EXPECT_TRUE(is_healthy());
 }
@@ -259,10 +247,6 @@ TEST_F(E2EServerTest, MethodNotAllowed) {
     EXPECT_NE(r.find("405 Method Not Allowed"), std::string::npos);
 }
 
-// ---------------------------------------------------------------------------
-// Basic SSE
-// ---------------------------------------------------------------------------
-
 TEST_F(E2EServerTest, ChatCompletionsSSE) {
     std::string body =
         R"({"messages":[{"role":"user","content":"Hi"}],"max_tokens":8,"temperature":0.0})";
@@ -277,8 +261,7 @@ TEST_F(E2EServerTest, ChatCompletionsSSE) {
 }
 
 TEST_F(E2EServerTest, EmptyMessagesUsesFallback) {
-    // Phase 4.1 fallback: empty messages → dummy tokens {1,2,3}.
-    // Future: should return 400.
+    // Empty messages use the dummy-token fallback.
     std::string body =
         R"({"messages":[],"max_tokens":4,"temperature":0.0})";
     std::string r = http_post("/v1/chat/completions", body);
@@ -293,10 +276,6 @@ TEST_F(E2EServerTest, ZeroMaxTokensReturnsDone) {
     EXPECT_NE(r.find("200 OK"), std::string::npos);
     EXPECT_TRUE(parse_sse(r).has_done);
 }
-
-// ---------------------------------------------------------------------------
-// Input validation
-// ---------------------------------------------------------------------------
 
 TEST_F(E2EServerTest, BadJsonReturns400) {
     std::string r = http_post("/v1/chat/completions", "not json");
@@ -324,10 +303,6 @@ TEST_F(E2EServerTest, NegativeMaxTokensReturns400) {
     EXPECT_NE(r.find("400 Bad Request"), std::string::npos);
 }
 
-// ---------------------------------------------------------------------------
-// Chunked prefill
-// ---------------------------------------------------------------------------
-
 TEST_F(E2EServerTest, LongPromptChunkedPrefill) {
     std::string prompt = long_prompt(800);
     std::ostringstream body;
@@ -341,10 +316,6 @@ TEST_F(E2EServerTest, LongPromptChunkedPrefill) {
     EXPECT_TRUE(s.has_done);
 }
 
-// ---------------------------------------------------------------------------
-// Decode continuation
-// ---------------------------------------------------------------------------
-
 TEST_F(E2EServerTest, DecodeContinuationManyTokens) {
     std::string body =
         R"({"messages":[{"role":"user","content":"Once upon a time"}],"max_tokens":32,"temperature":0.0})";
@@ -355,10 +326,6 @@ TEST_F(E2EServerTest, DecodeContinuationManyTokens) {
     EXPECT_GE(s.tokens, 8);
     EXPECT_TRUE(s.has_done);
 }
-
-// ---------------------------------------------------------------------------
-// Concurrent requests
-// ---------------------------------------------------------------------------
 
 TEST_F(E2EServerTest, ConcurrentShortRequests) {
     std::string body =

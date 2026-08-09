@@ -52,9 +52,7 @@ BENCHMARK_CONFIGS = {
 }
 
 
-# ---------------------------------------------------------------------------
-# SSE-based chat completion with timing
-# ---------------------------------------------------------------------------
+# SSE-based chat completion with timing.
 
 def chat_completion_timed(base_url: str, prompt: str, input_tokens: int, max_tokens: int,
                           temperature: float = 0.0, timeout: float = 120.0) -> RequestMetrics:
@@ -115,9 +113,7 @@ def chat_completion_timed(base_url: str, prompt: str, input_tokens: int, max_tok
     return metrics
 
 
-# ---------------------------------------------------------------------------
-# Benchmark runner
-# ---------------------------------------------------------------------------
+# Benchmark runner.
 
 def run_workload(harness: ServerHarness, prompts: list[str], input_tokens: int, max_tokens: int,
                  concurrency: int, warmup: int = 3, measured: int = 5,
@@ -296,9 +292,7 @@ def write_result_files(output_dir: Path, config_name: str, results: list[Benchma
     write_summary_csv(summary_csv, all_summaries)
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
+# CLI.
 
 def main():
     parser = argparse.ArgumentParser(description="ccInfer Benchmark Harness")

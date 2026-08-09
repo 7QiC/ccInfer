@@ -54,29 +54,22 @@ private:
         std::shared_ptr<BatchChannel> chan;
     };
 
-    // --- Worker thread ---
     void worker_loop();
     void process_batch(PendingBatch pending);
 
-    // --- Resource lifecycle ---
     Result<void> init_resources(const std::string& model_path);
     void reset_resources();
 
-    // --- Sequence helpers ---
     using BlockTableIter = std::unordered_map<SequenceId, BlockTable>::iterator;
     Result<void> release_sequence_blocks(BlockTableIter it);
 
-    // --- Capacity sync ---
     void sync_capacity();
 
-    // --- Dummy output (no model loaded yet) ---
     BatchResult generate_dummy_result(const ScheduledBatch& batch);
 
-    // --- Completion via io_context ---
     template <typename ChanPtr, typename T>
     void resolve(ChanPtr& chan_ptr, Result<T> result);
 
-    // --- State ---
     asio::io_context& io_;
 
     std::deque<PendingBatch> queue_;
@@ -88,7 +81,7 @@ private:
     std::mutex resource_mutex_;
     std::unordered_map<SequenceId, BlockTable> block_tables_;
 
-    // --- Cached capacity (synced from KVCacheManager::stats()) ---
+    // Cached capacity, synced from KVCacheManager::stats().
     std::atomic<int> active_sequences_{0};
     std::atomic<int> free_blocks_{0};
     std::atomic<int> max_blocks_{0};
@@ -103,13 +96,11 @@ private:
 
     bool initialized_ = false;
 
-    // --- Device resources protected by resource_mutex_ ---
+    // Device resources protected by resource_mutex_.
     std::unique_ptr<Backend> backend_;
     std::unique_ptr<Model> model_;
     std::unique_ptr<KVCacheManager> kv_mgr_;
 };
-
-// --- Template definitions ---
 
 template <typename ChanPtr, typename T>
 void Worker::resolve(ChanPtr& chan_ptr, Result<T> result) {

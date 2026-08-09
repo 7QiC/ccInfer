@@ -49,10 +49,8 @@ private:
     ops::Device device_{};
 };
 
-// ---------------------------------------------------------------------------
 // CUDA kernel dispatch helpers. All framework kernels currently operate on
 // BF16 activations; new dtypes are added here when kernels support them.
-// ---------------------------------------------------------------------------
 
 Result<void> gemm_bf16(const GemmParams& p, cublasHandle_t handle, cudaStream_t stream) {
     float alpha = 1.0f;
@@ -156,19 +154,13 @@ Result<void> sample_impl(const SampleParams& p, cudaStream_t stream) {
 
 }  // namespace
 
-// ---------------------------------------------------------------------------
 // Backend::Impl — device-specific state (CUDA in this translation unit).
-// ---------------------------------------------------------------------------
 
 struct Backend::Impl {
     cudaStream_t stream_ = nullptr;
     cublasHandle_t cublas_handle_ = nullptr;
     int device_id_ = 0;
 };
-
-// ---------------------------------------------------------------------------
-// lifecycle
-// ---------------------------------------------------------------------------
 
 Result<std::unique_ptr<Backend>> Backend::create(int device_id) {
     auto impl = std::make_unique<Impl>();
@@ -196,10 +188,6 @@ Backend::Backend(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 Backend::~Backend() = default;
 Backend::Backend(Backend&&) noexcept = default;
 Backend& Backend::operator=(Backend&&) noexcept = default;
-
-// ---------------------------------------------------------------------------
-// memory / execution
-// ---------------------------------------------------------------------------
 
 Result<std::shared_ptr<Buffer>> Backend::allocate_buffer(std::size_t bytes) {
     if (bytes == 0) return std::unexpected(ErrorCode::InvalidArgument);
@@ -240,10 +228,6 @@ Result<void> Backend::synchronize() {
 ops::ExecutionContext Backend::context() const noexcept {
     return {impl_->stream_};
 }
-
-// ---------------------------------------------------------------------------
-// operator entry points (validation + dtype dispatch)
-// ---------------------------------------------------------------------------
 
 Result<void> Backend::embed(const EmbedParams& p) {
     if (p.embed_table_ == nullptr || p.token_ids_ == nullptr || p.input_embeds_ == nullptr) {

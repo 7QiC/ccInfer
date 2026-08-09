@@ -32,7 +32,6 @@ Qwen3Model::Qwen3Model(ModelConfig config, Qwen3Weights weights, RopeCache rope_
 
 Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& output,
                                  Backend& backend) {
-    // --- Validate inputs ---
     if (output.logits_ == nullptr) return std::unexpected(ErrorCode::InvalidArgument);
     if (input.num_tokens_ <= 0) return std::unexpected(ErrorCode::InvalidArgument);
     if (input.positions_ == nullptr) return std::unexpected(ErrorCode::InvalidArgument);
@@ -87,7 +86,6 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
     const int64_t T64 = T;
     const int64_t D64 = D;
 
-    // --- Allocate workspace buffers ---
     auto alloc = [&](std::size_t bytes) -> Result<std::shared_ptr<Buffer>> {
         auto r = backend.allocate_buffer(bytes);
         if (!r) return std::unexpected(r.error());
@@ -117,7 +115,6 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
     auto ffn_act = alloc(static_cast<std::size_t>(T) * d_ff * sizeof(__nv_bfloat16));
     if (!ffn_act) return std::unexpected(ffn_act.error());
 
-    // --- Embed ---
     if (input.token_ids_ != nullptr) {
         auto er = backend.embed(EmbedParams{
             .embed_table_ = weights_.embed_->data(),
@@ -136,11 +133,9 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
     auto* hidden = static_cast<__nv_bfloat16*>((*hidden_a)->data());
     auto* next_hidden = static_cast<__nv_bfloat16*>((*hidden_b)->data());
 
-    // --- Transformer layers ---
     for (int l = 0; l < n_layers; ++l) {
         const auto& lw = weights_.layers_[static_cast<std::size_t>(l)];
 
-        // RMSNorm (attention)
         {
             auto r = backend.rms_norm(ops::DType::kBFloat16, RmsNormParams{
                 .input_ = hidden,
@@ -170,7 +165,6 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
             if (!r) return r;
         }
 
-        // Split QKV
         {
             auto r = backend.split_qkv(ops::DType::kBFloat16, SplitQkvParams{
                 .qkv_ = (*qkv_out)->data(),
@@ -185,7 +179,7 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
             if (!r) return r;
         }
 
-        // Q/K norm (Qwen3) — verified in-place safe.
+        // In-place Q/K norm (Qwen3); in-place safe.
         if (lw.q_norm_) {
             auto r = backend.rms_norm(ops::DType::kBFloat16, RmsNormParams{
                 .input_ = (*q_buf)->data(),
@@ -209,7 +203,6 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
             if (!r) return r;
         }
 
-        // RoPE
         {
             auto r = backend.rope(ops::DType::kBFloat16, RopeParams{
                 .q_ = (*q_buf)->data(),
@@ -226,7 +219,6 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
             if (!r) return r;
         }
 
-        // Write KV cache
         {
             auto r = backend.write_kv_cache(ops::DType::kBFloat16, WriteKVCacheParams{
                 .k_new_ = (*k_buf)->data(),
@@ -242,7 +234,6 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
             if (!r) return r;
         }
 
-        // Paged attention
         if (input.mode_ == ForwardMode::Decode) {
             auto r = backend.decode_attention(ops::DType::kBFloat16, DecodeAttnParams{
                 .q_ = (*q_buf)->data(),
@@ -296,7 +287,6 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
             if (!r) return r;
         }
 
-        // Residual: next_hidden += hidden
         {
             auto r = backend.element_add(ops::DType::kBFloat16, ElementAddParams{
                 .dst_ = next_hidden,
@@ -307,7 +297,6 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
         }
         std::swap(hidden, next_hidden);
 
-        // FFN: RMSNorm
         {
             auto r = backend.rms_norm(ops::DType::kBFloat16, RmsNormParams{
                 .input_ = hidden,
@@ -354,7 +343,6 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
             if (!r) return r;
         }
 
-        // ffn_act = silu(gate) * up
         {
             auto r = backend.silu_mul(ops::DType::kBFloat16, SiluMulParams{
                 .gate_ = (*gate)->data(),
@@ -382,7 +370,6 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
             if (!r) return r;
         }
 
-        // Residual: next_hidden += hidden
         {
             auto r = backend.element_add(ops::DType::kBFloat16, ElementAddParams{
                 .dst_ = next_hidden,
@@ -394,7 +381,6 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
         std::swap(hidden, next_hidden);
     }
 
-    // --- Final RMSNorm ---
     {
         auto r = backend.rms_norm(ops::DType::kBFloat16, RmsNormParams{
             .input_ = hidden,
@@ -407,7 +393,7 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
         if (!r) return r;
     }
 
-    // --- LM head: logits[T,V] = normed[T,D] @ lm_head_weight[V,D]^T ---
+    // LM head: logits[T,V] = normed[T,D] @ lm_head_weight[V,D]^T.
     {
         auto r = backend.gemm_logits(GemmParams{
             .a_ = (*normed)->data(),

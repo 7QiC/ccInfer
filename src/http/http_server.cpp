@@ -229,10 +229,6 @@ void HttpServer::try_finish_shutdown_on_http_thread() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Connection accept
-// ---------------------------------------------------------------------------
-
 asio::awaitable<void> HttpServer::accept_loop() {
     co_await accept_loop_impl();
     accept_loop_done_ = true;
@@ -253,10 +249,6 @@ asio::awaitable<void> HttpServer::accept_loop_impl() {
         asio::co_spawn(io_, handle_connection(std::move(sock), conn), detached);
     }
 }
-
-// ---------------------------------------------------------------------------
-// HTTP parsing
-// ---------------------------------------------------------------------------
 
 // NOTE: async_read_until will keep growing the streambuf until CRLF is found.
 // A malicious client sending an unbounded line without CRLF could exhaust memory.
@@ -307,10 +299,6 @@ asio::awaitable<void> HttpServer::write_response(asio::ip::tcp::socket& socket,
     (void)_;
     if (ec) co_return;
 }
-
-// ---------------------------------------------------------------------------
-// Connection handler
-// ---------------------------------------------------------------------------
 
 asio::awaitable<void> HttpServer::handle_connection(std::shared_ptr<asio::ip::tcp::socket> socket,
                                                     std::shared_ptr<ActiveConn> conn) {
@@ -405,10 +393,6 @@ asio::awaitable<void> HttpServer::handle_connection_impl(asio::ip::tcp::socket& 
     }
 }
 
-// ---------------------------------------------------------------------------
-// Route handlers
-// ---------------------------------------------------------------------------
-
 std::string HttpServer::make_sse_frame(const GeneratedToken& tok) {
     nlohmann::json j;
     if (tok.has_token) {
@@ -496,7 +480,6 @@ asio::awaitable<void> HttpServer::handle_chat(asio::ip::tcp::socket& socket, std
         co_return;
     }
 
-    // Extract messages → tokens
     std::vector<int32_t> prompt_tokens;
     bool tokenizer_failed = false;
     if (req_json.contains("messages") && req_json["messages"].is_array()) {
@@ -514,16 +497,13 @@ asio::awaitable<void> HttpServer::handle_chat(asio::ip::tcp::socket& socket, std
         }
     }
     if (tokenizer_failed) {
-        // Phase 4.1: treat tokenizer failure as 500 (simplified).
-        // Future: distinguish input encoding errors (400) from internal errors (500).
+        // Tokenizer errors map to 500.
         co_await write_response(socket, kInternalError);
         co_return;
     }
-    // Phase 4.1 demo fallback when no messages provided.
-    // Future: return 400 Bad Request instead.
+    // Demo fallback when no messages are provided.
     if (prompt_tokens.empty()) prompt_tokens = {1, 2, 3};
 
-    // Sampling params with type checking and validation.
     SamplingParams sampling;
     {
         auto s = safe_json_get(req_json, "max_tokens", sampling.max_tokens);
@@ -554,7 +534,6 @@ asio::awaitable<void> HttpServer::handle_chat(asio::ip::tcp::socket& socket, std
         }
     }
 
-    // Validate ranges.
     if (sampling.max_tokens < 0 || sampling.temperature < 0.0f || sampling.top_p <= 0.0f ||
         sampling.top_p > 1.0f || sampling.top_k < 0) {
         co_await write_response(socket, kBadRequest);
@@ -585,7 +564,6 @@ asio::awaitable<void> HttpServer::handle_chat(asio::ip::tcp::socket& socket, std
 
     scheduler_.submit(std::move(sreq));
 
-    // Send SSE headers
     std::string headers =
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: text/event-stream\r\n"
@@ -602,7 +580,6 @@ asio::awaitable<void> HttpServer::handle_chat(asio::ip::tcp::socket& socket, std
         }
     }
 
-    // Stream tokens
     while (true) {
         auto [recv_ec, result] = co_await channel->async_receive(as_tuple(deferred));
         if (recv_ec) {

@@ -27,7 +27,6 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     constexpr int hd = 64;
     const int block_size = kKVBlockSize;
 
-    // 1. Init GPU storage and pass to block manager
     auto backend_r = Backend::create(0);
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
@@ -40,7 +39,6 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     ASSERT_TRUE(init_r.has_value());
     EXPECT_EQ(mgr.num_free_blocks(), kMaxBlocks);
 
-    // 2. allocate_blocks
     int num_blocks = (kNumTokens + block_size - 1) / block_size;
     auto alloc = mgr.allocate_blocks(num_blocks);
     ASSERT_TRUE(alloc.has_value());
@@ -62,7 +60,6 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     cudaMalloc(&d_out_prefill, q_elems * sizeof(__nv_bfloat16));
     cudaMalloc(&d_out_ref, q_elems * sizeof(__nv_bfloat16));
 
-    // Random data
     std::vector<__nv_bfloat16> h(q_elems);
     for (int64_t i = 0; i < q_elems; ++i)
         h[i] = __float2bfloat16((static_cast<float>(rand()) / RAND_MAX - 0.5f) * 0.1f);
@@ -77,7 +74,6 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
         h[i] = __float2bfloat16((static_cast<float>(rand()) / RAND_MAX - 0.5f) * 0.1f);
     cudaMemcpy(d_v_new, h.data(), kv_new_elems * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
 
-    // Compute slot_mapping from allocated blocks
     std::vector<int32_t> slot_mapping(kNumTokens);
     for (int t = 0; t < kNumTokens; ++t) {
         int block_idx = t / block_size;
@@ -85,13 +81,11 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
         slot_mapping[t] = (*alloc)[block_idx] * block_size + pos_in_block;
     }
 
-    // Upload slot_mapping
     int32_t* d_slot_mapping;
     cudaMalloc(&d_slot_mapping, kNumTokens * sizeof(int32_t));
     cudaMemcpy(d_slot_mapping, slot_mapping.data(),
                kNumTokens * sizeof(int32_t), cudaMemcpyHostToDevice);
 
-    // 3. write_kv_cache for each layer (use layer 0 for this test)
     {
         auto r = launch_write_kv_cache(d_k_new, d_v_new,
                                        static_cast<__nv_bfloat16*>(mgr.k_cache(0)),
@@ -101,7 +95,6 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
         ASSERT_TRUE(r.has_value());
     }
 
-    // 4. Upload block_table and metadata for prefill
     std::vector<int32_t> h_query_start_loc = {0, kNumTokens};
     std::vector<int32_t> h_context_lens = {kNumTokens};
 
@@ -117,9 +110,7 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     cudaMemcpyAsync(d_block_table, (*alloc).data(),
                     num_blocks * sizeof(int32_t), cudaMemcpyHostToDevice, stream);
 
-    // 5. prefill_attention and compare with naive_attention
     {
-        // Paged prefill: reads K/V through block_table
         auto r = launch_prefill_attention(d_q,
                                           static_cast<const __nv_bfloat16*>(mgr.k_cache(0)),
                                           static_cast<const __nv_bfloat16*>(mgr.v_cache(0)),
@@ -135,7 +126,6 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
 
         cudaStreamSynchronize(stream);
 
-        // Compare bitwise
         std::vector<__nv_bfloat16> h_prefill(q_elems);
         std::vector<__nv_bfloat16> h_ref(q_elems);
         cudaMemcpy(h_prefill.data(), d_out_prefill, q_elems * sizeof(__nv_bfloat16),
@@ -151,7 +141,6 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
         EXPECT_LT(max_diff, 0.02f) << "prefill paged vs naive max diff: " << max_diff;
     }
 
-    // 6. decode_attention
     {
         // Two requests with different Q values
         int64_t decode_q_elems = static_cast<int64_t>(kDecodeBatch) * nq * hd;
@@ -187,7 +176,6 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
         cudaMemcpyAsync(d_dec_context_lens, h_dec_context_lens.data(),
                         kDecodeBatch * sizeof(int32_t), cudaMemcpyHostToDevice, stream);
 
-        // Paged decode
         auto r = launch_decode_attention(d_decode_q,
                                           static_cast<const __nv_bfloat16*>(mgr.k_cache(0)),
                                           static_cast<const __nv_bfloat16*>(mgr.v_cache(0)),
@@ -197,7 +185,6 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
         ASSERT_TRUE(r.has_value());
         cudaStreamSynchronize(stream);
 
-        // Verify output is finite and per-request outputs differ from zero
         std::vector<__nv_bfloat16> h_decode_out(decode_q_elems);
         cudaMemcpy(h_decode_out.data(), d_decode_out,
                    decode_q_elems * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost);
@@ -215,12 +202,10 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
         cudaFree(d_dec_block_table); cudaFree(d_dec_context_lens);
     }
 
-    // 7. release_blocks returns blocks to free list
     auto rel = mgr.release_blocks(*alloc);
     ASSERT_TRUE(rel.has_value());
     EXPECT_EQ(mgr.num_free_blocks(), kMaxBlocks);
 
-    // Double release should fail
     auto rel2 = mgr.release_blocks(*alloc);
     EXPECT_FALSE(rel2.has_value());
     EXPECT_EQ(rel2.error(), ErrorCode::KVBlockDoubleFree);

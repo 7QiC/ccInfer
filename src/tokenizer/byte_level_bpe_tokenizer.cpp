@@ -402,42 +402,13 @@ bool ByteLevelBpeTokenizer::try_match_special(std::string_view text, size_t pos,
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// Simplified byte-level BPE tokenizer — Phase 4.1 demo version.
-// NOT a HuggingFace-exact tokenizer pipeline.
-// ---------------------------------------------------------------------------
-//
-// Implemented:
-//   - GPT-2 byte→unicode mapping (build_byte_maps)
-//   - BPE merge restricted within pre-tokenizer segments
-//   - Special-token matching (only tokens from added_tokens with special=true)
-//   - Simplified pre-tokenizer (whitespace/newline boundary rules)
-//   - Decode (byte→unicode→UTF-8 via str_to_byte_)
-//
-// NOT implemented (required for strict HF token-id alignment):
-//   - Full pre_tokenizer regex from tokenizer.json (contractions, \p{L}/\p{N},
-//     punctuation grouping, the exact alternation order)
-//   - normalizer / decoder / post_processor pipeline stages
-//   - Added-token lstrip / rstrip / normalized semantics
-//
-// add_special_tokens is ignored (Phase 4.1 design):
-//   Qwen3 does not auto-add BOS/EOS with add_special_tokens=True.
-//   Mid-text special tokens (<|im_start|>, <|endoftext|>, etc.) are always
-//   recognised because they come from added_tokens with special=true.
-//   Vocab-only tokens like <s> / </s> that are NOT in added_tokens are
-//   NOT treated as special — they go through normal byte-encode + BPE.
-//
-// Current alignment vs Qwen3-0.6B HF tokenizer: 43/46 cases pass.
-// 3 known limitations (pre_tokenizer regex granularity):
-//   - C++ template syntax with angle brackets
-//   - Markdown code fences (```)
-//   - HTML-like tags with mixed alphanumeric + punctuation
-//
-// Suitable for: smoke tests, demo inference, decode round-trip.
-// NOT suitable as: production tokenizer or HF-exact token-id baseline.
+// Simplified byte-level BPE tokenizer, not HF-exact: GPT-2 byte map, BPE
+// within pre-tokenizer segments, and special tokens from added_tokens.
+// Known gaps are pre_tokenizer regex granularity (angle brackets, code
+// fences, HTML-like tags).
 Result<std::vector<int32_t>> ByteLevelBpeTokenizer::encode(std::string_view text,
                                                            bool add_special_tokens) const {
-    (void)add_special_tokens;  // Phase 4.1: not used (see above).
+    (void)add_special_tokens;  // Qwen3 does not auto-add BOS/EOS.
     if (vocab_.empty()) {
         return std::unexpected(ErrorCode::ModelLoadFailed);
     }

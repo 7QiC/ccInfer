@@ -35,10 +35,6 @@ Scheduler::Scheduler(asio::io_context& io, Executor& executor)
 // (would deadlock since do_work() runs on that thread and wait() blocks it).
 Scheduler::~Scheduler() = default;
 
-// ---------------------------------------------------------------------------
-// Thread-safe public API
-// ---------------------------------------------------------------------------
-
 void Scheduler::submit(SchedulerRequest req) {
     if (!running_) {
         send_event(req.sink, std::unexpected(ErrorCode::ServerShuttingDown));
@@ -54,7 +50,6 @@ void Scheduler::submit(SchedulerRequest req) {
 }
 
 void Scheduler::cancel(std::string request_id) {
-    // Safe no-op during/after shutdown — the lambda checks internal state.
     asio::post(io_, [this, request_id = std::move(request_id)] {
         cancel_on_scheduler_thread(request_id);
         wake_on_scheduler_thread();
@@ -64,8 +59,8 @@ void Scheduler::cancel(std::string request_id) {
 EngineCapacity Scheduler::capacity() const { return executor_.capacity(); }
 
 void Scheduler::start() {
-    // Phase 4.1: one-shot.  After shutdown, start() is a no-op to prevent
-    // accidentally re-launching do_work() on a partially-destroyed object.
+    // One-shot: after shutdown, start() is a no-op to prevent re-launching
+    // do_work() on a partially-destroyed object.
     std::lock_guard lock(shutdown_mutex_);
     if (shutdown_promise_) return;
     bool expected = false;
@@ -102,10 +97,6 @@ std::shared_future<void> Scheduler::shutdown_async() {
     return shutdown_future_;
 }
 
-// ---------------------------------------------------------------------------
-// Scheduler-thread-only helpers
-// ---------------------------------------------------------------------------
-
 void Scheduler::submit_on_scheduler_thread(SchedulerRequest req) {
     if (pending_or_creating_ids_.count(req.request_id) || by_request_id_.count(req.request_id)) {
         send_event(req.sink, std::unexpected(ErrorCode::InvalidArgument));
@@ -139,10 +130,6 @@ void Scheduler::complete_shutdown_on_scheduler_thread() {
         shutdown_promise_->set_value();
     }
 }
-
-// ---------------------------------------------------------------------------
-// send_event — post a token/event to the HTTP io_context via TokenSink
-// ---------------------------------------------------------------------------
 
 // send_event returns false only when sink.channel has already expired
 // synchronously.  A full channel is normal HTTP/SSE back-pressure, not a
@@ -198,10 +185,6 @@ bool Scheduler::send_error_event(StatePtr& state, ErrorCode err) {
     if (!sent) state->cancelled = true;
     return sent;
 }
-
-// ---------------------------------------------------------------------------
-// Main loop
-// ---------------------------------------------------------------------------
 
 asio::awaitable<void> Scheduler::do_work() {
     while (running_) {
@@ -282,10 +265,6 @@ asio::awaitable<void> Scheduler::do_work() {
 
     complete_shutdown_on_scheduler_thread();
 }
-
-// ---------------------------------------------------------------------------
-// Drain pending requests — create sequences, promote to active
-// ---------------------------------------------------------------------------
 
 asio::awaitable<void> Scheduler::drain_pending() {
     auto requests = std::move(pending_requests_);
@@ -373,10 +352,6 @@ asio::awaitable<void> Scheduler::drain_pending() {
     co_return;
 }
 
-// ---------------------------------------------------------------------------
-// Wait for work (idle)
-// ---------------------------------------------------------------------------
-
 asio::awaitable<void> Scheduler::wait_for_work() {
     if (!running_) co_return;
     if (!pending_requests_.empty()) co_return;
@@ -386,10 +361,6 @@ asio::awaitable<void> Scheduler::wait_for_work() {
     (void)ec;
 }
 
-// ---------------------------------------------------------------------------
-// Build multi-WorkItem batch
-// ---------------------------------------------------------------------------
-//
 // Mixed scheduling uses one compute budget per engine step. Decode items cost
 // one budget unit each; prefill items cost their chunk token count. Existing
 // decode and in-progress prefill work can continue, while new prefill admission
@@ -556,8 +527,8 @@ ScheduledBatch Scheduler::build_scheduled_batch() {
                 additional = total_blocks - cur_blocks;
             }
 
-            // Phase 4.1: shared sampling per batch.  Use first item's sampling;
-            // skip items with incompatible params (future: per-item sampling).
+            // Shared sampling per batch: use first item's sampling; skip
+            // items with incompatible params.
             if (sampling_set) {
                 if (state->sampling.temperature != batch.sampling.temperature ||
                     state->sampling.top_p != batch.sampling.top_p ||
@@ -614,10 +585,6 @@ void Scheduler::reorder_after_batch(const std::vector<SequenceId>& included) {
     active_order_ = std::move(keep);
 }
 
-// ---------------------------------------------------------------------------
-// Apply batch result
-// ---------------------------------------------------------------------------
-
 asio::awaitable<void> Scheduler::apply_and_push(const ScheduledBatch& batch,
                                                 const BatchResult& result) {
     if (result.batch_id != batch.batch_id || result.items.size() != batch.items.size()) {
@@ -663,7 +630,6 @@ asio::awaitable<void> Scheduler::apply_and_push(const ScheduledBatch& batch,
             int prompt_len = static_cast<int>(state->prompt_tokens.size());
             int remaining = prompt_len - state->prefill_cursor;
 
-            // Validate tokens_consumed matches the requested chunk.
             int expected_chunk_len = 0;
             std::visit([&](const auto& w) {
                 using T = std::decay_t<decltype(w)>;
@@ -747,10 +713,6 @@ asio::awaitable<void> Scheduler::apply_and_push(const ScheduledBatch& batch,
 
     co_return;
 }
-
-// ---------------------------------------------------------------------------
-// Cleanup
-// ---------------------------------------------------------------------------
 
 void Scheduler::filter_active_order() {
     std::deque<SequenceId> new_order;

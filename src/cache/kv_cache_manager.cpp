@@ -13,7 +13,7 @@
 
 namespace ccinfer {
 
-// ---- Lifecycle (complete types available here) ----
+// Lifecycle (complete types available here).
 
 KVCacheManager::KVCacheManager() = default;
 
@@ -23,7 +23,7 @@ KVCacheManager::~KVCacheManager() {
     lru_list_.clear();
 }
 
-// ---- Init ----
+// Init.
 
 Result<void> KVCacheManager::init(std::unique_ptr<KVCacheStorage> storage, int max_blocks,
                                   int block_size) {
@@ -54,7 +54,7 @@ Result<void> KVCacheManager::init(std::unique_ptr<KVCacheStorage> storage, int m
     return {};
 }
 
-// ---- Data pointers ----
+// Data pointers.
 
 void* KVCacheManager::k_cache(int layer) { return kv_storage_->k_layer(layer); }
 void* KVCacheManager::v_cache(int layer) { return kv_storage_->v_layer(layer); }
@@ -63,7 +63,7 @@ const void* KVCacheManager::v_cache(int layer) const { return kv_storage_->v_lay
 
 int KVCacheManager::max_slots() const { return kv_storage_->max_slots(); }
 
-// ---- Block allocation ----
+// Block allocation.
 
 Result<BlockTable> KVCacheManager::allocate_blocks(int num_blocks) {
     if (num_blocks <= 0) return std::unexpected(ErrorCode::InvalidArgument);

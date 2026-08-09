@@ -101,7 +101,7 @@ TEST_F(SampleKernelTest, ArgmaxWithTies) {
     logits_host[2] = 5.0f;  // tie with idx 0
     logits_host[3] = 1.0f;
 
-    std::vector<int32_t> indices_host = {0};  // single token at index 0
+    std::vector<int32_t> indices_host = {0};
     constexpr int num_tokens = 1;
 
     float* logits_d;
@@ -128,12 +128,12 @@ TEST_F(SampleKernelTest, ArgmaxWithTies) {
 
 TEST_F(SampleKernelTest, LargeVocab) {
     constexpr int batch_size = 1;
-    constexpr int vocab_size = 32000;  // realistic vocab
+    constexpr int vocab_size = 32000;
 
     std::vector<float> logits_host(vocab_size, -1.0f);
-    logits_host[12345] = 50.0f;  // max
+    logits_host[12345] = 50.0f;
 
-    std::vector<int32_t> indices_host = {0};  // single token at index 0
+    std::vector<int32_t> indices_host = {0};
     constexpr int num_tokens = 1;
 
     float* logits_d;

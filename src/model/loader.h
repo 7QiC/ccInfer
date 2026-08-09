@@ -81,7 +81,6 @@ private:
     std::unordered_map<std::string, TensorInfo> tensors_;
 };
 
-// Template implementation.
 template <typename T>
 Result<std::shared_ptr<Buffer>> WeightLoader::load(
     Backend& backend, const std::string& name,

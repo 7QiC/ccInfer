@@ -41,7 +41,6 @@ TEST(KVCacheStorageTest, LayerOffsetsAreCorrect) {
     EXPECT_EQ(k1 - k0, layer_bytes);
     EXPECT_EQ(k2 - k1, layer_bytes);
 
-    // Same for v_layers
     auto* v0 = static_cast<char*>(storage.v_layer(0));
     auto* v1 = static_cast<char*>(storage.v_layer(1));
     auto* v2 = static_cast<char*>(storage.v_layer(2));

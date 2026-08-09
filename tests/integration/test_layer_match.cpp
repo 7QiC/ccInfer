@@ -120,12 +120,10 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
     auto lm_head = loader_->load<__nv_bfloat16>(*backend_, "lm_head.weight", {V, D});
     ASSERT_TRUE(lm_head);
 
-    // Build rope cache
     auto rc = RopeCache::create(config_.max_seq_len_, hd, config_.rope_theta_, *backend_);
     ASSERT_TRUE(rc);
     auto& rope_cache = *rc;
 
-    // Position buffer
     auto pos_buf = alloc_buf(*backend_,static_cast<size_t>(T) * sizeof(int32_t));
     {
         std::vector<int32_t> pos_host(static_cast<size_t>(T));
@@ -133,14 +131,12 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
         cudaMemcpy(pos_buf->data(), pos_host.data(), T * sizeof(int32_t), cudaMemcpyHostToDevice);
     }
 
-    // Token ids → input embeds
     auto token_ids_dev = alloc_buf(*backend_,static_cast<size_t>(T) * sizeof(int32_t));
     cudaMemcpy(token_ids_dev->data(), tokens.data(), T * sizeof(int32_t), cudaMemcpyHostToDevice);
 
     auto input_embeds = alloc_buf(*backend_,static_cast<size_t>(T) * D * sizeof(__nv_bfloat16));
     ASSERT_TRUE(launch_embed(static_cast<__nv_bfloat16*>((*embed)->data()), static_cast<int32_t*>(token_ids_dev->data()), static_cast<__nv_bfloat16*>(input_embeds->data()), T, D, stream_));
 
-    // Work buffers
     auto hidden_a = alloc_buf(*backend_,static_cast<size_t>(T) * D * sizeof(__nv_bfloat16));
     auto hidden_b = alloc_buf(*backend_,static_cast<size_t>(T) * D * sizeof(__nv_bfloat16));
     auto normed = alloc_buf(*backend_,static_cast<size_t>(T) * D * sizeof(__nv_bfloat16));
@@ -153,7 +149,7 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
     auto up = alloc_buf(*backend_,static_cast<size_t>(T) * d_ff * sizeof(__nv_bfloat16));
     auto ffn_act = alloc_buf(*backend_,static_cast<size_t>(T) * d_ff * sizeof(__nv_bfloat16));
 
-    // ---- Paged KV cache setup (mirrors qwen3_model.cpp prefill path) ----
+    // Paged KV cache setup mirrors qwen3_model.cpp prefill path.
     const int max_blocks = std::max(1, (T + kKVBlockSize - 1) / kKVBlockSize);
     auto kv_mgr = std::make_unique<KVCacheManager>();
     {
@@ -165,7 +161,6 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
         ASSERT_TRUE(blocks.has_value());
     }
 
-    // Metadata buffers for paged attention
     std::vector<int32_t> slot_mapping_host(static_cast<size_t>(T));
     for (int i = 0; i < T; ++i)
         slot_mapping_host[static_cast<size_t>(i)] = i;  // sequential: block 0, slots 0..T-1
@@ -213,10 +208,8 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
     std::vector<float> host_hidden(static_cast<size_t>(T) * D);
     std::vector<__nv_bfloat16> host_bf16(static_cast<size_t>(T) * D);
 
-    // Save input embeddings (layer 0 input)
     dump_bf16_to_f32("embedding.bin", hidden, static_cast<size_t>(T) * D);
 
-    // Load per-layer weights
     for (int l = 0; l < n_layers; ++l) {
         bool is_first_layer = (l == 0);
         const std::string p = "model.layers." + std::to_string(l);
@@ -239,14 +232,12 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
         cudaMemcpy(static_cast<__nv_bfloat16*>(qkv_merged->data()) + q_elems, (*k_w)->data(), kv_elems * sizeof(__nv_bfloat16), cudaMemcpyDeviceToDevice);
         cudaMemcpy(static_cast<__nv_bfloat16*>(qkv_merged->data()) + q_elems + kv_elems, (*v_w)->data(), kv_elems * sizeof(__nv_bfloat16), cudaMemcpyDeviceToDevice);
 
-        // QK norm weights
         std::shared_ptr<Buffer> q_norm_w, k_norm_w;
         auto qn = loader_->load<__nv_bfloat16>(*backend_, p + ".self_attn.q_norm.weight", {hd});
         if (qn) q_norm_w = std::move(*qn);
         auto kn = loader_->load<__nv_bfloat16>(*backend_, p + ".self_attn.k_norm.weight", {hd});
         if (kn) k_norm_w = std::move(*kn);
 
-        // ---- Attention block ----
         ASSERT_TRUE(backend_->rms_norm(ops::DType::kBFloat16, RmsNormParams{
             .input_ = hidden, .weight_ = static_cast<__nv_bfloat16*>((*rms_attn)->data()),
             .output_ = static_cast<__nv_bfloat16*>(normed->data()),
@@ -343,7 +334,6 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
         if (is_first_layer)
             dump_bf16_to_f32("l0_attn_residual.bin", hidden, static_cast<size_t>(T) * D);
 
-        // ---- FFN block ----
         ASSERT_TRUE(backend_->rms_norm(ops::DType::kBFloat16, RmsNormParams{
             .input_ = hidden, .weight_ = static_cast<__nv_bfloat16*>((*rms_ffn)->data()),
             .output_ = static_cast<__nv_bfloat16*>(normed->data()),
@@ -391,7 +381,6 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
         }));
         std::swap(hidden, next_hidden);
 
-        // Dump after this layer
         cudaDeviceSynchronize();
         cudaMemcpy(host_bf16.data(), hidden, T * D * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost);
         for (int i = 0; i < T * D; ++i)
@@ -400,7 +389,6 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
                  host_hidden.data(), static_cast<size_t>(T) * D);
     }
 
-    // Final norm
     ASSERT_TRUE(backend_->rms_norm(ops::DType::kBFloat16, RmsNormParams{
         .input_ = hidden, .weight_ = static_cast<__nv_bfloat16*>((*rms_final)->data()),
         .output_ = static_cast<__nv_bfloat16*>(normed->data()),

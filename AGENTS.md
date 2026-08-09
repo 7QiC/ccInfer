@@ -23,6 +23,11 @@ Configure with `-DBUILD_SERVER=ON` to build the HTTP server (`BUILD_TESTS` defau
 
 C++23 with the `ccinfer` namespace. `.clang-format` enforces Google base style: 100-column limit, 4-space indentation, no tabs; run `clang-format` on changed files before committing. Classes/enums use PascalCase; functions, variables, and files use snake_case; members end with an underscore (e.g. `int count_;`). Parameter semantics: read-only parameters use `const T&`; parameters that are written (outputs/in-place) take a pointer `T*`, never a reference. Headers use `.h` with `#pragma once` and sorted includes (C std → C++ std → third-party → project). Errors use `Result<T> = std::expected<T, ErrorCode>`; never throw in hot paths. Device memory is owned by the framework-side `Buffer` (`backend/buffer.h`).
 
+## Comment Policy
+
+- No unnecessary comments: add concise comments only where intent or constraints are not obvious from the code. Never restate code, add line-by-line noise, or copy conversational decisions into code comments.
+- Prefer self-documenting code: naming and structure carry meaning; comments explain "why", not "what".
+
 ## Testing Guidelines
 
 Tests use GTest, one test file per module, named `test_<module>.cpp` (`.cu` for kernel tests). Unit tests should run without a GPU; kernel tests must synchronize and assert CUDA errors. Run everything with `ctest --test-dir build`, or a single suite with `ctest --test-dir build -R test_scheduler`. Integration tests require a local Qwen3-0.6B model. Never weaken assertions or relax tolerances to make a failing test pass — fix the root cause.

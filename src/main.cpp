@@ -38,7 +38,6 @@ void print_usage(const char* argv0) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
-    // Parse args
     int port = 8080;
     std::string model_path;
     for (int i = 1; i < argc; ++i) {
@@ -76,7 +75,6 @@ int main(int argc, char* argv[]) {
     auto http_guard = boost::asio::make_work_guard(http_io);
     auto scheduler_guard = boost::asio::make_work_guard(scheduler_io);
 
-    // Executor (runtime layer)
     auto executor = ccinfer::Executor::create(scheduler_io);
     if (auto r = executor->init(model_path); !r) {
         std::cerr << "Executor init failed: " << ccinfer::error_message(r.error()) << std::endl;
@@ -114,11 +112,9 @@ int main(int argc, char* argv[]) {
         if (!ec) shutdown_flag.store(true);
     });
 
-    // Threads
     std::thread http_thread([&http_io] { http_io.run(); });
     std::thread sched_thread([&scheduler_io] { scheduler_io.run(); });
 
-    // Wait for shutdown signal
     while (!shutdown_flag.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }

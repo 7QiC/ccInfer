@@ -4,7 +4,6 @@
 
 namespace ccinfer {
 
-// -----------------------------------------------------------------------------
 // GEMM
 //
 // Convention for current CUDA backend:
@@ -15,7 +14,6 @@ namespace ccinfer {
 // Keep this struct as a thin backend parameter carrier.
 //
 // lda_, ldb_, ldc_ must be > 0.
-// -----------------------------------------------------------------------------
 struct GemmParams {
     const void* a_ = nullptr;
     const void* b_ = nullptr;
@@ -33,7 +31,6 @@ struct GemmParams {
     bool trans_b_ = false;
 };
 
-// -----------------------------------------------------------------------------
 // RMSNorm
 //
 // Layout:
@@ -42,7 +39,6 @@ struct GemmParams {
 //   output: [rows, dim]
 //
 // eps_ must be > 0.
-// -----------------------------------------------------------------------------
 struct RmsNormParams {
     const void* input_ = nullptr;
     const void* weight_ = nullptr;
@@ -53,7 +49,6 @@ struct RmsNormParams {
     float eps_ = 1e-6f;
 };
 
-// -----------------------------------------------------------------------------
 // RoPE
 //
 // Canonical activation layout:
@@ -64,7 +59,6 @@ struct RmsNormParams {
 // rope_cache:
 //   [rope_cache_max_position_, rotary_dim / 2]
 //   each element is float2{cos, sin}
-// -----------------------------------------------------------------------------
 struct RopeParams {
     void* q_ = nullptr;
     void* k_ = nullptr;
@@ -80,7 +74,6 @@ struct RopeParams {
     int rope_cache_max_position_ = 0;  // RoPE cache capacity; valid pos < this
 };
 
-// -----------------------------------------------------------------------------
 // SiLU-mul
 //
 // Layout:
@@ -90,7 +83,6 @@ struct RopeParams {
 //
 // Computes:
 //   output[i] = silu(gate[i]) * up[i]
-// -----------------------------------------------------------------------------
 struct SiluMulParams {
     const void* gate_ = nullptr;
     const void* up_ = nullptr;
@@ -99,7 +91,6 @@ struct SiluMulParams {
     int64_t n_ = 0;
 };
 
-// -----------------------------------------------------------------------------
 // Naive attention — single-sequence causal self-attention baseline.
 //
 // HF correctness reference.  Does NOT use KV cache; Q, K, V are all the same
@@ -115,7 +106,6 @@ struct SiluMulParams {
 // GQA mapping:
 //   kv_head = q_head / (num_q_heads / num_kv_heads)
 // This is NOT the final high-performance attention backend.
-// -----------------------------------------------------------------------------
 struct NaiveAttnParams {
     const void* q_ = nullptr;
     const void* k_ = nullptr;
@@ -128,7 +118,6 @@ struct NaiveAttnParams {
     int head_dim_ = 0;
 };
 
-// -----------------------------------------------------------------------------
 // Prefill attention — FlashAttention-style tiling over paged KV cache.
 //
 // Q layout:  [total_tokens, num_q_heads, head_dim]
@@ -165,7 +154,6 @@ struct PrefillAttnParams {
     int cache_block_size_ = 0;
 };
 
-// -----------------------------------------------------------------------------
 // Decode attention — PagedAttention with online softmax.
 //
 // Q layout:  [batch_size, num_q_heads, head_dim]  (1 token per request)
@@ -210,18 +198,14 @@ struct WriteKVCacheParams {
     int max_slots_ = 0;
 };
 
-// -----------------------------------------------------------------------------
 // Element-wise add (residual connection)
-// -----------------------------------------------------------------------------
 struct ElementAddParams {
     void* dst_ = nullptr;
     const void* src_ = nullptr;
     int64_t n_ = 0;
 };
 
-// -----------------------------------------------------------------------------
 // Split fused QKV output into separate Q, K, V buffers
-// -----------------------------------------------------------------------------
 struct SplitQkvParams {
     const void* qkv_ = nullptr;
     void* q_ = nullptr;
@@ -233,9 +217,7 @@ struct SplitQkvParams {
     int head_dim_ = 0;
 };
 
-// -----------------------------------------------------------------------------
 // Embedding — GPU gather from embedding table
-// -----------------------------------------------------------------------------
 struct EmbedParams {
     const void* embed_table_ = nullptr;   // [vocab, d_model] bf16
     const int32_t* token_ids_ = nullptr;  // [num_tokens]
@@ -244,7 +226,6 @@ struct EmbedParams {
     int d_model_ = 0;
 };
 
-// -----------------------------------------------------------------------------
 // Sampling — backend-level.  Converted from common::SamplingParams.
 //
 // logits_:      [num_tokens, vocab] FP32
@@ -252,7 +233,6 @@ struct EmbedParams {
 // tokens_out_:     [batch_size]
 //
 // Constraints: top_k_ in [0, vocab_size_], top_p_ in (0, 1], temperature_ >= 0.
-// -----------------------------------------------------------------------------
 struct SampleParams {
     const float* logits_ = nullptr;            // [num_tokens, vocab]
     const int32_t* logits_indices_ = nullptr;  // [batch_size]

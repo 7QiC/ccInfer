@@ -14,7 +14,7 @@
 namespace ccinfer {
 namespace {
 
-// Correctness-first tiled paged prefill attention with online softmax.
+// Tiled paged prefill attention with online softmax.
 //
 // Layout assumptions:
 //   q:       [total_query_tokens][num_q_heads][head_dim]
@@ -31,13 +31,6 @@ namespace {
 //   context_lens[req] = prefix_len + query_len.
 //   For query token i in this request, visible context length is:
 //      prefix_len + i + 1
-//
-// This is not FlashAttention-2. It is a maintainable baseline that uses:
-//   - K tiling
-//   - online softmax
-//   - no full-score materialization
-//   - paged KV cache addressing
-//   - causal prefill masking
 
 template <int kNumThreads, int kTileTokens>
 __global__ void prefill_attention_kernel(
@@ -74,9 +67,7 @@ __global__ void prefill_attention_kernel(
     const std::size_t offsets_offset = align_up(score_offset + scores_bytes, alignof(int64_t));
     int64_t* kv_offsets = reinterpret_cast<int64_t*>(smem_raw + offsets_offset);
 
-    // Find request id for this global query token.
-    // This is O(batch_size), acceptable for a baseline.
-    // Later optimization: precompute query_to_request[total_query_tokens].
+    // O(batch_size) request lookup per query token; acceptable for baseline.
     int req_idx = 0;
     while (req_idx + 1 < batch_size && query_start_loc[req_idx + 1] <= global_query_idx) {
         ++req_idx;
@@ -146,7 +137,6 @@ __global__ void prefill_attention_kernel(
         const int remaining = effective_context_len - tile_start;
         const int tile_len = remaining < kTileTokens ? remaining : kTileTokens;
 
-        // Load K tile to shared memory.
         const int tile_elems = tile_len * head_dim;
         for (int linear = tid; linear < tile_elems; linear += kNumThreads) {
             const int tile_i = linear / head_dim;
@@ -165,7 +155,6 @@ __global__ void prefill_attention_kernel(
         }
         __syncthreads();
 
-        // Compute scaled QK scores for this tile.
         for (int tile_i = 0; tile_i < tile_len; ++tile_i) {
             const bool valid = kv_offsets[tile_i] >= 0;
 
@@ -187,7 +176,6 @@ __global__ void prefill_attention_kernel(
             __syncthreads();
         }
 
-        // Compute tile max.
         float local_tile_max = -FLT_MAX;
         for (int i = tid; i < tile_len; i += kNumThreads) {
             local_tile_max = fmaxf(local_tile_max, scores[i]);
@@ -204,7 +192,6 @@ __global__ void prefill_attention_kernel(
         const float new_m = fmaxf(m, tile_max);
         const float alpha = (m == -FLT_MAX) ? 0.0f : expf(m - new_m);
 
-        // Compute tile softmax denominator under new_m.
         float local_tile_l = 0.0f;
         for (int i = tid; i < tile_len; i += kNumThreads) {
             local_tile_l += expf(scores[i] - new_m);
@@ -212,7 +199,6 @@ __global__ void prefill_attention_kernel(
 
         const float tile_l = block_reduce_sum<kNumThreads>(local_tile_l);
 
-        // Compute tile contribution to the output dimension assigned to this thread.
         float tile_acc = 0.0f;
 
         if (has_output_dim) {
@@ -252,8 +238,7 @@ Result<void> launch_prefill_attention(const __nv_bfloat16* q, const __nv_bfloat1
     constexpr int kNumThreads = 256;
     constexpr int kTileTokens = 64;
 
-    // This implementation maps one output dim to one CUDA thread.
-    // Keep this explicit. For head_dim > 256, use a different kernel.
+    // One output dim per thread; head_dim > kNumThreads needs a different kernel.
     if (head_dim > kNumThreads) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
