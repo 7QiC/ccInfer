@@ -21,7 +21,7 @@ import sys
 import time
 import threading
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, FIRST_COMPLETED, wait
 from datetime import datetime
 from typing import Optional
 
@@ -29,7 +29,15 @@ import requests
 
 from harness import ServerHarness
 from metrics import RequestMetrics, BenchmarkResult, poll_gpu_stats
-from workload import full_workload_matrix, generate_prompt, get_tokenizer, quick_workload_matrix
+from workload import (
+    ablation_workload_matrix,
+    full_workload_matrix,
+    generate_prompt,
+    generate_prefix_prompt_exact,
+    get_tokenizer,
+    prefix_cache_workload_matrix,
+    quick_workload_matrix,
+)
 
 
 BENCHMARK_CONFIGS = {
@@ -40,6 +48,7 @@ BENCHMARK_CONFIGS = {
     "chunk_256": {"server_args": ["--prefill-chunk-size", "256"], "admission": "continuous"},
     "chunk_512": {"server_args": ["--prefill-chunk-size", "512"], "admission": "continuous"},
     "chunk_1024": {"server_args": ["--prefill-chunk-size", "1024"], "admission": "continuous"},
+    "prefix_cache": {"server_args": [], "admission": "continuous"},
 }
 
 
@@ -181,20 +190,37 @@ def run_workload(harness: ServerHarness, prompts: list[str], input_tokens: int, 
         prompt_cursor += 1
         return prompt
 
-    def run_one_batch():
+    def run_batch_static():
         with ThreadPoolExecutor(max_workers=concurrency) as executor:
-            if admission == "static":
-                futures = submit_group(executor, concurrency)
-                for f in as_completed(futures):
+            futures = submit_group(executor, concurrency)
+            for f in as_completed(futures):
+                all_metrics.append(f.result())
+
+    def run_rolling(total_requests: int):
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            futures = set()
+            submitted = 0
+            for _ in range(min(concurrency, total_requests)):
+                futures.add(executor.submit(
+                    chat_completion_timed, harness.base_url, next_prompt(),
+                    input_tokens, max_tokens))
+                submitted += 1
+            while futures:
+                done, futures = wait(futures, return_when=FIRST_COMPLETED)
+                for f in done:
                     all_metrics.append(f.result())
-            else:
-                futures = submit_group(executor, concurrency)
-                for f in as_completed(futures):
-                    all_metrics.append(f.result())
+                    if submitted < total_requests:
+                        futures.add(executor.submit(
+                            chat_completion_timed, harness.base_url, next_prompt(),
+                            input_tokens, max_tokens))
+                        submitted += 1
 
     def run_batches(batch_count: int):
-        for _ in range(batch_count):
-            run_one_batch()
+        if admission == "static":
+            for _ in range(batch_count):
+                run_batch_static()
+        else:
+            run_rolling(batch_count * concurrency)
 
     # Warmup
     if warmup > 0:
@@ -284,6 +310,8 @@ def main():
                         help="Quick smoke test with reduced workloads")
     parser.add_argument("--config", choices=[*BENCHMARK_CONFIGS.keys(), "all"], default="all",
                         help="Server config to benchmark")
+    parser.add_argument("--matrix", choices=["full", "ablation", "prefix", "quick"],
+                        default="full", help="Workload matrix to run")
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--measured", type=int, default=5)
     parser.add_argument("--restart-each-workload", action="store_true",
@@ -300,7 +328,15 @@ def main():
     print("Loading tokenizer...")
     tokenizer = get_tokenizer(str(model_path))
 
-    workloads = quick_workload_matrix() if args.quick else full_workload_matrix()
+    matrix = "quick" if args.quick else args.matrix
+    if matrix == "full":
+        workloads = full_workload_matrix()
+    elif matrix == "ablation":
+        workloads = ablation_workload_matrix()
+    elif matrix == "prefix":
+        workloads = prefix_cache_workload_matrix()
+    else:
+        workloads = quick_workload_matrix()
     config_names = list(BENCHMARK_CONFIGS) if args.config == "all" else [args.config]
 
     print(f"Model: {model_path}")
@@ -329,21 +365,36 @@ def main():
             for i, wl in enumerate(workloads):
                 concurrency = wl["concurrency"]
                 prompt_count = (args.warmup + args.measured) * concurrency
-                prompts = [
-                    generate_prompt(wl["prompt_len"], tokenizer,
-                                    variant=i * prompt_count + j)
-                    for j in range(prompt_count)
-                ]
-                token_count = len(tokenizer.encode(prompts[0], add_special_tokens=False))
+                if matrix == "prefix":
+                    prompts = [
+                        generate_prefix_prompt_exact(
+                            wl["prefix_len"], wl["suffix_len"], tokenizer,
+                            variant=j)
+                        for j in range(prompt_count)
+                    ]
+                    token_count = wl["prefix_len"] + wl["suffix_len"]
+                else:
+                    prompts = [
+                        generate_prompt(wl["prompt_len"], tokenizer,
+                                        variant=i * prompt_count + j)
+                        for j in range(prompt_count)
+                    ]
+                    token_count = len(tokenizer.encode(prompts[0], add_special_tokens=False))
 
-                if any(len(tokenizer.encode(p, add_special_tokens=False)) != wl["prompt_len"]
+                expected_tokens = token_count if matrix == "prefix" else wl["prompt_len"]
+                if any(len(tokenizer.encode(p, add_special_tokens=False)) != expected_tokens
                        for p in prompts):
                     raise RuntimeError(
-                        f"prompt generator returned non-{wl['prompt_len']} token prompt"
+                        f"prompt generator returned non-{expected_tokens} token prompt"
                     )
 
-                print(f"[{config_name} {i+1}/{len(workloads)}] prompt_len={wl['prompt_len']}"
-                      f", output_len={wl['output_len']}, concurrency={concurrency}")
+                if matrix == "prefix":
+                    shape_desc = (f"prefix_len={wl['prefix_len']}, "
+                                  f"suffix_len={wl['suffix_len']}")
+                else:
+                    shape_desc = f"prompt_len={wl['prompt_len']}"
+                print(f"[{config_name} {i+1}/{len(workloads)}] {shape_desc}, "
+                      f"output_len={wl['output_len']}, concurrency={concurrency}")
 
                 server = shared_server
                 if server is None:
@@ -355,11 +406,15 @@ def main():
                 try:
                     result = run_workload(
                         server, prompts, token_count, wl["output_len"], concurrency,
-                        warmup=args.warmup, measured=args.measured, admission=admission,
+                        warmup=0 if matrix == "prefix" else args.warmup,
+                        measured=args.measured, admission=admission,
                     )
                     result.config["config"] = config_name
                     result.config["warmup_batches"] = args.warmup
                     result.config["measured_batches"] = args.measured
+                    if matrix == "prefix":
+                        result.config["prefix_len"] = wl["prefix_len"]
+                        result.config["suffix_len"] = wl["suffix_len"]
 
                     summary = result.summary()
                     summary_with_config = {"config": config_name, **result.config, **summary}

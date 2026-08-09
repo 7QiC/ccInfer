@@ -56,12 +56,77 @@ def generate_prompt(target_tokens: int, tokenizer: Optional[AutoTokenizer] = Non
     return generate_prompt_exact(target_tokens, tokenizer, variant=variant)
 
 
+def generate_prefix_prompt_exact(prefix_tokens: int, suffix_tokens: int,
+                                 tokenizer: AutoTokenizer, variant: int = 0) -> str:
+    """Generate a prompt with a fixed shared prefix and a variant suffix.
+
+    Requests with the same (prefix_tokens, variant group) share the exact same
+    prefix ids, so the second and later requests should hit the prefix cache.
+    The variant markers are placed inside the suffix, keeping the prefix
+    byte-identical across requests.
+    """
+    if prefix_tokens <= 0 or suffix_tokens < 2:
+        raise ValueError("prefix_tokens must be positive and suffix_tokens >= 2")
+
+    filler = _SINGLE_TOKEN_MARKERS[0]
+    hi = (variant // len(_SINGLE_TOKEN_MARKERS)) % len(_SINGLE_TOKEN_MARKERS)
+    lo = variant % len(_SINGLE_TOKEN_MARKERS)
+    markers = _SINGLE_TOKEN_MARKERS[hi] + _SINGLE_TOKEN_MARKERS[lo]
+    raw = filler * prefix_tokens + markers + filler * max(suffix_tokens - 2, 0)
+    ids = tokenizer.encode(raw, add_special_tokens=False)
+    if len(ids) < prefix_tokens + suffix_tokens:
+        raise RuntimeError(
+            f"prefix filler produced {len(ids)} tokens, expected at least "
+            f"{prefix_tokens + suffix_tokens}"
+        )
+    ids = ids[:prefix_tokens + suffix_tokens]
+    text = tokenizer.decode(ids, skip_special_tokens=True)
+    re_ids = tokenizer.encode(text, add_special_tokens=False)
+    if len(re_ids) != prefix_tokens + suffix_tokens:
+        raise RuntimeError(
+            f"prefix prompt round-trip mismatch: {len(re_ids)} tokens != "
+            f"{prefix_tokens + suffix_tokens}"
+        )
+    return text
+
+
 def full_workload_matrix() -> list[dict]:
     return [
         {"prompt_len": prompt_len, "output_len": output_len, "concurrency": concurrency}
         for prompt_len in (32, 128, 512)
         for output_len in (32, 128, 256)
         for concurrency in (1, 2, 4, 8, 16, 32)
+    ]
+
+
+def ablation_workload_matrix() -> list[dict]:
+    """Reduced Phase 8 matrix: stable/boundary concurrency per shape."""
+    return [
+        {"prompt_len": 32, "output_len": 32, "concurrency": 1},
+        {"prompt_len": 32, "output_len": 32, "concurrency": 4},
+        {"prompt_len": 32, "output_len": 32, "concurrency": 8},
+        {"prompt_len": 32, "output_len": 128, "concurrency": 1},
+        {"prompt_len": 32, "output_len": 128, "concurrency": 4},
+        {"prompt_len": 32, "output_len": 128, "concurrency": 8},
+        {"prompt_len": 128, "output_len": 32, "concurrency": 1},
+        {"prompt_len": 128, "output_len": 32, "concurrency": 4},
+        {"prompt_len": 128, "output_len": 32, "concurrency": 8},
+        {"prompt_len": 128, "output_len": 128, "concurrency": 1},
+        {"prompt_len": 128, "output_len": 128, "concurrency": 4},
+        {"prompt_len": 128, "output_len": 128, "concurrency": 8},
+        {"prompt_len": 512, "output_len": 32, "concurrency": 1},
+        {"prompt_len": 512, "output_len": 32, "concurrency": 2},
+        {"prompt_len": 512, "output_len": 32, "concurrency": 4},
+    ]
+
+
+def prefix_cache_workload_matrix() -> list[dict]:
+    """Shared-prefix groups: cold first request, warm followers."""
+    return [
+        {"prefix_len": 128, "suffix_len": 32, "output_len": 32, "concurrency": 1},
+        {"prefix_len": 128, "suffix_len": 128, "output_len": 32, "concurrency": 1},
+        {"prefix_len": 512, "suffix_len": 32, "output_len": 32, "concurrency": 1},
+        {"prefix_len": 128, "suffix_len": 32, "output_len": 32, "concurrency": 8},
     ]
 
 
