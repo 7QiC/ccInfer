@@ -3,19 +3,18 @@
 
 #include <vector>
 
-#include "backend/cuda/cuda_backend.h"
-#include "backend/device_buffer.h"
+#include "backend/backend.h"
 
 using namespace ccinfer;
 
-TEST(DeviceBufferTest, DefaultConstruction) {
-    std::unique_ptr<DeviceBuffer> buf;
+TEST(BufferTest, DefaultConstruction) {
+    std::shared_ptr<Buffer> buf;
     EXPECT_EQ(buf.get(), nullptr);
     EXPECT_TRUE(!buf);
 }
 
-TEST(DeviceBufferTest, AllocateAndZero) {
-    auto backend_r = CudaBackend::create(0);
+TEST(BufferTest, AllocateAndZero) {
+    auto backend_r = Backend::create(0);
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
     auto buf_r = backend.allocate_buffer(1024 * sizeof(float));
@@ -33,8 +32,8 @@ TEST(DeviceBufferTest, AllocateAndZero) {
     }
 }
 
-TEST(DeviceBufferTest, MoveConstruction) {
-    auto backend_r = CudaBackend::create(0);
+TEST(BufferTest, MoveConstruction) {
+    auto backend_r = Backend::create(0);
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
     auto a_r = backend.allocate_buffer(512 * sizeof(float));
@@ -49,8 +48,8 @@ TEST(DeviceBufferTest, MoveConstruction) {
     EXPECT_EQ(b->bytes(), 512 * sizeof(float));
 }
 
-TEST(DeviceBufferTest, MoveAssignment) {
-    auto backend_r = CudaBackend::create(0);
+TEST(BufferTest, MoveAssignment) {
+    auto backend_r = Backend::create(0);
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
     auto a_r = backend.allocate_buffer(256 * sizeof(float));

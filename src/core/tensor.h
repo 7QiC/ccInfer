@@ -6,19 +6,19 @@
 #include <cstdint>
 #include <initializer_list>
 
-#include "core/dtype.h"
+#include "ops/ops.h"
 
 namespace ccinfer {
 
 template <int MaxRank = 5>
 struct Tensor {
     void* data_ = nullptr;
-    DType dtype_ = DType::kFloat32;
+    ops::DType dtype_ = ops::DType::kFloat32;
     int rank_ = 0;
     std::array<int64_t, MaxRank> shape_{};
     std::array<int64_t, MaxRank> stride_{};
 
-    static Tensor make(void* data, DType dtype, std::initializer_list<int64_t> shape) {
+    static Tensor make(void* data, ops::DType dtype, std::initializer_list<int64_t> shape) {
         assert(static_cast<int>(shape.size()) <= MaxRank);
         Tensor t;
         t.data_ = data;
@@ -41,7 +41,7 @@ struct Tensor {
     }
 
     [[nodiscard]] size_t nbytes() const noexcept {
-        return static_cast<size_t>(numel()) * dtype_size(dtype_);
+        return static_cast<size_t>(numel()) * ops::dtype_size(dtype_);
     }
 
     [[nodiscard]] bool is_contiguous() const noexcept {
@@ -59,7 +59,8 @@ struct Tensor {
 
         Tensor t = *this;
         t.shape_[dim] = end - start;
-        t.data_ = static_cast<char*>(t.data_) + start * stride_[dim] * dtype_size(dtype_);
+        t.data_ =
+            static_cast<char*>(t.data_) + start * stride_[dim] * ops::dtype_size(dtype_);
         return t;
     }
 
@@ -68,7 +69,7 @@ struct Tensor {
         assert(idx >= 0 && idx < shape_[dim]);
 
         Tensor t = *this;
-        t.data_ = static_cast<char*>(t.data_) + idx * stride_[dim] * dtype_size(dtype_);
+        t.data_ = static_cast<char*>(t.data_) + idx * stride_[dim] * ops::dtype_size(dtype_);
         for (int i = dim; i < t.rank_ - 1; i++) {
             t.shape_[i] = t.shape_[i + 1];
             t.stride_[i] = t.stride_[i + 1];

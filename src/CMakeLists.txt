@@ -1,6 +1,5 @@
 add_library(engine STATIC
-    backend/cuda/cuda_backend.cpp
-    backend/cuda/cuda_buffer.cpp
+    backend/cuda/backend_cuda.cpp
     executor/single_device_executor.cpp
     worker/worker.cpp
     worker/batch_translator.cpp
@@ -36,6 +35,7 @@ target_compile_options(engine PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-std
 
 target_link_libraries(engine
     PUBLIC
+        ccop::ccop
         nlohmann_json::nlohmann_json
         fmt::fmt
         spdlog::spdlog

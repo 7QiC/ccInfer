@@ -5,7 +5,7 @@
 #include <cmath>
 #include <vector>
 
-#include "backend/cuda/cuda_backend.h"
+#include "backend/backend.h"
 #include "kernel/cuda_kernels.h"
 #include "model/rope/rope_cache.h"
 
@@ -159,7 +159,7 @@ TEST_F(RopeTest, GQA) {
 }
 
 TEST_F(RopeTest, RopeCacheClass) {
-    auto backend_r = CudaBackend::create(0);
+    auto backend_r = Backend::create(0);
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
     auto cache_result = RopeCache::create(16, 32, 10000.0f, backend);

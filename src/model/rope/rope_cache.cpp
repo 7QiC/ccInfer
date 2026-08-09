@@ -7,7 +7,7 @@
 namespace ccinfer {
 
 Result<RopeCache> RopeCache::create(int max_position, int rotary_dim, float rope_theta,
-                                    DefaultBackend& backend) {
+                                    Backend& backend) {
     if (max_position <= 0 || rotary_dim <= 0 || rotary_dim % 2 != 0) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }

@@ -16,7 +16,7 @@
 #include "base/channel.h"
 #include "base/result.h"
 #include "base/types.h"
-#include "backend/default_backend.h"
+#include "backend/backend.h"
 #include "base/execution.h"
 
 namespace ccinfer {
@@ -104,7 +104,7 @@ private:
     bool initialized_ = false;
 
     // --- Device resources protected by resource_mutex_ ---
-    std::unique_ptr<DefaultBackend> backend_;
+    std::unique_ptr<Backend> backend_;
     std::unique_ptr<Model> model_;
     std::unique_ptr<KVCacheManager> kv_mgr_;
 };

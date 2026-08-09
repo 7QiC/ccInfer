@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <cuda_bf16.h>
+#include <cuda_runtime.h>
+
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -9,9 +12,8 @@
 #include <vector>
 
 #include "backend/backend.h"
-#include "backend/cuda/cuda_backend.h"
+#include "backend/backend.h"
 #include "backend/cuda/cuda_utils.h"
-#include "backend/device_buffer.h"
 #include "cache/block.h"
 #include "cache/kv_cache_manager.h"
 #include "cache/kv_cache_storage.h"
@@ -27,7 +29,7 @@ using namespace ccinfer;
 namespace {
 
 template <typename B>
-std::unique_ptr<DeviceBuffer> alloc_buf(B& backend, size_t bytes) {
+std::shared_ptr<Buffer> alloc_buf(B& backend, size_t bytes) {
     auto r = backend.allocate_buffer(bytes);
     assert(r.has_value());
     return std::move(*r);
@@ -63,7 +65,7 @@ protected:
     void SetUp() override {
         if (!model_available()) GTEST_SKIP() << "CCINFER_TEST_MODEL_DIR not set";
         cudaStreamCreate(&stream_);
-        auto b = CudaBackend::create(0);
+        auto b = Backend::create(0);
         ASSERT_TRUE(b.has_value());
         backend_ = std::move(*b);
         dir_ = model_dir();
@@ -89,7 +91,7 @@ protected:
     ModelConfig config_;
     ByteLevelBpeTokenizer tokenizer_;
     std::unique_ptr<WeightLoader> loader_;
-    std::unique_ptr<CudaBackend> backend_;
+    std::unique_ptr<Backend> backend_;
     cudaStream_t stream_{};
 };
 
@@ -238,14 +240,14 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
         cudaMemcpy(static_cast<__nv_bfloat16*>(qkv_merged->data()) + q_elems + kv_elems, (*v_w)->data(), kv_elems * sizeof(__nv_bfloat16), cudaMemcpyDeviceToDevice);
 
         // QK norm weights
-        std::unique_ptr<DeviceBuffer> q_norm_w, k_norm_w;
+        std::shared_ptr<Buffer> q_norm_w, k_norm_w;
         auto qn = loader_->load<__nv_bfloat16>(*backend_, p + ".self_attn.q_norm.weight", {hd});
         if (qn) q_norm_w = std::move(*qn);
         auto kn = loader_->load<__nv_bfloat16>(*backend_, p + ".self_attn.k_norm.weight", {hd});
         if (kn) k_norm_w = std::move(*kn);
 
         // ---- Attention block ----
-        ASSERT_TRUE(backend_->template rms_norm<__nv_bfloat16>(RmsNormParams{
+        ASSERT_TRUE(backend_->rms_norm(ops::DType::kBFloat16, RmsNormParams{
             .input_ = hidden, .weight_ = static_cast<__nv_bfloat16*>((*rms_attn)->data()),
             .output_ = static_cast<__nv_bfloat16*>(normed->data()),
             .rows_ = T, .dim_ = D, .eps_ = eps,
@@ -253,14 +255,14 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
         if (is_first_layer)
             dump_bf16_to_f32("l0_attn_norm.bin", static_cast<__nv_bfloat16*>(normed->data()), static_cast<size_t>(T) * D);
 
-        ASSERT_TRUE(backend_->template gemm<__nv_bfloat16>(GemmParams{
+        ASSERT_TRUE(backend_->gemm(ops::DType::kBFloat16, GemmParams{
             .a_ = static_cast<__nv_bfloat16*>(normed->data()), .b_ = static_cast<__nv_bfloat16*>(qkv_merged->data()), .c_ = static_cast<__nv_bfloat16*>(qkv_out->data()),
             .m_ = T, .n_ = qkv_dim, .k_ = D,
             .lda_ = D, .ldb_ = D, .ldc_ = qkv_dim,
             .trans_b_ = true,
         }));
 
-        ASSERT_TRUE(backend_->template split_qkv<__nv_bfloat16>(SplitQkvParams{
+        ASSERT_TRUE(backend_->split_qkv(ops::DType::kBFloat16, SplitQkvParams{
             .qkv_ = static_cast<__nv_bfloat16*>(qkv_out->data()), .q_ = static_cast<__nv_bfloat16*>(q_buf->data()), .k_ = static_cast<__nv_bfloat16*>(k_buf->data()), .v_ = static_cast<__nv_bfloat16*>(v_buf->data()),
             .num_tokens_ = T, .num_q_heads_ = nq, .num_kv_heads_ = nkv, .head_dim_ = hd,
         }));
@@ -271,13 +273,13 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
         }
 
         if (q_norm_w) {
-            ASSERT_TRUE(backend_->template rms_norm<__nv_bfloat16>(RmsNormParams{
+            ASSERT_TRUE(backend_->rms_norm(ops::DType::kBFloat16, RmsNormParams{
                 .input_ = static_cast<__nv_bfloat16*>(q_buf->data()), .weight_ = static_cast<__nv_bfloat16*>(q_norm_w->data()), .output_ = static_cast<__nv_bfloat16*>(q_buf->data()),
                 .rows_ = T * nq, .dim_ = hd, .eps_ = eps,
             }));
         }
         if (k_norm_w) {
-            ASSERT_TRUE(backend_->template rms_norm<__nv_bfloat16>(RmsNormParams{
+            ASSERT_TRUE(backend_->rms_norm(ops::DType::kBFloat16, RmsNormParams{
                 .input_ = static_cast<__nv_bfloat16*>(k_buf->data()), .weight_ = static_cast<__nv_bfloat16*>(k_norm_w->data()), .output_ = static_cast<__nv_bfloat16*>(k_buf->data()),
                 .rows_ = T * nkv, .dim_ = hd, .eps_ = eps,
             }));
@@ -287,7 +289,7 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
             dump_bf16_to_f32("l0_k_normed.bin", static_cast<__nv_bfloat16*>(k_buf->data()), static_cast<size_t>(T) * nkv * hd);
         }
 
-        ASSERT_TRUE(backend_->template rope<__nv_bfloat16>(RopeParams{
+        ASSERT_TRUE(backend_->rope(ops::DType::kBFloat16, RopeParams{
             .q_ = static_cast<__nv_bfloat16*>(q_buf->data()), .k_ = static_cast<__nv_bfloat16*>(k_buf->data()), .positions_ = static_cast<int32_t*>(pos_buf->data()),
             .rope_cache_ = rope_cache.data(), .num_tokens_ = T, .num_q_heads_ = nq,
             .num_kv_heads_ = nkv, .head_dim_ = hd, .rotary_dim_ = hd,
@@ -296,7 +298,7 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
 
         // Write K/V into paged cache, then read back via prefill_attention
         // (mirrors qwen3_model.cpp production path)
-        ASSERT_TRUE(backend_->template write_kv_cache<__nv_bfloat16>(WriteKVCacheParams{
+        ASSERT_TRUE(backend_->write_kv_cache(ops::DType::kBFloat16, WriteKVCacheParams{
             .k_new_ = static_cast<__nv_bfloat16*>(k_buf->data()),
             .v_new_ = static_cast<__nv_bfloat16*>(v_buf->data()),
             .k_cache_ = kv_mgr->k_cache(l),
@@ -308,7 +310,7 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
             .max_slots_ = max_slots,
         }));
 
-        ASSERT_TRUE(backend_->template prefill_attention<__nv_bfloat16>(PrefillAttnParams{
+        ASSERT_TRUE(backend_->prefill_attention(ops::DType::kBFloat16, PrefillAttnParams{
             .q_ = static_cast<__nv_bfloat16*>(q_buf->data()),
             .k_cache_ = kv_mgr->k_cache(l),
             .v_cache_ = kv_mgr->v_cache(l),
@@ -325,7 +327,7 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
             .cache_block_size_ = kKVBlockSize,
         }));
 
-        ASSERT_TRUE(backend_->template gemm<__nv_bfloat16>(GemmParams{
+        ASSERT_TRUE(backend_->gemm(ops::DType::kBFloat16, GemmParams{
             .a_ = static_cast<__nv_bfloat16*>(attn_out->data()), .b_ = static_cast<__nv_bfloat16*>((*o_w)->data()), .c_ = next_hidden,
             .m_ = T, .n_ = D, .k_ = attn_dim,
             .lda_ = attn_dim, .ldb_ = attn_dim, .ldc_ = D,
@@ -334,7 +336,7 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
         if (is_first_layer)
             dump_bf16_to_f32("l0_o_proj.bin", next_hidden, static_cast<size_t>(T) * D);
 
-        ASSERT_TRUE(backend_->template element_add<__nv_bfloat16>(ElementAddParams{
+        ASSERT_TRUE(backend_->element_add(ops::DType::kBFloat16, ElementAddParams{
             .dst_ = next_hidden, .src_ = hidden, .n_ = static_cast<int64_t>(T) * D,
         }));
         std::swap(hidden, next_hidden);
@@ -342,7 +344,7 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
             dump_bf16_to_f32("l0_attn_residual.bin", hidden, static_cast<size_t>(T) * D);
 
         // ---- FFN block ----
-        ASSERT_TRUE(backend_->template rms_norm<__nv_bfloat16>(RmsNormParams{
+        ASSERT_TRUE(backend_->rms_norm(ops::DType::kBFloat16, RmsNormParams{
             .input_ = hidden, .weight_ = static_cast<__nv_bfloat16*>((*rms_ffn)->data()),
             .output_ = static_cast<__nv_bfloat16*>(normed->data()),
             .rows_ = T, .dim_ = D, .eps_ = eps,
@@ -350,7 +352,7 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
         if (is_first_layer)
             dump_bf16_to_f32("l0_ffn_norm.bin", static_cast<__nv_bfloat16*>(normed->data()), static_cast<size_t>(T) * D);
 
-        ASSERT_TRUE(backend_->template gemm<__nv_bfloat16>(GemmParams{
+        ASSERT_TRUE(backend_->gemm(ops::DType::kBFloat16, GemmParams{
             .a_ = static_cast<__nv_bfloat16*>(normed->data()), .b_ = static_cast<__nv_bfloat16*>((*gate_w)->data()), .c_ = static_cast<__nv_bfloat16*>(gate->data()),
             .m_ = T, .n_ = d_ff, .k_ = D,
             .lda_ = D, .ldb_ = D, .ldc_ = d_ff,
@@ -359,7 +361,7 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
         if (is_first_layer)
             dump_bf16_to_f32("l0_gate.bin", static_cast<__nv_bfloat16*>(gate->data()), static_cast<size_t>(T) * d_ff);
 
-        ASSERT_TRUE(backend_->template gemm<__nv_bfloat16>(GemmParams{
+        ASSERT_TRUE(backend_->gemm(ops::DType::kBFloat16, GemmParams{
             .a_ = static_cast<__nv_bfloat16*>(normed->data()), .b_ = static_cast<__nv_bfloat16*>((*up_w)->data()), .c_ = static_cast<__nv_bfloat16*>(up->data()),
             .m_ = T, .n_ = d_ff, .k_ = D,
             .lda_ = D, .ldb_ = D, .ldc_ = d_ff,
@@ -368,14 +370,14 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
         if (is_first_layer)
             dump_bf16_to_f32("l0_up.bin", static_cast<__nv_bfloat16*>(up->data()), static_cast<size_t>(T) * d_ff);
 
-        ASSERT_TRUE(backend_->template silu_mul<__nv_bfloat16>(SiluMulParams{
+        ASSERT_TRUE(backend_->silu_mul(ops::DType::kBFloat16, SiluMulParams{
             .gate_ = static_cast<__nv_bfloat16*>(gate->data()), .up_ = static_cast<__nv_bfloat16*>(up->data()), .output_ = static_cast<__nv_bfloat16*>(ffn_act->data()),
             .n_ = static_cast<int64_t>(T) * d_ff,
         }));
         if (is_first_layer)
             dump_bf16_to_f32("l0_silu_mul.bin", static_cast<__nv_bfloat16*>(ffn_act->data()), static_cast<size_t>(T) * d_ff);
 
-        ASSERT_TRUE(backend_->template gemm<__nv_bfloat16>(GemmParams{
+        ASSERT_TRUE(backend_->gemm(ops::DType::kBFloat16, GemmParams{
             .a_ = static_cast<__nv_bfloat16*>(ffn_act->data()), .b_ = static_cast<__nv_bfloat16*>((*down_w)->data()), .c_ = next_hidden,
             .m_ = T, .n_ = D, .k_ = d_ff,
             .lda_ = d_ff, .ldb_ = d_ff, .ldc_ = D,
@@ -384,7 +386,7 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
         if (is_first_layer)
             dump_bf16_to_f32("l0_down.bin", next_hidden, static_cast<size_t>(T) * D);
 
-        ASSERT_TRUE(backend_->template element_add<__nv_bfloat16>(ElementAddParams{
+        ASSERT_TRUE(backend_->element_add(ops::DType::kBFloat16, ElementAddParams{
             .dst_ = next_hidden, .src_ = hidden, .n_ = static_cast<int64_t>(T) * D,
         }));
         std::swap(hidden, next_hidden);
@@ -399,7 +401,7 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
     }
 
     // Final norm
-    ASSERT_TRUE(backend_->template rms_norm<__nv_bfloat16>(RmsNormParams{
+    ASSERT_TRUE(backend_->rms_norm(ops::DType::kBFloat16, RmsNormParams{
         .input_ = hidden, .weight_ = static_cast<__nv_bfloat16*>((*rms_final)->data()),
         .output_ = static_cast<__nv_bfloat16*>(normed->data()),
         .rows_ = T, .dim_ = D, .eps_ = eps,

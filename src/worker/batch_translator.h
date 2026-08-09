@@ -7,7 +7,7 @@
 #include "base/result.h"
 #include "base/types.h"
 #include "cache/block.h"
-#include "backend/default_backend.h"
+#include "backend/backend.h"
 #include "base/execution.h"
 
 namespace ccinfer {
@@ -24,7 +24,7 @@ class KVCacheManager;
 //   rollback()   — release newly allocated blocks, SequenceState unchanged
 class BatchTranslator {
 public:
-    BatchTranslator(DefaultBackend& backend, KVCacheManager& kv_mgr, int block_size);
+    BatchTranslator(Backend& backend, KVCacheManager& kv_mgr, int block_size);
 
     // Per-item allocation metadata.  One entry per WorkItem, in batch order.
     struct PerItemAlloc {
@@ -58,7 +58,7 @@ public:
     void rollback(const std::vector<PerItemAlloc>& per_item) const;
 
 private:
-    DefaultBackend& backend_;
+    Backend& backend_;
     KVCacheManager& kv_mgr_;
     int block_size_;
 };

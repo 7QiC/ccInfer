@@ -42,7 +42,7 @@ bool check_seq_invariant(const SequenceState& seq, int block_size, int max_block
 
 }  // namespace
 
-BatchTranslator::BatchTranslator(DefaultBackend& backend, KVCacheManager& kv_mgr, int block_size)
+BatchTranslator::BatchTranslator(Backend& backend, KVCacheManager& kv_mgr, int block_size)
     : backend_(backend), kv_mgr_(kv_mgr), block_size_(block_size) {}
 
 // ---------------------------------------------------------------------------
@@ -341,7 +341,7 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
             batch.items[i]);
     }
 
-    auto alloc_buf = [&](std::size_t bytes) -> Result<std::unique_ptr<DeviceBuffer>> {
+    auto alloc_buf = [&](std::size_t bytes) -> Result<std::shared_ptr<Buffer>> {
         auto r = backend_.allocate_buffer(bytes);
         if (!r) return std::unexpected(r.error());
         return std::move(*r);

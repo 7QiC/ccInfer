@@ -7,7 +7,7 @@
 #include <cmath>
 #include <vector>
 
-#include "backend/cuda/cuda_backend.h"
+#include "backend/backend.h"
 #include "cache/block.h"
 #include "kernel/cuda_kernels.h"
 
@@ -311,11 +311,11 @@ TEST(DecodeAttnKernelTest, RandomPagedGQAMatchesCpuReference) {
 }
 
 TEST(DecodeAttnKernelTest, NullPointers) {
-    auto backend_r = CudaBackend::create(0);
+    auto backend_r = Backend::create(0);
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
 
-    auto r = backend.template decode_attention<__nv_bfloat16>(DecodeAttnParams{
+    auto r = backend.decode_attention(ops::DType::kBFloat16, DecodeAttnParams{
         .q_ = nullptr, .k_cache_ = nullptr, .v_cache_ = nullptr, .block_table_ = nullptr,
         .context_lens_ = nullptr, .output_ = nullptr,
         .batch_size_ = 1, .max_blocks_per_req_ = 1, .num_q_heads_ = 4,

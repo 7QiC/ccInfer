@@ -14,7 +14,7 @@ class WeightLoader;
 
 using ModelCreator = Result<std::unique_ptr<Model>> (*)(const ModelConfig& config,
                                                         const WeightLoader& loader,
-                                                        DefaultBackend& backend);
+                                                        Backend& backend);
 
 class ModelRegistry {
 public:
@@ -23,7 +23,7 @@ public:
     void register_model(std::string arch, ModelCreator creator);
 
     Result<std::unique_ptr<Model>> create(const ModelConfig& config, const WeightLoader& loader,
-                                          DefaultBackend& backend) const;
+                                          Backend& backend) const;
 
 private:
     ModelRegistry() = default;

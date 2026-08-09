@@ -5,7 +5,6 @@
 #include <utility>
 
 #include "base/error_code.h"
-#include "backend/device_buffer.h"
 
 namespace ccinfer {
 
@@ -45,7 +44,7 @@ void* KVCacheStorage::k_layer(int layer) {
     assert(layer >= 0 && layer < num_layers_ && "layer out of range");
     const std::size_t offset =
         static_cast<std::size_t>(layer) * static_cast<std::size_t>(layer_stride_) * elem_size_;
-    return buffer_data<char>(*k_data_) + offset;
+    return static_cast<char*>(k_data_->data()) + offset;
 }
 
 void* KVCacheStorage::v_layer(int layer) {
@@ -53,7 +52,7 @@ void* KVCacheStorage::v_layer(int layer) {
     assert(layer >= 0 && layer < num_layers_ && "layer out of range");
     const std::size_t offset =
         static_cast<std::size_t>(layer) * static_cast<std::size_t>(layer_stride_) * elem_size_;
-    return buffer_data<char>(*v_data_) + offset;
+    return static_cast<char*>(v_data_->data()) + offset;
 }
 
 const void* KVCacheStorage::k_layer(int layer) const {
@@ -61,7 +60,7 @@ const void* KVCacheStorage::k_layer(int layer) const {
     assert(layer >= 0 && layer < num_layers_ && "layer out of range");
     const std::size_t offset =
         static_cast<std::size_t>(layer) * static_cast<std::size_t>(layer_stride_) * elem_size_;
-    return buffer_data<char>(*k_data_) + offset;
+    return static_cast<char*>(k_data_->data()) + offset;
 }
 
 const void* KVCacheStorage::v_layer(int layer) const {
@@ -69,10 +68,10 @@ const void* KVCacheStorage::v_layer(int layer) const {
     assert(layer >= 0 && layer < num_layers_ && "layer out of range");
     const std::size_t offset =
         static_cast<std::size_t>(layer) * static_cast<std::size_t>(layer_stride_) * elem_size_;
-    return buffer_data<char>(*v_data_) + offset;
+    return static_cast<char*>(v_data_->data()) + offset;
 }
 
-Result<void> KVCacheStorage::init(DefaultBackend& backend, int num_layers, int max_blocks,
+Result<void> KVCacheStorage::init(Backend& backend, int num_layers, int max_blocks,
                                   int block_size, int num_kv_heads, int head_dim,
                                   std::size_t elem_size) {
     if (num_layers <= 0 || max_blocks <= 0 || block_size <= 0 || num_kv_heads <= 0 ||

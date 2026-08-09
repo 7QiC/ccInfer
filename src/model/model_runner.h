@@ -11,7 +11,7 @@
 #include "base/result.h"
 #include "backend/params.h"
 #include "cache/kv_cache_manager.h"
-#include "backend/default_backend.h"
+#include "backend/backend.h"
 #include "core/traits.h"
 #include "base/execution.h"
 #include "model/config.h"
@@ -23,16 +23,16 @@ class ModelRunner {
 public:
     template <typename Traits>
     static Result<std::vector<WorkItemResult>> inference(Model& model, const PhysicalBatch& batch,
-                                                         DefaultBackend& backend,
+                                                         Backend& backend,
                                                          KVCacheManager& kv_mgr,
                                                          const SamplingParams& sampling = {}) {
         static_assert(runner_traits_valid_v<Traits>, "RunnerTraits has unknown dtype tags");
 
         // Phase 4.1: only BF16 weights / activations / KV + FP32 logits.
-        if constexpr (!std::is_same_v<typename Traits::WeightTag, BFloat16Tag> ||
-                      !std::is_same_v<typename Traits::KVTag, BFloat16Tag> ||
-                      !std::is_same_v<typename Traits::ActivationTag, BFloat16Tag> ||
-                      !std::is_same_v<typename Traits::LogitsTag, Float32Tag>) {
+        if constexpr (!std::is_same_v<typename Traits::WeightTag, ops::BFloat16Tag> ||
+                      !std::is_same_v<typename Traits::KVTag, ops::BFloat16Tag> ||
+                      !std::is_same_v<typename Traits::ActivationTag, ops::BFloat16Tag> ||
+                      !std::is_same_v<typename Traits::LogitsTag, ops::Float32Tag>) {
             (void)Traits{};
             return std::unexpected(ErrorCode::Unsupported);
         }

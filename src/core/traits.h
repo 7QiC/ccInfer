@@ -1,65 +1,57 @@
 #pragma once
 
-#include <cstdint>
 #include <string_view>
 #include <type_traits>
 
-#include "core/dtype.h"
+#include "ops/ops.h"
 
 namespace ccinfer {
 
 // -----------------------------------------------------------------------------
-// CUDA-free dtype tags.
+// DType profile: compile-time dtype configuration for a model run.
 //
-// These tags are compile-time markers only.
-// Backend-specific native types are mapped elsewhere, e.g.
-//   engine/backend/cuda/cuda_dtype_traits.h
+// dtype tags come from ccop (single source of truth). CUDA native types are
+// obtained via ops::native_t<Tag> after including <ccop/cuda/dtype_cuda.h>
+// inside CUDA translation units.
 // -----------------------------------------------------------------------------
 
-struct Float32Tag {};
-struct Float16Tag {};
-struct BFloat16Tag {};
-struct Int8Tag {};
+template <typename WeightTagT, typename KVTagT, typename ActivationTagT, typename AccumTagT,
+          typename LogitsTagT>
+struct DTypeProfile {
+    using WeightTag = WeightTagT;
+    using KVTag = KVTagT;
+    using ActivationTag = ActivationTagT;
+    using AccumTag = AccumTagT;
+    using LogitsTag = LogitsTagT;
 
-template <typename Tag>
-struct DTypeTagTraits {
-    static constexpr DType dtype = DType::kUnknown;
-    static constexpr std::string_view name = "unknown";
+    static constexpr ops::DType weight_dtype = ops::dtype_v<WeightTag>;
+    static constexpr ops::DType kv_dtype = ops::dtype_v<KVTag>;
+    static constexpr ops::DType activation_dtype = ops::dtype_v<ActivationTag>;
+    static constexpr ops::DType accum_dtype = ops::dtype_v<AccumTag>;
+    static constexpr ops::DType logits_dtype = ops::dtype_v<LogitsTag>;
 };
 
-template <>
-struct DTypeTagTraits<Float32Tag> {
-    static constexpr DType dtype = DType::kFloat32;
-    static constexpr std::string_view name = "float32";
-};
+// Concrete dtype profiles.
+using BF16DTypeProfile =
+    DTypeProfile<ops::BFloat16Tag,  // weights
+                 ops::BFloat16Tag,  // KV cache
+                 ops::BFloat16Tag,  // activations
+                 ops::Float32Tag,   // accumulation
+                 ops::Float32Tag>;  // logits
 
-template <>
-struct DTypeTagTraits<Float16Tag> {
-    static constexpr DType dtype = DType::kFloat16;
-    static constexpr std::string_view name = "float16";
-};
+using FP16DTypeProfile = DTypeProfile<ops::Float16Tag, ops::Float16Tag, ops::Float16Tag,
+                                      ops::Float32Tag, ops::Float32Tag>;
 
-template <>
-struct DTypeTagTraits<BFloat16Tag> {
-    static constexpr DType dtype = DType::kBFloat16;
-    static constexpr std::string_view name = "bfloat16";
-};
+using FP16WeightBF16KVDTypeProfile =
+    DTypeProfile<ops::Float16Tag, ops::BFloat16Tag, ops::Float16Tag, ops::Float32Tag,
+                 ops::Float32Tag>;
 
-template <>
-struct DTypeTagTraits<Int8Tag> {
-    static constexpr DType dtype = DType::kInt8;
-    static constexpr std::string_view name = "int8";
-};
-
-template <typename Tag>
-inline constexpr DType dtype_tag_v = DTypeTagTraits<Tag>::dtype;
-
-template <typename Tag>
-inline constexpr std::string_view dtype_tag_name_v = DTypeTagTraits<Tag>::name;
+using Int8WeightBF16KVDTypeProfile =
+    DTypeProfile<ops::Int8Tag, ops::BFloat16Tag, ops::BFloat16Tag, ops::Float32Tag,
+                 ops::Float32Tag>;
 
 // -----------------------------------------------------------------------------
 // Quantization policy tags.
-// CUDA-free. Backend-specific implementation lives elsewhere.
 // -----------------------------------------------------------------------------
 
 struct NoQuantPolicy {
@@ -78,50 +70,28 @@ struct Int4WeightOnlyPolicy {
 };
 
 // -----------------------------------------------------------------------------
-// RunnerTraits.
-//
-// These are compile-time dtype profiles.
-// They intentionally use dtype tags instead of CUDA native types.
+// RunnerTraits = dtype profile + quantization policy.
 // -----------------------------------------------------------------------------
 
-template <typename WeightTagT, typename KVTagT, typename ActivationTagT, typename AccumTagT,
-          typename LogitsTagT, typename QuantPolicyT = NoQuantPolicy>
+template <typename ProfileT, typename QuantPolicyT = NoQuantPolicy>
 struct RunnerTraits {
-    using WeightTag = WeightTagT;
-    using KVTag = KVTagT;
-    using ActivationTag = ActivationTagT;
-    using AccumTag = AccumTagT;
-    using LogitsTag = LogitsTagT;
+    using Profile = ProfileT;
     using QuantPolicy = QuantPolicyT;
 
-    static constexpr DType weight_dtype = dtype_tag_v<WeightTag>;
-    static constexpr DType kv_dtype = dtype_tag_v<KVTag>;
-    static constexpr DType activation_dtype = dtype_tag_v<ActivationTag>;
-    static constexpr DType accum_dtype = dtype_tag_v<AccumTag>;
-    static constexpr DType logits_dtype = dtype_tag_v<LogitsTag>;
+    using WeightTag = typename ProfileT::WeightTag;
+    using KVTag = typename ProfileT::KVTag;
+    using ActivationTag = typename ProfileT::ActivationTag;
+    using AccumTag = typename ProfileT::AccumTag;
+    using LogitsTag = typename ProfileT::LogitsTag;
 
-    static constexpr bool is_quantized = QuantPolicy::is_quantized;
+    static constexpr bool is_quantized = QuantPolicyT::is_quantized;
 };
 
-// -----------------------------------------------------------------------------
-// Concrete CUDA-free profiles.
-// -----------------------------------------------------------------------------
-
-using BF16RunnerTraits = RunnerTraits<BFloat16Tag,  // weights
-                                      BFloat16Tag,  // KV cache
-                                      BFloat16Tag,  // activations
-                                      Float32Tag,   // accumulation
-                                      Float32Tag,   // logits
-                                      NoQuantPolicy>;
-
-using FP16RunnerTraits =
-    RunnerTraits<Float16Tag, Float16Tag, Float16Tag, Float32Tag, Float32Tag, NoQuantPolicy>;
-
-using FP16WeightBF16KVRunnerTraits =
-    RunnerTraits<Float16Tag, BFloat16Tag, Float16Tag, Float32Tag, Float32Tag, NoQuantPolicy>;
-
+using BF16RunnerTraits = RunnerTraits<BF16DTypeProfile>;
+using FP16RunnerTraits = RunnerTraits<FP16DTypeProfile>;
+using FP16WeightBF16KVRunnerTraits = RunnerTraits<FP16WeightBF16KVDTypeProfile>;
 using Int8WeightBF16KVRunnerTraits =
-    RunnerTraits<Int8Tag, BFloat16Tag, BFloat16Tag, Float32Tag, Float32Tag, Int8WeightOnlyPolicy>;
+    RunnerTraits<Int8WeightBF16KVDTypeProfile, Int8WeightOnlyPolicy>;
 
 // -----------------------------------------------------------------------------
 // Helper predicates.
@@ -129,14 +99,10 @@ using Int8WeightBF16KVRunnerTraits =
 
 template <typename Traits>
 inline constexpr bool runner_traits_valid_v =
-    Traits::weight_dtype != DType::kUnknown && Traits::kv_dtype != DType::kUnknown &&
-    Traits::activation_dtype != DType::kUnknown && Traits::accum_dtype != DType::kUnknown &&
-    Traits::logits_dtype != DType::kUnknown;
-
-template <typename Traits>
-inline constexpr bool runner_uses_bf16_kv_v = std::is_same_v<typename Traits::KVTag, BFloat16Tag>;
-
-template <typename Traits>
-inline constexpr bool runner_uses_fp16_kv_v = std::is_same_v<typename Traits::KVTag, Float16Tag>;
+    Traits::Profile::weight_dtype != ops::DType::kUnknown &&
+    Traits::Profile::kv_dtype != ops::DType::kUnknown &&
+    Traits::Profile::activation_dtype != ops::DType::kUnknown &&
+    Traits::Profile::accum_dtype != ops::DType::kUnknown &&
+    Traits::Profile::logits_dtype != ops::DType::kUnknown;
 
 }  // namespace ccinfer

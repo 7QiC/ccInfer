@@ -9,13 +9,14 @@
 #include <string>
 #include <utility>
 
+
 namespace ccinfer {
 
 namespace {
 
-Result<void> merge_qkv(std::unique_ptr<DeviceBuffer>& qkv, std::unique_ptr<DeviceBuffer>& q,
-                       std::unique_ptr<DeviceBuffer>& k, std::unique_ptr<DeviceBuffer>& v,
-                       DefaultBackend& backend) {
+Result<void> merge_qkv(std::shared_ptr<Buffer>& qkv, std::shared_ptr<Buffer>& q,
+                       std::shared_ptr<Buffer>& k, std::shared_ptr<Buffer>& v,
+                       Backend& backend) {
     const std::size_t q_bytes = q->bytes();
     const std::size_t k_bytes = k->bytes();
     const std::size_t v_bytes = v->bytes();
@@ -44,9 +45,9 @@ Result<void> merge_qkv(std::unique_ptr<DeviceBuffer>& qkv, std::unique_ptr<Devic
 
 }  // namespace
 
-Result<Qwen3Weights> Qwen3Weights::load(DefaultBackend& backend, const ModelConfig& config,
+Result<Qwen3Weights> Qwen3Weights::load(Backend& backend, const ModelConfig& config,
                                         const WeightLoader& loader) {
-    if (config.weight_dtype_ != DType::kBFloat16) {
+    if (config.weight_dtype_ != ops::DType::kBFloat16) {
         return std::unexpected(ErrorCode::ModelUnsupportedDType);
     }
 

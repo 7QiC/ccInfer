@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cuda_bf16.h>
 #include <cuda_runtime.h>
 
 #include <memory>
@@ -7,7 +8,7 @@
 
 #include "cache/kv_cache_manager.h"
 #include "cache/kv_cache_storage.h"
-#include "backend/default_backend.h"
+#include "backend/backend.h"
 #include "base/execution.h"
 #include "worker/batch_translator.h"
 
@@ -17,7 +18,7 @@ namespace {
 class BatchTranslatorTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        auto b = CudaBackend::create(0);
+        auto b = Backend::create(0);
         ASSERT_TRUE(b.has_value());
         backend_ = std::move(*b);
 
@@ -38,7 +39,7 @@ protected:
     }
 
     static constexpr int kBlockSize = 16;
-    std::unique_ptr<DefaultBackend> backend_;
+    std::unique_ptr<Backend> backend_;
     KVCacheManager kv_mgr_;
     std::unique_ptr<BatchTranslator> translator_;
     std::unordered_map<SequenceId, SequenceState> sequences_;

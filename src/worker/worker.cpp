@@ -15,7 +15,7 @@
 #include "base/error_code.h"
 #include "cache/kv_cache_manager.h"
 #include "cache/kv_cache_storage.h"
-#include "backend/default_backend.h"
+#include "backend/backend.h"
 #include "core/traits.h"
 #include "model/config.h"
 #include "model/loader.h"
@@ -223,7 +223,7 @@ void Worker::sync_capacity() {
 Result<void> Worker::init_resources(const std::string& model_path) {
     std::lock_guard lock(resource_mutex_);
     try {
-        auto b = DefaultBackend::create(0);
+        auto b = Backend::create(0);
         if (!b) {
             return std::unexpected(b.error());
         }

@@ -5,7 +5,7 @@
 
 #include <vector>
 
-#include "backend/cuda/cuda_backend.h"
+#include "backend/backend.h"
 #include "cache/block.h"
 #include "cache/kv_cache_storage.h"
 
@@ -18,7 +18,7 @@ TEST(KVCacheStorageTest, LayerOffsetsAreCorrect) {
     constexpr int kNvKVHeads = 1;
     constexpr int kHeadDim = 4;
 
-    auto backend_r = CudaBackend::create(0);
+    auto backend_r = Backend::create(0);
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
     auto s_r = KVCacheStorage::create<__nv_bfloat16>(backend, kNumLayers, kMaxBlocks, kKVBlockSize,
@@ -59,7 +59,7 @@ TEST(KVCacheStorageTest, LayersAreIndependent) {
     constexpr int kNvKVHeads = 1;
     constexpr int kHeadDim = 4;
 
-    auto backend_r = CudaBackend::create(0);
+    auto backend_r = Backend::create(0);
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
     auto s_r = KVCacheStorage::create<__nv_bfloat16>(backend, kNumLayers, kMaxBlocks, kKVBlockSize,
@@ -125,7 +125,7 @@ TEST(KVCacheStorageTest, ZeroInitialized) {
     constexpr int kNvKVHeads = 2;
     constexpr int kHeadDim = 32;
 
-    auto backend_r = CudaBackend::create(0);
+    auto backend_r = Backend::create(0);
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
     auto s_r = KVCacheStorage::create<__nv_bfloat16>(backend, kNumLayers, kMaxBlocks, kKVBlockSize,

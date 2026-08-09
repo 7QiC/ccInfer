@@ -6,18 +6,17 @@
 #include <memory>
 
 #include "base/result.h"
-#include "backend/device_buffer.h"
-#include "backend/default_backend.h"
+#include "backend/backend.h"
 
 namespace ccinfer {
 
 class RopeCache {
 public:
     static Result<RopeCache> create(int max_position, int rotary_dim, float rope_theta,
-                                    DefaultBackend& backend);
+                                    Backend& backend);
 
-    const float2* data() const noexcept { return buffer_data<float2>(*cache_); }
-    float2* data() noexcept { return buffer_data<float2>(*cache_); }
+    const float2* data() const noexcept { return static_cast<const float2*>(cache_->data()); }
+    float2* data() noexcept { return static_cast<float2*>(cache_->data()); }
 
     int max_position() const noexcept { return max_position_; }
     int rotary_dim() const noexcept { return rotary_dim_; }
@@ -36,7 +35,7 @@ private:
     int rotary_dim_ = 0;
     float rope_theta_ = 10000.0f;
 
-    std::unique_ptr<DeviceBuffer> cache_;
+    std::shared_ptr<Buffer> cache_;
 };
 
 }  // namespace ccinfer

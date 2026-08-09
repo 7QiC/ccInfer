@@ -6,7 +6,7 @@
 #include <cmath>
 #include <vector>
 
-#include "backend/cuda/cuda_backend.h"
+#include "backend/backend.h"
 #include "cache/kv_cache_manager.h"
 #include "cache/kv_cache_storage.h"
 #include "kernel/cuda_kernels.h"
@@ -25,7 +25,7 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
     constexpr int hd = 64;
     const int block_size = kKVBlockSize;
 
-    auto backend_r = CudaBackend::create(0);
+    auto backend_r = Backend::create(0);
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
 

@@ -13,14 +13,12 @@
 #include <vector>
 
 #include "base/result.h"
-#include "backend/device_buffer.h"
-#include "backend/default_backend.h"
-#include "core/dtype.h"
+#include "backend/backend.h"
 
 namespace ccinfer {
 
 struct TensorInfo {
-    DType dtype_ = DType::kBFloat16;
+    ops::DType dtype_ = ops::DType::kBFloat16;
     std::vector<int64_t> shape_;
     uint64_t offset_ = 0;
     uint64_t size_bytes_ = 0;
@@ -31,17 +29,17 @@ struct SafetensorDType;
 
 template <>
 struct SafetensorDType<__nv_bfloat16> {
-    static constexpr DType value = DType::kBFloat16;
+    static constexpr ops::DType value = ops::DType::kBFloat16;
 };
 
 template <>
 struct SafetensorDType<float> {
-    static constexpr DType value = DType::kFloat32;
+    static constexpr ops::DType value = ops::DType::kFloat32;
 };
 
 template <>
 struct SafetensorDType<__half> {
-    static constexpr DType value = DType::kFloat16;
+    static constexpr ops::DType value = ops::DType::kFloat16;
 };
 
 class WeightLoader {
@@ -65,7 +63,7 @@ public:
     Result<TensorInfo> info(const std::string& name) const;
 
     template <typename T>
-    Result<std::unique_ptr<DeviceBuffer>> load(DefaultBackend& backend, const std::string& name,
+    Result<std::shared_ptr<Buffer>> load(Backend& backend, const std::string& name,
                                                const std::vector<int64_t>& expected_shape) const;
 
 private:
@@ -85,8 +83,8 @@ private:
 
 // Template implementation.
 template <typename T>
-Result<std::unique_ptr<DeviceBuffer>> WeightLoader::load(
-    DefaultBackend& backend, const std::string& name,
+Result<std::shared_ptr<Buffer>> WeightLoader::load(
+    Backend& backend, const std::string& name,
     const std::vector<int64_t>& expected_shape) const {
     if (data_ == nullptr || size_ == 0) {
         return std::unexpected(ErrorCode::ModelLoadFailed);

@@ -5,7 +5,7 @@
 
 #include <vector>
 
-#include "backend/cuda/cuda_backend.h"
+#include "backend/backend.h"
 #include "cache/block.h"
 #include "kernel/cuda_kernels.h"
 
@@ -98,11 +98,11 @@ TEST(WriteKVCacheKernelTest, WriteAndReadbackNonContiguousSlots) {
 }
 
 TEST(WriteKVCacheKernelTest, NullPointerReturnsError) {
-    auto backend_r = CudaBackend::create(0);
+    auto backend_r = Backend::create(0);
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
 
-    auto r = backend.template write_kv_cache<__nv_bfloat16>(WriteKVCacheParams{
+    auto r = backend.write_kv_cache(ops::DType::kBFloat16, WriteKVCacheParams{
         .k_new_ = nullptr, .v_new_ = nullptr, .k_cache_ = nullptr, .v_cache_ = nullptr,
         .slot_mapping_ = nullptr, .total_tokens_ = 1, .num_kv_heads_ = 1,
         .head_dim_ = 1, .max_slots_ = 64});

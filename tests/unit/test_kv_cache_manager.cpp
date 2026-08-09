@@ -2,7 +2,7 @@
 
 #include <cuda_bf16.h>
 
-#include "backend/cuda/cuda_backend.h"
+#include "backend/backend.h"
 #include "cache/kv_cache_manager.h"
 #include "cache/kv_cache_storage.h"
 
@@ -12,7 +12,7 @@ namespace {
 class KVCacheManagerTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        auto be = CudaBackend::create(0);
+        auto be = Backend::create(0);
         ASSERT_TRUE(be.has_value());
         backend_ = std::move(*be);
 
@@ -24,7 +24,7 @@ protected:
         ASSERT_TRUE(mr.has_value());
     }
 
-    std::unique_ptr<DefaultBackend> backend_;
+    std::unique_ptr<Backend> backend_;
     KVCacheManager mgr_;
 };
 

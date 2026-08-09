@@ -6,7 +6,7 @@
 #include <numeric>
 #include <vector>
 
-#include "backend/cuda/cuda_backend.h"
+#include "backend/backend.h"
 #include "cache/block.h"
 #include "kernel/cuda_kernels.h"
 
@@ -105,12 +105,12 @@ TEST(PrefillAttnKernelTest, SingleRequestMatchesNaive) {
 }
 
 TEST(PrefillAttnKernelTest, RejectsNullPointers) {
-    auto backend_r = CudaBackend::create(0);
+    auto backend_r = Backend::create(0);
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
 
     int32_t dummy_start_loc[2] = {0, 0};
-    auto r = backend.template prefill_attention<__nv_bfloat16>(PrefillAttnParams{
+    auto r = backend.prefill_attention(ops::DType::kBFloat16, PrefillAttnParams{
         .q_ = nullptr, .k_cache_ = nullptr, .v_cache_ = nullptr, .block_table_ = nullptr,
         .query_start_loc_ = dummy_start_loc, .context_lens_ = nullptr, .output_ = nullptr,
         .batch_size_ = 1, .max_blocks_per_req_ = 1, .num_q_heads_ = 4,

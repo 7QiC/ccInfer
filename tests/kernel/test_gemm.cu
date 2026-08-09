@@ -5,7 +5,7 @@
 #include <cmath>
 #include <vector>
 
-#include "backend/cuda/cuda_backend.h"
+#include "backend/backend.h"
 
 using namespace ccinfer;
 
@@ -15,12 +15,12 @@ using namespace ccinfer;
 class GemmTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        auto b = CudaBackend::create(0);
+        auto b = Backend::create(0);
         ASSERT_TRUE(b.has_value());
         backend_ = std::move(*b);
     }
 
-    std::unique_ptr<CudaBackend> backend_;
+    std::unique_ptr<Backend> backend_;
 };
 
 TEST_F(GemmTest, SmallMatrices2x3Times3x2) {
@@ -69,7 +69,7 @@ TEST_F(GemmTest, SmallMatrices2x3Times3x2) {
     p.lda_ = K;  // A_row[M][K] has K columns
     p.ldb_ = N;  // B_row[K][N] has N columns
     p.ldc_ = N;  // C_row[M][N] has N columns
-    auto r = backend_->template gemm<__nv_bfloat16>(p);
+    auto r = backend_->gemm(ops::DType::kBFloat16, p);
     ASSERT_TRUE(r.has_value());
 
     // Download and verify.

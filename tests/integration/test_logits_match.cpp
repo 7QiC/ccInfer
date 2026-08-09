@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <cuda_bf16.h>
+#include <cuda_runtime.h>
+
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -10,8 +13,7 @@
 #include <string>
 #include <vector>
 
-#include "backend/cuda/cuda_backend.h"
-#include "backend/device_buffer.h"
+#include "backend/backend.h"
 #include "cache/block.h"
 #include "cache/kv_cache_manager.h"
 #include "cache/kv_cache_storage.h"
@@ -26,7 +28,7 @@ using namespace ccinfer;
 namespace {
 
 template <typename B>
-std::unique_ptr<DeviceBuffer> alloc_buf(B& backend, size_t bytes) {
+std::shared_ptr<Buffer> alloc_buf(B& backend, size_t bytes) {
     auto r = backend.allocate_buffer(bytes);
     assert(r.has_value());
     return std::move(*r);
@@ -62,17 +64,17 @@ std::string read_file(const std::string& path) {
 
 struct ForwardFixture {
     std::unique_ptr<KVCacheManager> kv_mgr;
-    std::unique_ptr<DeviceBuffer> token_ids;
-    std::unique_ptr<DeviceBuffer> positions;
-    std::unique_ptr<DeviceBuffer> slot_mapping;
-    std::unique_ptr<DeviceBuffer> block_table;
-    std::unique_ptr<DeviceBuffer> query_start_loc;
-    std::unique_ptr<DeviceBuffer> context_lens;
+    std::shared_ptr<Buffer> token_ids;
+    std::shared_ptr<Buffer> positions;
+    std::shared_ptr<Buffer> slot_mapping;
+    std::shared_ptr<Buffer> block_table;
+    std::shared_ptr<Buffer> query_start_loc;
+    std::shared_ptr<Buffer> context_lens;
     int max_blocks_per_req = 0;
 };
 
 // Returns a fixture whose kv_mgr is nullptr on any failure.
-ForwardFixture prepare_single_prefill(CudaBackend& backend, const ModelConfig& config,
+ForwardFixture prepare_single_prefill(Backend& backend, const ModelConfig& config,
                                       const std::vector<int32_t>& token_ids_host) {
     ForwardFixture fixture;
     fixture.kv_mgr = std::make_unique<KVCacheManager>();
@@ -140,7 +142,7 @@ ForwardFixture prepare_single_prefill(CudaBackend& backend, const ModelConfig& c
 
 // Run a single-prompt prefill through Qwen3Model and return the last-token
 // FP32 logits.  Returns an empty vector on any error (message printed to stderr).
-std::vector<float> run_prefill_logits(CudaBackend& backend, const ModelConfig& config,
+std::vector<float> run_prefill_logits(Backend& backend, const ModelConfig& config,
                                       const WeightLoader& loader,
                                       const std::vector<int32_t>& token_ids) {
     auto model = ModelRegistry::instance().create(config, loader, backend);
@@ -196,12 +198,12 @@ std::vector<float> run_prefill_logits(CudaBackend& backend, const ModelConfig& c
 
 struct GenFixture {
     std::unique_ptr<KVCacheManager> kv_mgr;
-    std::unique_ptr<DeviceBuffer> token_ids;       // [1] — single token per decode step
-    std::unique_ptr<DeviceBuffer> positions;        // [1]
-    std::unique_ptr<DeviceBuffer> slot_mapping;     // [1]
-    std::unique_ptr<DeviceBuffer> block_table;      // [1, max_blocks]
-    std::unique_ptr<DeviceBuffer> query_start_loc;  // [2]
-    std::unique_ptr<DeviceBuffer> context_lens;     // [1]
+    std::shared_ptr<Buffer> token_ids;       // [1] — single token per decode step
+    std::shared_ptr<Buffer> positions;        // [1]
+    std::shared_ptr<Buffer> slot_mapping;     // [1]
+    std::shared_ptr<Buffer> block_table;      // [1, max_blocks]
+    std::shared_ptr<Buffer> query_start_loc;  // [2]
+    std::shared_ptr<Buffer> context_lens;     // [1]
     int max_blocks_per_req = 0;
     int current_context_len = 0;   // total tokens written to KV cache
     int next_slot = 0;             // next free slot index
@@ -210,7 +212,7 @@ struct GenFixture {
 
 // Creates a GenFixture with enough blocks for prompt + max_new_tokens.
 // Returns a fixture with kv_mgr == nullptr on failure.
-GenFixture prepare_generation(CudaBackend& backend, const ModelConfig& config,
+GenFixture prepare_generation(Backend& backend, const ModelConfig& config,
                               const std::vector<int32_t>& prompt_tokens,
                               int max_new_tokens) {
     GenFixture f;
@@ -253,7 +255,7 @@ GenFixture prepare_generation(CudaBackend& backend, const ModelConfig& config,
 // Run one decode step.  token_id is the just-sampled token to feed as input.
 // Writes KV for this token into the cache and returns logits for the NEXT token.
 // Returns empty vector on error.
-std::vector<float> run_decode_step(CudaBackend& backend, const ModelConfig& config,
+std::vector<float> run_decode_step(Backend& backend, const ModelConfig& config,
                                    std::unique_ptr<Model>& model,
                                    GenFixture& f, int32_t token_id) {
     const int V = config.vocab_size_;
@@ -317,7 +319,7 @@ int32_t argmax(const std::vector<float>& v) {
 
 // Run full greedy generation: prefill + decode loop.
 // Returns generated NEW token IDs (excluding prompt).  Empty on error.
-std::vector<int32_t> run_greedy_generation(CudaBackend& backend,
+std::vector<int32_t> run_greedy_generation(Backend& backend,
                                            const ModelConfig& config,
                                            const WeightLoader& loader,
                                            const std::vector<int32_t>& prompt_tokens,
@@ -449,7 +451,7 @@ protected:
         ASSERT_TRUE(loader_result);
         loader_ = std::make_unique<WeightLoader>(std::move(*loader_result));
 
-        auto b = CudaBackend::create(0);
+        auto b = Backend::create(0);
         ASSERT_TRUE(b.has_value());
         backend_ = std::move(*b);
         register_builtin_models();
@@ -466,7 +468,7 @@ protected:
     ModelConfig config_;
     ByteLevelBpeTokenizer tokenizer_;
     std::unique_ptr<WeightLoader> loader_;
-    std::unique_ptr<CudaBackend> backend_;
+    std::unique_ptr<Backend> backend_;
     cudaStream_t stream_{};
 };
 

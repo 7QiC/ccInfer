@@ -5,11 +5,9 @@
 #include <memory>
 
 #include "base/result.h"
-#include "backend/default_backend.h"
+#include "backend/backend.h"
 
 namespace ccinfer {
-
-class DeviceBuffer;
 
 class KVCacheStorage {
 public:
@@ -22,7 +20,7 @@ public:
     KVCacheStorage& operator=(const KVCacheStorage&) = delete;
 
     template <typename KVDType>
-    static Result<std::unique_ptr<KVCacheStorage>> create(DefaultBackend& backend, int num_layers,
+    static Result<std::unique_ptr<KVCacheStorage>> create(Backend& backend, int num_layers,
                                                           int max_blocks, int block_size,
                                                           int num_kv_heads, int head_dim);
 
@@ -42,11 +40,11 @@ public:
     std::size_t elem_size() const { return elem_size_; }
 
 private:
-    Result<void> init(DefaultBackend& backend, int num_layers, int max_blocks, int block_size,
+    Result<void> init(Backend& backend, int num_layers, int max_blocks, int block_size,
                       int num_kv_heads, int head_dim, std::size_t elem_size);
 
-    std::unique_ptr<DeviceBuffer> k_data_;
-    std::unique_ptr<DeviceBuffer> v_data_;
+    std::shared_ptr<Buffer> k_data_;
+    std::shared_ptr<Buffer> v_data_;
     int64_t layer_stride_ = 0;
     std::size_t elem_size_ = 0;
     int max_slots_ = 0;
@@ -54,7 +52,7 @@ private:
 };
 
 template <typename KVDType>
-Result<std::unique_ptr<KVCacheStorage>> KVCacheStorage::create(DefaultBackend& backend,
+Result<std::unique_ptr<KVCacheStorage>> KVCacheStorage::create(Backend& backend,
                                                                int num_layers, int max_blocks,
                                                                int block_size, int num_kv_heads,
                                                                int head_dim) {

@@ -11,7 +11,7 @@ namespace ccinfer {
 //
 //   C = A @ B
 //
-// The exact row-major / column-major trick is handled inside CudaBackend::gemm.
+// The exact row-major / column-major trick is handled inside Backend::gemm.
 // Keep this struct as a thin backend parameter carrier.
 //
 // lda_, ldb_, ldc_ must be > 0.

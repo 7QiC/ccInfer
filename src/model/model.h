@@ -5,7 +5,7 @@
 #include "base/result.h"
 #include "base/types.h"
 #include "backend/params.h"
-#include "backend/default_backend.h"
+#include "backend/backend.h"
 
 namespace ccinfer {
 
@@ -45,7 +45,7 @@ public:
     virtual ~Model() = default;
 
     virtual Result<void> forward(const ForwardInput& input, ForwardOutput& output,
-                                 DefaultBackend& backend) = 0;
+                                 Backend& backend) = 0;
 
     virtual const ModelConfig& config() const = 0;
     virtual const char* architecture() const = 0;
