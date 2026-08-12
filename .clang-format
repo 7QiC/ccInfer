@@ -6,13 +6,14 @@ IndentCaseLabels: true
 AccessModifierOffset: -4
 MaxEmptyLinesToKeep: 1
 IncludeBlocks: Regroup
+IncludeIsMainRegex: '(Test)?$'
 IncludeCategories:
-  - Regex: '^<.*\.h>'
-    Priority: 1
-    SortPriority: 1
+  - Regex: '^<(cuda|gtest|boost|nlohmann|fmt|spdlog).*>'
+    Priority: 4
+    SortPriority: 2
   - Regex: '^<.*>'
     Priority: 3
-    SortPriority: 2
+    SortPriority: 1
   - Regex: '^".*"'
     Priority: 5
     SortPriority: 3

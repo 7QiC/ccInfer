@@ -21,7 +21,7 @@ Configure with `-DBUILD_SERVER=ON` to build the HTTP server (`BUILD_TESTS` defau
 
 ## Coding Style & Naming Conventions
 
-C++23 with the `ccinfer` namespace. `.clang-format` enforces Google base style: 100-column limit, 4-space indentation, no tabs; run `clang-format` on changed files before committing. Classes/enums use PascalCase; functions, variables, and files use snake_case; members end with an underscore (e.g. `int count_;`). Parameter semantics: read-only parameters use `const T&`; parameters that are written (outputs/in-place) take a pointer `T*`, never a reference. Headers use `.h` with `#pragma once` and sorted includes (C std → C++ std → third-party → project). Errors use `Result<T> = std::expected<T, ErrorCode>`; never throw in hot paths. Device memory is owned by the framework-side `Buffer` (`backend/buffer.h`).
+C++23 with the `ccinfer` namespace. `.clang-format` enforces Google base style: 100-column limit, 4-space indentation, no tabs; run `clang-format` on changed files before committing. Classes/enums use PascalCase; functions, variables, and files use snake_case; members end with an underscore (e.g. `int count_;`). Parameter semantics: read-only parameters use `const T&`; parameters that are written (outputs/in-place) take a pointer `T*`, never a reference. Headers use `.h` with `#pragma once` and sorted includes (source-file header first, then C std → C++ std → third-party → project). Errors use `Result<T> = std::expected<T, ErrorCode>`; never throw in hot paths. Device memory is owned by the framework-side `Buffer` (`backend/buffer.h`).
 
 ## Comment Policy
 
