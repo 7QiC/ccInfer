@@ -1,28 +1,28 @@
 #include "worker/worker.h"
 
-#include <cuda_bf16.h>
-
 #include <algorithm>
 #include <fstream>
 #include <limits>
 #include <mutex>
-#include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <type_traits>
 #include <unordered_map>
 #include <variant>
 
+#include <cuda_bf16.h>
+#include <nlohmann/json.hpp>
+
+#include "backend/backend.h"
 #include "base/error_code.h"
 #include "cache/kv_cache_manager.h"
 #include "cache/kv_cache_storage.h"
-#include "backend/backend.h"
 #include "core/traits.h"
 #include "model/config.h"
 #include "model/loader.h"
 #include "model/model_runner.h"
 #include "model/registry.h"
-#include "worker/batch_translator.h"
 #include "spdlog/spdlog.h"
+#include "worker/batch_translator.h"
 
 namespace ccinfer {
 
@@ -164,10 +164,16 @@ void Worker::enqueue_execute_batch(ScheduledBatch batch, std::vector<SequenceSna
 }
 
 DeviceCapacity Worker::capacity() const {
-    return DeviceCapacity{kMaxSequences, active_sequences_.load(), free_blocks_.load(),
-                          max_blocks_.load(), block_size_.load(), block_active_.load(),
-                          block_cached_idle_.load(), prefix_lookup_hits_.load(),
-                          prefix_lookup_misses_.load(), prefix_evictions_.load(),
+    return DeviceCapacity{kMaxSequences,
+                          active_sequences_.load(),
+                          free_blocks_.load(),
+                          max_blocks_.load(),
+                          block_size_.load(),
+                          block_active_.load(),
+                          block_cached_idle_.load(),
+                          prefix_lookup_hits_.load(),
+                          prefix_lookup_misses_.load(),
+                          prefix_evictions_.load(),
                           prefix_cached_blocks_.load()};
 }
 
@@ -265,8 +271,8 @@ Result<void> Worker::init_resources(const std::string& model_path) {
 
         max_blocks_.store(1024);
 
-        auto kvs_r = KVCacheStorage::create<__nv_bfloat16>(
-            *backend_, num_layers, max_blocks_.load(), kKVBlockSize, num_kv_heads, head_dim);
+        auto kvs_r = KVCacheStorage::create(*backend_, num_layers, max_blocks_.load(), kKVBlockSize,
+                                            num_kv_heads, head_dim, ops::DType::kBFloat16);
         if (!kvs_r) {
             return std::unexpected(kvs_r.error());
         }
@@ -327,7 +333,8 @@ void Worker::process_batch(PendingBatch pending) {
     }
 
     if (pending.batch.items.empty()) {
-        resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(ErrorCode::InvalidArgument)));
+        resolve(pending.chan,
+                Result<WorkerBatchResult>(std::unexpected(ErrorCode::InvalidArgument)));
         return;
     }
 
@@ -407,9 +414,8 @@ void Worker::process_batch(PendingBatch pending) {
                 static_cast<std::size_t>(wr.item_index) >= per_item.size()) {
                 translator.rollback(per_item);
                 sync_capacity();
-                resolve(pending.chan,
-                        Result<WorkerBatchResult>(
-                            std::unexpected(ErrorCode::BatchTranslationFailed)));
+                resolve(pending.chan, Result<WorkerBatchResult>(
+                                          std::unexpected(ErrorCode::BatchTranslationFailed)));
                 return;
             }
 
@@ -422,9 +428,8 @@ void Worker::process_batch(PendingBatch pending) {
                     wr.tokens_consumed != 1) {
                     translator.rollback(per_item);
                     sync_capacity();
-                    resolve(pending.chan,
-                            Result<WorkerBatchResult>(
-                                std::unexpected(ErrorCode::BatchTranslationFailed)));
+                    resolve(pending.chan, Result<WorkerBatchResult>(
+                                              std::unexpected(ErrorCode::BatchTranslationFailed)));
                     return;
                 }
                 wr.kind = WorkKind::PrefillChunk;
@@ -434,9 +439,8 @@ void Worker::process_batch(PendingBatch pending) {
                     wr.tokens_consumed > requested_prefill->prompt_span.length) {
                     translator.rollback(per_item);
                     sync_capacity();
-                    resolve(pending.chan,
-                            Result<WorkerBatchResult>(
-                                std::unexpected(ErrorCode::BatchTranslationFailed)));
+                    resolve(pending.chan, Result<WorkerBatchResult>(
+                                              std::unexpected(ErrorCode::BatchTranslationFailed)));
                     return;
                 }
                 wr.tokens_consumed = requested_prefill->prompt_span.length;

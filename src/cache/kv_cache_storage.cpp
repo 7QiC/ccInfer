@@ -4,6 +4,7 @@
 #include <limits>
 #include <utility>
 
+#include "backend/backend.h"
 #include "base/error_code.h"
 
 namespace ccinfer {
@@ -22,61 +23,63 @@ KVCacheStorage::~KVCacheStorage() = default;
 KVCacheStorage::KVCacheStorage(KVCacheStorage&&) noexcept = default;
 KVCacheStorage& KVCacheStorage::operator=(KVCacheStorage&&) noexcept = default;
 
-void* KVCacheStorage::k_data() {
-    assert(k_data_ && "KVCacheStorage not initialized");
-    return k_data_->data();
-}
-void* KVCacheStorage::v_data() {
-    assert(v_data_ && "KVCacheStorage not initialized");
-    return v_data_->data();
-}
-const void* KVCacheStorage::k_data() const {
-    assert(k_data_ && "KVCacheStorage not initialized");
-    return k_data_->data();
-}
-const void* KVCacheStorage::v_data() const {
-    assert(v_data_ && "KVCacheStorage not initialized");
-    return v_data_->data();
-}
+namespace {
 
-void* KVCacheStorage::k_layer(int layer) {
-    assert(k_data_ && "KVCacheStorage not initialized");
-    assert(layer >= 0 && layer < num_layers_ && "layer out of range");
+void* layer_data(const std::shared_ptr<Buffer>& buffer, int layer, int num_layers,
+                 int64_t layer_stride, std::size_t elem_size) {
+    assert(buffer && "KVCacheStorage not initialized");
+    assert(layer >= 0 && layer < num_layers && "layer out of range");
     const std::size_t offset =
-        static_cast<std::size_t>(layer) * static_cast<std::size_t>(layer_stride_) * elem_size_;
-    return static_cast<char*>(k_data_->data()) + offset;
+        static_cast<std::size_t>(layer) * static_cast<std::size_t>(layer_stride) * elem_size;
+    return static_cast<char*>(buffer->data()) + offset;
 }
 
-void* KVCacheStorage::v_layer(int layer) {
-    assert(v_data_ && "KVCacheStorage not initialized");
-    assert(layer >= 0 && layer < num_layers_ && "layer out of range");
-    const std::size_t offset =
-        static_cast<std::size_t>(layer) * static_cast<std::size_t>(layer_stride_) * elem_size_;
-    return static_cast<char*>(v_data_->data()) + offset;
+}  // namespace
+
+Tensor KVCacheStorage::k_layer_tensor(int layer) {
+    return Tensor::from_buffer(k_data_,
+                               layer_data(k_data_, layer, num_layers_, layer_stride_, elem_size_),
+                               dtype_, {max_slots_, num_kv_heads_, head_dim_});
 }
 
-const void* KVCacheStorage::k_layer(int layer) const {
-    assert(k_data_ && "KVCacheStorage not initialized");
-    assert(layer >= 0 && layer < num_layers_ && "layer out of range");
-    const std::size_t offset =
-        static_cast<std::size_t>(layer) * static_cast<std::size_t>(layer_stride_) * elem_size_;
-    return static_cast<char*>(k_data_->data()) + offset;
+Tensor KVCacheStorage::v_layer_tensor(int layer) {
+    return Tensor::from_buffer(v_data_,
+                               layer_data(v_data_, layer, num_layers_, layer_stride_, elem_size_),
+                               dtype_, {max_slots_, num_kv_heads_, head_dim_});
 }
 
-const void* KVCacheStorage::v_layer(int layer) const {
-    assert(v_data_ && "KVCacheStorage not initialized");
-    assert(layer >= 0 && layer < num_layers_ && "layer out of range");
-    const std::size_t offset =
-        static_cast<std::size_t>(layer) * static_cast<std::size_t>(layer_stride_) * elem_size_;
-    return static_cast<char*>(v_data_->data()) + offset;
+Tensor KVCacheStorage::k_block_tensor(int layer) {
+    return Tensor::from_buffer(k_data_,
+                               layer_data(k_data_, layer, num_layers_, layer_stride_, elem_size_),
+                               dtype_, {max_blocks_, block_size_, num_kv_heads_, head_dim_});
 }
 
-Result<void> KVCacheStorage::init(Backend& backend, int num_layers, int max_blocks,
-                                  int block_size, int num_kv_heads, int head_dim,
-                                  std::size_t elem_size) {
+Tensor KVCacheStorage::v_block_tensor(int layer) {
+    return Tensor::from_buffer(v_data_,
+                               layer_data(v_data_, layer, num_layers_, layer_stride_, elem_size_),
+                               dtype_, {max_blocks_, block_size_, num_kv_heads_, head_dim_});
+}
+
+Result<std::unique_ptr<KVCacheStorage>> KVCacheStorage::create(Backend& backend, int num_layers,
+                                                               int max_blocks, int block_size,
+                                                               int num_kv_heads, int head_dim,
+                                                               ops::DType dtype) {
+    auto storage = std::make_unique<KVCacheStorage>();
+    auto r =
+        storage->init(backend, num_layers, max_blocks, block_size, num_kv_heads, head_dim, dtype);
+    if (!r) return std::unexpected(r.error());
+    return storage;
+}
+
+Result<void> KVCacheStorage::init(Backend& backend, int num_layers, int max_blocks, int block_size,
+                                  int num_kv_heads, int head_dim, ops::DType dtype) {
     if (num_layers <= 0 || max_blocks <= 0 || block_size <= 0 || num_kv_heads <= 0 ||
-        head_dim <= 0 || elem_size == 0) {
+        head_dim <= 0 || dtype == ops::DType::kUnknown) {
         return std::unexpected(ErrorCode::InvalidArgument);
+    }
+    const std::size_t elem_size = ops::dtype_size(dtype);
+    if (elem_size == 0) {
+        return std::unexpected(ErrorCode::Unsupported);
     }
     if (k_data_ || v_data_) {
         return std::unexpected(ErrorCode::InvalidArgument);
@@ -129,7 +132,12 @@ Result<void> KVCacheStorage::init(Backend& backend, int num_layers, int max_bloc
 
     layer_stride_ = static_cast<int64_t>(elements_per_layer);
     elem_size_ = elem_size;
+    dtype_ = dtype;
     max_slots_ = static_cast<int>(max_slots);
+    max_blocks_ = max_blocks;
+    block_size_ = block_size;
+    num_kv_heads_ = num_kv_heads;
+    head_dim_ = head_dim;
     num_layers_ = num_layers;
     return {};
 }

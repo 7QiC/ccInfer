@@ -1,9 +1,10 @@
+#include <vector>
+
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
-#include <vector>
-
 #include "backend/backend.h"
+#include "core/tensor.h"
 
 using namespace ccinfer;
 
@@ -30,6 +31,27 @@ TEST(BufferTest, AllocateAndZero) {
     for (size_t i = 0; i < 1024; i++) {
         EXPECT_EQ(host[i], 0.0f);
     }
+}
+
+TEST(BufferTest, TensorViewBorrowsData) {
+    auto backend_r = Backend::create(0);
+    ASSERT_TRUE(backend_r.has_value());
+    auto& backend = **backend_r;
+    auto buf_r = backend.allocate_buffer(24 * sizeof(float));
+    ASSERT_TRUE(buf_r.has_value());
+    auto buf = std::move(*buf_r);
+
+    const Tensor view(buf, ops::DType::kFloat32, {2, 3, 4});
+    ASSERT_TRUE(view.valid());
+    EXPECT_EQ(view.data(), buf->data());
+    EXPECT_EQ(view.device(), buf->device());
+    EXPECT_EQ(view.dtype(), ops::DType::kFloat32);
+    EXPECT_EQ(view.rank(), 3);
+    EXPECT_EQ(view.shape(0), 2);
+    EXPECT_EQ(view.shape(1), 3);
+    EXPECT_EQ(view.shape(2), 4);
+    EXPECT_TRUE(view.is_contiguous());
+    EXPECT_EQ(view.nbytes(), buf->bytes());
 }
 
 TEST(BufferTest, MoveConstruction) {

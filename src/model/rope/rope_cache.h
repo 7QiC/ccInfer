@@ -1,32 +1,33 @@
 #pragma once
 
-#include <cuda_runtime.h>
-
 #include <cstddef>
 #include <memory>
 
 #include "base/result.h"
-#include "backend/backend.h"
+#include "core/tensor.h"
 
 namespace ccinfer {
+
+class Backend;
 
 class RopeCache {
 public:
     static Result<RopeCache> create(int max_position, int rotary_dim, float rope_theta,
                                     Backend& backend);
 
-    const float2* data() const noexcept { return static_cast<const float2*>(cache_->data()); }
-    float2* data() noexcept { return static_cast<float2*>(cache_->data()); }
+    // 框架 Tensor 视图（共享 cache_ 的所有权）。
+    Tensor tensor() const;
 
     int max_position() const noexcept { return max_position_; }
     int rotary_dim() const noexcept { return rotary_dim_; }
     int half_rotary_dim() const noexcept { return rotary_dim_ / 2; }
     float rope_theta() const noexcept { return rope_theta_; }
 
+    // float 元素个数（cos/sin 各占一个）。
     std::size_t numel() const noexcept {
-        return static_cast<std::size_t>(max_position_) * half_rotary_dim();
+        return static_cast<std::size_t>(max_position_) * half_rotary_dim() * 2;
     }
-    std::size_t bytes() const noexcept { return numel() * sizeof(float2); }
+    std::size_t bytes() const noexcept { return numel() * sizeof(float); }
 
 private:
     RopeCache() = default;

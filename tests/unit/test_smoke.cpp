@@ -1,12 +1,12 @@
+#include <vector>
+
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
-#include <vector>
-
 #include "backend/backend.h"
+#include "base/result.h"
 #include "core/tensor.h"
 #include "model/config.h"
-#include "base/result.h"
 
 using namespace ccinfer;
 
@@ -34,8 +34,13 @@ TEST(SmokeTest, AllocateAndZero) {
 }
 
 TEST(SmokeTest, TensorSmoke) {
-    float data[6] = {};
-    auto t = Tensor<>::make(data, ops::DType::kFloat32, {2, 3});
-    EXPECT_EQ(t.rank_, 2);
+    auto backend_r = Backend::create(0);
+    ASSERT_TRUE(backend_r.has_value());
+    auto& backend = **backend_r;
+    auto t_r = Tensor::empty(backend, ops::DType::kFloat32, {2, 3});
+    ASSERT_TRUE(t_r.has_value());
+    Tensor t = std::move(*t_r);
+    EXPECT_EQ(t.rank(), 2);
     EXPECT_EQ(t.numel(), 6);
+    EXPECT_NE(t.data(), nullptr);
 }

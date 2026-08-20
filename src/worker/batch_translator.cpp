@@ -336,91 +336,41 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
             batch.items[i]);
     }
 
-    auto alloc_buf = [&](std::size_t bytes) -> Result<std::shared_ptr<Buffer>> {
-        auto r = backend_.allocate_buffer(bytes);
-        if (!r) return std::unexpected(r.error());
-        return std::move(*r);
-    };
-
     if (T_sz > kMax / sizeof(int32_t)) return fail(ErrorCode::InvalidArgument);
-    {
-        auto b = alloc_buf(T_sz * sizeof(int32_t));
-        if (!b) return fail(b.error());
-        pb.token_ids = std::move(*b);
-    }
-    {
-        auto b = alloc_buf(T_sz * sizeof(int32_t));
-        if (!b) return fail(b.error());
-        pb.positions = std::move(*b);
-    }
-    {
-        auto b = alloc_buf(T_sz * sizeof(int32_t));
-        if (!b) return fail(b.error());
-        pb.slot_mapping = std::move(*b);
-    }
-    if (B_sz * MBPR_sz > kMax / sizeof(int32_t)) return fail(ErrorCode::InvalidArgument);
-    {
-        auto b = alloc_buf(B_sz * MBPR_sz * sizeof(int32_t));
-        if (!b) return fail(b.error());
-        pb.block_table = std::move(*b);
-    }
-    if (B_sz + 1 > kMax / sizeof(int32_t)) return fail(ErrorCode::InvalidArgument);
-    {
-        auto b = alloc_buf((B_sz + 1) * sizeof(int32_t));
-        if (!b) return fail(b.error());
-        pb.query_start_loc = std::move(*b);
-    }
-    {
-        auto b = alloc_buf(B_sz * sizeof(int32_t));
-        if (!b) return fail(b.error());
-        pb.context_lens = std::move(*b);
-    }
-    {
-        auto b = alloc_buf(B_sz * sizeof(int32_t));
-        if (!b) return fail(b.error());
-        pb.logits_indices = std::move(*b);
-    }
+    const std::int64_t T64 = static_cast<std::int64_t>(total_tokens);
+    const std::int64_t B64 = static_cast<std::int64_t>(batch_size);
+    const std::int64_t MBPR64 = static_cast<std::int64_t>(max_blocks_per_req);
 
-    auto r =
-        backend_.memcpy_h2d(pb.token_ids->data(), token_ids_host.data(), T_sz * sizeof(int32_t));
-    if (!r) {
-        backend_.synchronize();
-        return fail(r.error());
-    }
-    r = backend_.memcpy_h2d(pb.positions->data(), positions_host.data(), T_sz * sizeof(int32_t));
-    if (!r) {
-        backend_.synchronize();
-        return fail(r.error());
-    }
-    r = backend_.memcpy_h2d(pb.slot_mapping->data(), slot_mapping_host.data(),
-                            T_sz * sizeof(int32_t));
-    if (!r) {
-        backend_.synchronize();
-        return fail(r.error());
-    }
-    r = backend_.memcpy_h2d(pb.block_table->data(), block_table_host.data(),
-                            B_sz * MBPR_sz * sizeof(int32_t));
-    if (!r) {
-        backend_.synchronize();
-        return fail(r.error());
-    }
-    r = backend_.memcpy_h2d(pb.query_start_loc->data(), query_start_loc.data(),
-                            (B_sz + 1) * sizeof(int32_t));
-    if (!r) {
-        backend_.synchronize();
-        return fail(r.error());
-    }
-    r = backend_.memcpy_h2d(pb.context_lens->data(), context_lens.data(), B_sz * sizeof(int32_t));
-    if (!r) {
-        backend_.synchronize();
-        return fail(r.error());
-    }
-    r = backend_.memcpy_h2d(pb.logits_indices->data(), logits_indices.data(),
-                            B_sz * sizeof(int32_t));
-    if (!r) {
-        backend_.synchronize();
-        return fail(r.error());
-    }
+    auto token_ids = Tensor::from_host(backend_, token_ids_host.data(), ops::DType::kInt32, {T64});
+    if (!token_ids) return fail(token_ids.error());
+    pb.token_ids = std::move(*token_ids);
+    auto positions = Tensor::from_host(backend_, positions_host.data(), ops::DType::kInt32, {T64});
+    if (!positions) return fail(positions.error());
+    pb.positions = std::move(*positions);
+    auto slot_mapping =
+        Tensor::from_host(backend_, slot_mapping_host.data(), ops::DType::kInt32, {T64});
+    if (!slot_mapping) return fail(slot_mapping.error());
+    pb.slot_mapping = std::move(*slot_mapping);
+
+    if (B_sz * MBPR_sz > kMax / sizeof(int32_t)) return fail(ErrorCode::InvalidArgument);
+    auto block_table =
+        Tensor::from_host(backend_, block_table_host.data(), ops::DType::kInt32, {B64, MBPR64});
+    if (!block_table) return fail(block_table.error());
+    pb.block_table = std::move(*block_table);
+
+    if (B_sz + 1 > kMax / sizeof(int32_t)) return fail(ErrorCode::InvalidArgument);
+    auto query_start_loc_dev =
+        Tensor::from_host(backend_, query_start_loc.data(), ops::DType::kInt32, {B64 + 1});
+    if (!query_start_loc_dev) return fail(query_start_loc_dev.error());
+    pb.query_start_loc = std::move(*query_start_loc_dev);
+    auto context_lens_dev =
+        Tensor::from_host(backend_, context_lens.data(), ops::DType::kInt32, {B64});
+    if (!context_lens_dev) return fail(context_lens_dev.error());
+    pb.context_lens = std::move(*context_lens_dev);
+    auto logits_indices_dev =
+        Tensor::from_host(backend_, logits_indices.data(), ops::DType::kInt32, {B64});
+    if (!logits_indices_dev) return fail(logits_indices_dev.error());
+    pb.logits_indices = std::move(*logits_indices_dev);
 
     auto sync_r = backend_.synchronize();
     if (!sync_r) return fail(sync_r.error());
@@ -533,10 +483,9 @@ Result<void> BatchTranslator::commit(const ScheduledBatch& batch,
         // Verify total blocks after commit cover kv_written + new_tokens.
         int64_t total_blocks_after =
             static_cast<int64_t>(seq.block_table.size()) + per_item[i].new_blocks.size();
-        int64_t blocks_needed =
-            (static_cast<int64_t>(seq.kv_written) + per_item[i].kv_tokens_to_commit +
-             block_size_ - 1) /
-            block_size_;
+        int64_t blocks_needed = (static_cast<int64_t>(seq.kv_written) +
+                                 per_item[i].kv_tokens_to_commit + block_size_ - 1) /
+                                block_size_;
         if (total_blocks_after < blocks_needed) return std::unexpected(ErrorCode::InvalidArgument);
 
         to_update[i] = &seq;

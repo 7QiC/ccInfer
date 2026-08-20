@@ -1,6 +1,5 @@
-#include <gtest/gtest.h>
-
 #include <cuda_bf16.h>
+#include <gtest/gtest.h>
 
 #include "backend/backend.h"
 #include "cache/kv_cache_manager.h"
@@ -16,8 +15,9 @@ protected:
         ASSERT_TRUE(be.has_value());
         backend_ = std::move(*be);
 
-        auto sr = KVCacheStorage::create<__nv_bfloat16>(*backend_, /*num_layers=*/1, /*max_blocks=*/64,
-                                                        kKVBlockSize, /*num_kv_heads=*/4, /*head_dim=*/64);
+        auto sr =
+            KVCacheStorage::create(*backend_, /*num_layers=*/1, /*max_blocks=*/64, kKVBlockSize,
+                                   /*num_kv_heads=*/4, /*head_dim=*/64, ops::DType::kBFloat16);
         ASSERT_TRUE(sr.has_value());
 
         auto mr = mgr_.init(std::move(*sr), 64, kKVBlockSize);
@@ -192,7 +192,7 @@ TEST_F(KVCacheManagerTest, CacheFullBlocksRejectsUncommitted) {
     // Only 1 block should be cached (the committed one).
     mgr_.release_blocks(pr->block_table);
     auto s = mgr_.stats();
-    EXPECT_EQ(s.block_cached_idle, 1);  // first block → LRU
+    EXPECT_EQ(s.block_cached_idle, 1);      // first block → LRU
     EXPECT_EQ(mgr_.num_free_blocks(), 63);  // second block → FREE
 }
 

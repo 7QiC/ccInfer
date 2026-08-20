@@ -1,17 +1,16 @@
-#include <gtest/gtest.h>
-
-#include <cuda_bf16.h>
-#include <cuda_runtime.h>
-
 #include <cmath>
 #include <cstdlib>
 #include <vector>
+
+#include <cuda_bf16.h>
+#include <cuda_runtime.h>
+#include <gtest/gtest.h>
 
 #include "backend/backend.h"
 #include "cache/block.h"
 #include "cache/kv_cache_manager.h"
 #include "cache/kv_cache_storage.h"
-#include "kernel/cuda_kernels.h"
+#include "ops/ops.h"
 
 namespace ccinfer {
 namespace {
@@ -29,9 +28,9 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
 
     auto backend_r = Backend::create(0);
     ASSERT_TRUE(backend_r.has_value());
-    auto& backend = **backend_r;
-    auto r_storage = KVCacheStorage::create<__nv_bfloat16>(backend, kNumLayers, kMaxBlocks,
-                                                           block_size, nkv, hd);
+    auto &backend = **backend_r;
+    auto r_storage = KVCacheStorage::create(backend, kNumLayers, kMaxBlocks, block_size, nkv, hd,
+                                            ops::DType::kBFloat16);
     ASSERT_TRUE(r_storage.has_value());
 
     KVCacheManager mgr;
@@ -81,18 +80,21 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
         slot_mapping[t] = (*alloc)[block_idx] * block_size + pos_in_block;
     }
 
-    int32_t* d_slot_mapping;
+    int32_t *d_slot_mapping;
     cudaMalloc(&d_slot_mapping, kNumTokens * sizeof(int32_t));
-    cudaMemcpy(d_slot_mapping, slot_mapping.data(),
-               kNumTokens * sizeof(int32_t), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_slot_mapping, slot_mapping.data(), kNumTokens * sizeof(int32_t),
+               cudaMemcpyHostToDevice);
 
     {
-        auto r = launch_write_kv_cache(d_k_new, d_v_new,
-                                       static_cast<__nv_bfloat16*>(mgr.k_cache(0)),
-                                       static_cast<__nv_bfloat16*>(mgr.v_cache(0)),
-                                       d_slot_mapping, kNumTokens, nkv, hd,
-                                       kMaxBlocks * block_size, stream);
-        ASSERT_TRUE(r.has_value());
+        constexpr ops::Device kCuda0{ops::DeviceType::kCUDA, 0};
+        ops::Tensor k_new(d_k_new, ops::DType::kBFloat16, kCuda0, {kNumTokens, nkv, hd});
+        ops::Tensor v_new(d_v_new, ops::DType::kBFloat16, kCuda0, {kNumTokens, nkv, hd});
+        ops::Tensor slot(d_slot_mapping, ops::DType::kInt32, kCuda0, {kNumTokens});
+        auto k_cache = mgr.k_cache(0);
+        auto v_cache = mgr.v_cache(0);
+        ASSERT_TRUE(
+            ops::map_result(ops::write_kv_cache(k_new, v_new, &k_cache, &v_cache, slot, {stream}))
+                .has_value());
     }
 
     std::vector<int32_t> h_query_start_loc = {0, kNumTokens};
@@ -103,26 +105,35 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     cudaMalloc(&d_context_lens, 1 * sizeof(int32_t));
     cudaMalloc(&d_block_table, num_blocks * sizeof(int32_t));
 
-    cudaMemcpyAsync(d_query_start_loc, h_query_start_loc.data(),
-                    2 * sizeof(int32_t), cudaMemcpyHostToDevice, stream);
-    cudaMemcpyAsync(d_context_lens, h_context_lens.data(),
-                    sizeof(int32_t), cudaMemcpyHostToDevice, stream);
-    cudaMemcpyAsync(d_block_table, (*alloc).data(),
-                    num_blocks * sizeof(int32_t), cudaMemcpyHostToDevice, stream);
+    cudaMemcpyAsync(d_query_start_loc, h_query_start_loc.data(), 2 * sizeof(int32_t),
+                    cudaMemcpyHostToDevice, stream);
+    cudaMemcpyAsync(d_context_lens, h_context_lens.data(), sizeof(int32_t), cudaMemcpyHostToDevice,
+                    stream);
+    cudaMemcpyAsync(d_block_table, (*alloc).data(), num_blocks * sizeof(int32_t),
+                    cudaMemcpyHostToDevice, stream);
 
     {
-        auto r = launch_prefill_attention(d_q,
-                                          static_cast<const __nv_bfloat16*>(mgr.k_cache(0)),
-                                          static_cast<const __nv_bfloat16*>(mgr.v_cache(0)),
-                                          d_block_table, d_query_start_loc, d_context_lens,
-                                          d_out_prefill, 1, kNumTokens, num_blocks,
-                                          nq, nkv, hd, block_size, stream);
-        ASSERT_TRUE(r.has_value());
+        constexpr ops::Device kCuda0{ops::DeviceType::kCUDA, 0};
+        ops::Tensor q(d_q, ops::DType::kBFloat16, kCuda0, {kNumTokens, nq, hd});
+        auto k_cache = mgr.k_cache_blocks(0);
+        auto v_cache = mgr.v_cache_blocks(0);
+        ops::Tensor block_table(d_block_table, ops::DType::kInt32, kCuda0, {1, num_blocks});
+        ops::Tensor query_start_loc(d_query_start_loc, ops::DType::kInt32, kCuda0, {2});
+        ops::Tensor context_lens(d_context_lens, ops::DType::kInt32, kCuda0, {1});
+        ops::Tensor out_prefill(d_out_prefill, ops::DType::kBFloat16, kCuda0, {kNumTokens, nq, hd});
+        const float scale = 1.0f / std::sqrt(static_cast<float>(hd));
+        ASSERT_TRUE(ops::map_result(ops::prefill_attention(q, k_cache, v_cache, block_table,
+                                                           query_start_loc, context_lens,
+                                                           &out_prefill, scale, {stream}))
+                        .has_value());
 
-        // Reference: naive_attention on dense K/V
-        r = launch_naive_attention(d_q, d_k_new, d_v_new, d_out_ref,
-                                   kNumTokens, nq, nkv, hd, stream);
-        ASSERT_TRUE(r.has_value());
+        // Reference: naive_attention on dense K/V.
+        ops::Tensor k_new(d_k_new, ops::DType::kBFloat16, kCuda0, {kNumTokens, nkv, hd});
+        ops::Tensor v_new(d_v_new, ops::DType::kBFloat16, kCuda0, {kNumTokens, nkv, hd});
+        ops::Tensor out_ref(d_out_ref, ops::DType::kBFloat16, kCuda0, {kNumTokens, nq, hd});
+        ASSERT_TRUE(
+            ops::map_result(ops::naive_attention(q, k_new, v_new, &out_ref, scale, {stream}))
+                .has_value());
 
         cudaStreamSynchronize(stream);
 
@@ -145,49 +156,53 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
         // Two requests with different Q values
         int64_t decode_q_elems = static_cast<int64_t>(kDecodeBatch) * nq * hd;
         std::vector<__nv_bfloat16> h_decode_q(decode_q_elems);
-        for (int64_t i = 0; i < decode_q_elems; ++i)
-            h_decode_q[i] = __float2bfloat16(0.0f);
+        for (int64_t i = 0; i < decode_q_elems; ++i) h_decode_q[i] = __float2bfloat16(0.0f);
         // Request 0: Q = 0.1
         for (int h = 0; h < nq; ++h)
-            for (int d = 0; d < hd; ++d)
-                h_decode_q[h * hd + d] = __float2bfloat16(0.1f);
+            for (int d = 0; d < hd; ++d) h_decode_q[h * hd + d] = __float2bfloat16(0.1f);
         // Request 1: Q = 0.3
         for (int h = 0; h < nq; ++h)
-            for (int d = 0; d < hd; ++d)
-                h_decode_q[nq * hd + h * hd + d] = __float2bfloat16(0.3f);
+            for (int d = 0; d < hd; ++d) h_decode_q[nq * hd + h * hd + d] = __float2bfloat16(0.3f);
 
         __nv_bfloat16 *d_decode_q, *d_decode_out;
         cudaMalloc(&d_decode_q, decode_q_elems * sizeof(__nv_bfloat16));
         cudaMalloc(&d_decode_out, decode_q_elems * sizeof(__nv_bfloat16));
-        cudaMemcpy(d_decode_q, h_decode_q.data(),
-                   decode_q_elems * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_decode_q, h_decode_q.data(), decode_q_elems * sizeof(__nv_bfloat16),
+                   cudaMemcpyHostToDevice);
 
         // Two requests, both seeing the full 32-token context
-        std::vector<int32_t> h_dec_block_table = {(*alloc)[0], (*alloc)[1],
-                                                   (*alloc)[0], (*alloc)[1]};
+        std::vector<int32_t> h_dec_block_table = {(*alloc)[0], (*alloc)[1], (*alloc)[0],
+                                                  (*alloc)[1]};
         std::vector<int32_t> h_dec_context_lens = {kNumTokens, kNumTokens};
 
         int32_t *d_dec_block_table, *d_dec_context_lens;
         cudaMalloc(&d_dec_block_table, kDecodeBatch * num_blocks * sizeof(int32_t));
         cudaMalloc(&d_dec_context_lens, kDecodeBatch * sizeof(int32_t));
         cudaMemcpyAsync(d_dec_block_table, h_dec_block_table.data(),
-                        kDecodeBatch * num_blocks * sizeof(int32_t),
-                        cudaMemcpyHostToDevice, stream);
+                        kDecodeBatch * num_blocks * sizeof(int32_t), cudaMemcpyHostToDevice,
+                        stream);
         cudaMemcpyAsync(d_dec_context_lens, h_dec_context_lens.data(),
                         kDecodeBatch * sizeof(int32_t), cudaMemcpyHostToDevice, stream);
 
-        auto r = launch_decode_attention(d_decode_q,
-                                          static_cast<const __nv_bfloat16*>(mgr.k_cache(0)),
-                                          static_cast<const __nv_bfloat16*>(mgr.v_cache(0)),
-                                         d_dec_block_table, d_dec_context_lens,
-                                         d_decode_out, kDecodeBatch, num_blocks,
-                                         nq, nkv, hd, block_size, stream);
-        ASSERT_TRUE(r.has_value());
+        constexpr ops::Device kCuda0{ops::DeviceType::kCUDA, 0};
+        ops::Tensor decode_q(d_decode_q, ops::DType::kBFloat16, kCuda0, {kDecodeBatch, nq, hd});
+        auto k_cache = mgr.k_cache_blocks(0);
+        auto v_cache = mgr.v_cache_blocks(0);
+        ops::Tensor dec_block_table(d_dec_block_table, ops::DType::kInt32, kCuda0,
+                                    {kDecodeBatch, num_blocks});
+        ops::Tensor dec_context_lens(d_dec_context_lens, ops::DType::kInt32, kCuda0,
+                                     {kDecodeBatch});
+        ops::Tensor decode_out(d_decode_out, ops::DType::kBFloat16, kCuda0, {kDecodeBatch, nq, hd});
+        const float scale = 1.0f / std::sqrt(static_cast<float>(hd));
+        ASSERT_TRUE(
+            ops::map_result(ops::decode_attention(decode_q, k_cache, v_cache, dec_block_table,
+                                                  dec_context_lens, &decode_out, scale, {stream}))
+                .has_value());
         cudaStreamSynchronize(stream);
 
         std::vector<__nv_bfloat16> h_decode_out(decode_q_elems);
-        cudaMemcpy(h_decode_out.data(), d_decode_out,
-                   decode_q_elems * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_decode_out.data(), d_decode_out, decode_q_elems * sizeof(__nv_bfloat16),
+                   cudaMemcpyDeviceToHost);
 
         for (int64_t i = 0; i < decode_q_elems; ++i) {
             EXPECT_TRUE(std::isfinite(__bfloat162float(h_decode_out[i])));
@@ -198,8 +213,10 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
         float v1 = __bfloat162float(h_decode_out[nq * hd]);
         EXPECT_NE(v0, v1) << "different Q should produce different outputs";
 
-        cudaFree(d_decode_q); cudaFree(d_decode_out);
-        cudaFree(d_dec_block_table); cudaFree(d_dec_context_lens);
+        cudaFree(d_decode_q);
+        cudaFree(d_decode_out);
+        cudaFree(d_dec_block_table);
+        cudaFree(d_dec_context_lens);
     }
 
     auto rel = mgr.release_blocks(*alloc);
@@ -216,10 +233,14 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     ASSERT_EQ(last_err, cudaSuccess);
 
     cudaStreamDestroy(stream);
-    cudaFree(d_q); cudaFree(d_k_new); cudaFree(d_v_new);
-    cudaFree(d_out_prefill); cudaFree(d_out_ref);
+    cudaFree(d_q);
+    cudaFree(d_k_new);
+    cudaFree(d_v_new);
+    cudaFree(d_out_prefill);
+    cudaFree(d_out_ref);
     cudaFree(d_slot_mapping);
-    cudaFree(d_query_start_loc); cudaFree(d_context_lens);
+    cudaFree(d_query_start_loc);
+    cudaFree(d_context_lens);
     cudaFree(d_block_table);
 }
 

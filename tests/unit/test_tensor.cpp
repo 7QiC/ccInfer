@@ -1,54 +1,89 @@
 #include <gtest/gtest.h>
 
+#include "backend/backend.h"
 #include "core/tensor.h"
 
 using namespace ccinfer;
 
-TEST(TensorTest, MakeAndShape) {
-    float data[24] = {};
-    auto t = Tensor<>::make(data, ops::DType::kFloat32, {2, 3, 4});
-    EXPECT_EQ(t.rank_, 3);
-    EXPECT_EQ(t.shape_[0], 2);
-    EXPECT_EQ(t.shape_[1], 3);
-    EXPECT_EQ(t.shape_[2], 4);
+TEST(TensorTest, EmptyAllocatesAndOwnsBuffer) {
+    auto backend_r = Backend::create(0);
+    ASSERT_TRUE(backend_r.has_value());
+    auto& backend = **backend_r;
+
+    auto t_r = Tensor::empty(backend, ops::DType::kFloat32, {2, 3, 4});
+    ASSERT_TRUE(t_r.has_value());
+    Tensor t = std::move(*t_r);
+    EXPECT_TRUE(t.valid());
+    EXPECT_EQ(t.dtype(), ops::DType::kFloat32);
+    EXPECT_EQ(t.rank(), 3);
+    EXPECT_EQ(t.shape(0), 2);
+    EXPECT_EQ(t.shape(1), 3);
+    EXPECT_EQ(t.shape(2), 4);
     EXPECT_EQ(t.numel(), 24);
+    EXPECT_EQ(t.nbytes(), 24 * sizeof(float));
+    EXPECT_TRUE(t.is_contiguous());
+    ASSERT_NE(t.buffer(), nullptr);
+    EXPECT_EQ(t.data(), t.buffer()->data());
 }
 
-TEST(TensorTest, DefaultStrideRowMajor) {
-    float data[24] = {};
-    auto t = Tensor<>::make(data, ops::DType::kFloat32, {2, 3, 4});
-    EXPECT_EQ(t.stride_[2], 1);
-    EXPECT_EQ(t.stride_[1], 4);
-    EXPECT_EQ(t.stride_[0], 12);
+TEST(TensorTest, CopySharesOwnerAndView) {
+    auto backend_r = Backend::create(0);
+    ASSERT_TRUE(backend_r.has_value());
+    auto& backend = **backend_r;
+
+    auto t_r = Tensor::empty(backend, ops::DType::kFloat32, {10});
+    ASSERT_TRUE(t_r.has_value());
+    Tensor t = std::move(*t_r);
+    Tensor copy = t;
+    EXPECT_EQ(copy.data(), t.data());
+    EXPECT_EQ(copy.buffer(), t.buffer());
+    EXPECT_EQ(copy.numel(), 10);
 }
 
-TEST(TensorTest, Nbytes) {
-    float data[10] = {};
-    auto t = Tensor<>::make(data, ops::DType::kFloat32, {10});
-    EXPECT_EQ(t.nbytes(), 40);
+TEST(TensorTest, FlatSharesOwner) {
+    auto backend_r = Backend::create(0);
+    ASSERT_TRUE(backend_r.has_value());
+    auto& backend = **backend_r;
 
-    int8_t i8[8] = {};
-    auto t2 = Tensor<>::make(i8, ops::DType::kInt8, {8});
-    EXPECT_EQ(t2.nbytes(), 8);
+    auto t_r = Tensor::empty(backend, ops::DType::kFloat32, {2, 3, 4});
+    ASSERT_TRUE(t_r.has_value());
+    Tensor t = std::move(*t_r);
+    Tensor flat = t.flat();
+    EXPECT_EQ(flat.data(), t.data());
+    EXPECT_EQ(flat.buffer(), t.buffer());
+    EXPECT_EQ(flat.rank(), 1);
+    EXPECT_EQ(flat.shape(0), 24);
 }
 
-TEST(TensorTest, Slice) {
-    float data[24] = {};
-    auto t = Tensor<>::make(data, ops::DType::kFloat32, {2, 3, 4});
-    auto s = t.slice(0, 1, 2);
-    EXPECT_EQ(s.rank_, 3);
-    EXPECT_EQ(s.shape_[0], 1);
-    EXPECT_EQ(s.shape_[1], 3);
-    EXPECT_EQ(s.shape_[2], 4);
-    EXPECT_EQ(static_cast<float*>(s.data_), data + 12);
+TEST(TensorTest, SliceAdjustsViewOnly) {
+    auto backend_r = Backend::create(0);
+    ASSERT_TRUE(backend_r.has_value());
+    auto& backend = **backend_r;
+
+    auto t_r = Tensor::empty(backend, ops::DType::kFloat32, {2, 3, 4});
+    ASSERT_TRUE(t_r.has_value());
+    Tensor t = std::move(*t_r);
+    Tensor s = t.slice(0, 1, 2);
+    EXPECT_EQ(s.rank(), 3);
+    EXPECT_EQ(s.shape(0), 1);
+    EXPECT_EQ(s.shape(1), 3);
+    EXPECT_EQ(s.shape(2), 4);
+    EXPECT_EQ(s.buffer(), t.buffer());
+    EXPECT_NE(s.data(), t.data());
 }
 
-TEST(TensorTest, Select) {
-    float data[24] = {};
-    auto t = Tensor<>::make(data, ops::DType::kFloat32, {2, 3, 4});
-    auto s = t.select(0, 1);
-    EXPECT_EQ(s.rank_, 2);
-    EXPECT_EQ(s.shape_[0], 3);
-    EXPECT_EQ(s.shape_[1], 4);
-    EXPECT_EQ(static_cast<float*>(s.data_), data + 12);
+TEST(TensorTest, SelectAdjustsViewOnly) {
+    auto backend_r = Backend::create(0);
+    ASSERT_TRUE(backend_r.has_value());
+    auto& backend = **backend_r;
+
+    auto t_r = Tensor::empty(backend, ops::DType::kFloat32, {2, 3, 4});
+    ASSERT_TRUE(t_r.has_value());
+    Tensor t = std::move(*t_r);
+    Tensor s = t.select(0, 1);
+    EXPECT_EQ(s.rank(), 2);
+    EXPECT_EQ(s.shape(0), 3);
+    EXPECT_EQ(s.shape(1), 4);
+    EXPECT_EQ(s.buffer(), t.buffer());
+    EXPECT_NE(s.data(), t.data());
 }

@@ -1,27 +1,26 @@
-#include <gtest/gtest.h>
-
-#include <cuda_bf16.h>
-#include <cuda_runtime.h>
-
+#include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <vector>
 
-#include "backend/backend.h"
+#include <cuda_bf16.h>
+#include <cuda_runtime.h>
+#include <gtest/gtest.h>
+
 #include "backend/backend.h"
 #include "backend/cuda/cuda_utils.h"
 #include "cache/block.h"
 #include "cache/kv_cache_manager.h"
 #include "cache/kv_cache_storage.h"
-#include "kernel/cuda_kernels.h"
 #include "model/config.h"
 #include "model/loader.h"
-#include "model/registry.h"
 #include "model/rope/rope_cache.h"
+#include "ops/ops.h"
 #include "tokenizer/byte_level_bpe_tokenizer.h"
 
 using namespace ccinfer;
@@ -58,6 +57,15 @@ void save_bin(const std::string& path, const float* data, size_t n) {
     f.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(n * sizeof(float)));
 }
 
+void dump_bf16_to_f32(const std::string& dir, const char* name, const Tensor& src, size_t n) {
+    cudaDeviceSynchronize();
+    std::vector<__nv_bfloat16> tmp(n);
+    std::vector<float> f32(n);
+    cudaMemcpy(tmp.data(), src.data(), n * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost);
+    for (size_t i = 0; i < n; ++i) f32[i] = __bfloat162float(tmp[i]);
+    save_bin(dir + "/" + name, f32.data(), n);
+}
+
 }  // namespace
 
 class LayerMatchTest : public ::testing::Test {
@@ -84,7 +92,10 @@ protected:
     }
 
     void TearDown() override {
-        if (stream_) { cudaDeviceSynchronize(); cudaStreamDestroy(stream_); }
+        if (stream_) {
+            cudaDeviceSynchronize();
+            cudaStreamDestroy(stream_);
+        }
     }
 
     std::string dir_;
@@ -112,290 +123,282 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
     const float eps = config_.rms_norm_eps_;
     const int qkv_dim = (nq + 2 * nkv) * hd;
     const int attn_dim = nq * hd;
+    constexpr ops::Device kCuda0{ops::DeviceType::kCUDA, 0};
+    const ops::ExecutionContext ctx{stream_, backend_->context().blas_handle};
 
-    auto embed = loader_->load<__nv_bfloat16>(*backend_, "model.embed_tokens.weight", {V, D});
+    auto embed =
+        loader_->load_tensor<__nv_bfloat16>(*backend_, "model.embed_tokens.weight", {V, D});
     ASSERT_TRUE(embed);
-    auto rms_final = loader_->load<__nv_bfloat16>(*backend_, "model.norm.weight", {D});
+    auto rms_final = loader_->load_tensor<__nv_bfloat16>(*backend_, "model.norm.weight", {D});
     ASSERT_TRUE(rms_final);
-    auto lm_head = loader_->load<__nv_bfloat16>(*backend_, "lm_head.weight", {V, D});
+    auto lm_head = loader_->load_tensor<__nv_bfloat16>(*backend_, "lm_head.weight", {V, D});
     ASSERT_TRUE(lm_head);
 
     auto rc = RopeCache::create(config_.max_seq_len_, hd, config_.rope_theta_, *backend_);
     ASSERT_TRUE(rc);
     auto& rope_cache = *rc;
 
-    auto pos_buf = alloc_buf(*backend_,static_cast<size_t>(T) * sizeof(int32_t));
+    auto pos_buf = alloc_buf(*backend_, static_cast<size_t>(T) * sizeof(std::int32_t));
     {
-        std::vector<int32_t> pos_host(static_cast<size_t>(T));
+        std::vector<std::int32_t> pos_host(static_cast<size_t>(T));
         for (int i = 0; i < T; ++i) pos_host[static_cast<size_t>(i)] = i;
-        cudaMemcpy(pos_buf->data(), pos_host.data(), T * sizeof(int32_t), cudaMemcpyHostToDevice);
+        cudaMemcpy(pos_buf->data(), pos_host.data(), T * sizeof(std::int32_t),
+                   cudaMemcpyHostToDevice);
     }
+    auto token_ids_buf = alloc_buf(*backend_, static_cast<size_t>(T) * sizeof(std::int32_t));
+    cudaMemcpy(token_ids_buf->data(), tokens.data(), T * sizeof(std::int32_t),
+               cudaMemcpyHostToDevice);
 
-    auto token_ids_dev = alloc_buf(*backend_,static_cast<size_t>(T) * sizeof(int32_t));
-    cudaMemcpy(token_ids_dev->data(), tokens.data(), T * sizeof(int32_t), cudaMemcpyHostToDevice);
+    auto input_embeds_buf =
+        alloc_buf(*backend_, static_cast<size_t>(T) * D * sizeof(__nv_bfloat16));
+    Tensor input_embeds(input_embeds_buf, ops::DType::kBFloat16, {T, D});
+    Tensor embed_tensor = std::move(*embed);
+    Tensor token_ids(token_ids_buf, ops::DType::kInt32, {T});
+    ASSERT_TRUE(
+        ops::map_result(ops::embed(embed_tensor, token_ids, &input_embeds, ctx)).has_value());
 
-    auto input_embeds = alloc_buf(*backend_,static_cast<size_t>(T) * D * sizeof(__nv_bfloat16));
-    ASSERT_TRUE(launch_embed(static_cast<__nv_bfloat16*>((*embed)->data()), static_cast<int32_t*>(token_ids_dev->data()), static_cast<__nv_bfloat16*>(input_embeds->data()), T, D, stream_));
+    const size_t bf16_size = ops::dtype_size(ops::DType::kBFloat16);
+    auto hidden_a_buf = alloc_buf(*backend_, static_cast<size_t>(T) * D * bf16_size);
+    auto hidden_b_buf = alloc_buf(*backend_, static_cast<size_t>(T) * D * bf16_size);
+    auto normed_buf = alloc_buf(*backend_, static_cast<size_t>(T) * D * bf16_size);
+    auto qkv_out_buf = alloc_buf(*backend_, static_cast<size_t>(T) * qkv_dim * bf16_size);
+    auto q_buf = alloc_buf(*backend_, static_cast<size_t>(T) * nq * hd * bf16_size);
+    auto k_buf = alloc_buf(*backend_, static_cast<size_t>(T) * nkv * hd * bf16_size);
+    auto v_buf = alloc_buf(*backend_, static_cast<size_t>(T) * nkv * hd * bf16_size);
+    auto attn_out_buf = alloc_buf(*backend_, static_cast<size_t>(T) * attn_dim * bf16_size);
+    auto gate_buf = alloc_buf(*backend_, static_cast<size_t>(T) * d_ff * bf16_size);
+    auto up_buf = alloc_buf(*backend_, static_cast<size_t>(T) * d_ff * bf16_size);
+    auto ffn_act_buf = alloc_buf(*backend_, static_cast<size_t>(T) * d_ff * bf16_size);
 
-    auto hidden_a = alloc_buf(*backend_,static_cast<size_t>(T) * D * sizeof(__nv_bfloat16));
-    auto hidden_b = alloc_buf(*backend_,static_cast<size_t>(T) * D * sizeof(__nv_bfloat16));
-    auto normed = alloc_buf(*backend_,static_cast<size_t>(T) * D * sizeof(__nv_bfloat16));
-    auto qkv_out = alloc_buf(*backend_,static_cast<size_t>(T) * qkv_dim * sizeof(__nv_bfloat16));
-    auto q_buf = alloc_buf(*backend_,static_cast<size_t>(T) * nq * hd * sizeof(__nv_bfloat16));
-    auto k_buf = alloc_buf(*backend_,static_cast<size_t>(T) * nkv * hd * sizeof(__nv_bfloat16));
-    auto v_buf = alloc_buf(*backend_,static_cast<size_t>(T) * nkv * hd * sizeof(__nv_bfloat16));
-    auto attn_out = alloc_buf(*backend_,static_cast<size_t>(T) * attn_dim * sizeof(__nv_bfloat16));
-    auto gate = alloc_buf(*backend_,static_cast<size_t>(T) * d_ff * sizeof(__nv_bfloat16));
-    auto up = alloc_buf(*backend_,static_cast<size_t>(T) * d_ff * sizeof(__nv_bfloat16));
-    auto ffn_act = alloc_buf(*backend_,static_cast<size_t>(T) * d_ff * sizeof(__nv_bfloat16));
-
-    // Paged KV cache setup mirrors qwen3_model.cpp prefill path.
     const int max_blocks = std::max(1, (T + kKVBlockSize - 1) / kKVBlockSize);
     auto kv_mgr = std::make_unique<KVCacheManager>();
     {
-        auto storage = KVCacheStorage::create<__nv_bfloat16>(
-            *backend_, n_layers, max_blocks, kKVBlockSize, nkv, hd);
+        auto storage = KVCacheStorage::create(*backend_, n_layers, max_blocks, kKVBlockSize, nkv,
+                                              hd, ops::DType::kBFloat16);
         ASSERT_TRUE(storage.has_value());
         ASSERT_TRUE(kv_mgr->init(std::move(*storage), max_blocks, kKVBlockSize));
         auto blocks = kv_mgr->allocate_blocks(max_blocks);
         ASSERT_TRUE(blocks.has_value());
     }
 
-    std::vector<int32_t> slot_mapping_host(static_cast<size_t>(T));
-    for (int i = 0; i < T; ++i)
-        slot_mapping_host[static_cast<size_t>(i)] = i;  // sequential: block 0, slots 0..T-1
-    auto slot_mapping_dev = alloc_buf(*backend_, static_cast<size_t>(T) * sizeof(int32_t));
-    cudaMemcpy(slot_mapping_dev->data(), slot_mapping_host.data(), T * sizeof(int32_t),
+    std::vector<std::int32_t> slot_mapping_host(static_cast<size_t>(T));
+    for (int i = 0; i < T; ++i) slot_mapping_host[static_cast<size_t>(i)] = i;
+    auto slot_mapping_buf = alloc_buf(*backend_, static_cast<size_t>(T) * sizeof(std::int32_t));
+    cudaMemcpy(slot_mapping_buf->data(), slot_mapping_host.data(), T * sizeof(std::int32_t),
                cudaMemcpyHostToDevice);
 
-    std::vector<int32_t> bt_host(static_cast<size_t>(max_blocks));
+    std::vector<std::int32_t> bt_host(static_cast<size_t>(max_blocks));
     for (int i = 0; i < max_blocks; ++i) bt_host[static_cast<size_t>(i)] = i;
-    auto block_table_dev = alloc_buf(*backend_, static_cast<size_t>(max_blocks) * sizeof(int32_t));
-    cudaMemcpy(block_table_dev->data(), bt_host.data(), max_blocks * sizeof(int32_t),
+    auto block_table_buf =
+        alloc_buf(*backend_, static_cast<size_t>(max_blocks) * sizeof(std::int32_t));
+    cudaMemcpy(block_table_buf->data(), bt_host.data(), max_blocks * sizeof(std::int32_t),
                cudaMemcpyHostToDevice);
 
-    std::vector<int32_t> qsl_host{0, T};
-    auto qsl_dev = alloc_buf(*backend_, 2 * sizeof(int32_t));
-    cudaMemcpy(qsl_dev->data(), qsl_host.data(), 2 * sizeof(int32_t), cudaMemcpyHostToDevice);
+    std::vector<std::int32_t> qsl_host{0, T};
+    auto qsl_buf = alloc_buf(*backend_, 2 * sizeof(std::int32_t));
+    cudaMemcpy(qsl_buf->data(), qsl_host.data(), 2 * sizeof(std::int32_t), cudaMemcpyHostToDevice);
+    std::vector<std::int32_t> ctx_host{T};
+    auto ctx_buf = alloc_buf(*backend_, sizeof(std::int32_t));
+    cudaMemcpy(ctx_buf->data(), ctx_host.data(), sizeof(std::int32_t), cudaMemcpyHostToDevice);
 
-    std::vector<int32_t> ctx_host{T};
-    auto ctx_dev = alloc_buf(*backend_, sizeof(int32_t));
-    cudaMemcpy(ctx_dev->data(), ctx_host.data(), sizeof(int32_t), cudaMemcpyHostToDevice);
+    Tensor hidden(hidden_a_buf, ops::DType::kBFloat16, {T, D});
+    Tensor hidden_flat(hidden_a_buf, ops::DType::kBFloat16, {static_cast<std::int64_t>(T) * D});
+    Tensor next_hidden(hidden_b_buf, ops::DType::kBFloat16, {T, D});
+    Tensor next_hidden_flat(hidden_b_buf, ops::DType::kBFloat16,
+                            {static_cast<std::int64_t>(T) * D});
+    Tensor normed(normed_buf, ops::DType::kBFloat16, {T, D});
+    Tensor qkv_out(qkv_out_buf, ops::DType::kBFloat16, {T, qkv_dim});
+    Tensor q(q_buf, ops::DType::kBFloat16, {T, nq, hd});
+    Tensor q_norm_2d(q_buf, ops::DType::kBFloat16, {static_cast<std::int64_t>(T) * nq, hd});
+    Tensor k(k_buf, ops::DType::kBFloat16, {T, nkv, hd});
+    Tensor k_norm_2d(k_buf, ops::DType::kBFloat16, {static_cast<std::int64_t>(T) * nkv, hd});
+    Tensor v(v_buf, ops::DType::kBFloat16, {T, nkv, hd});
+    Tensor attn_out(attn_out_buf, ops::DType::kBFloat16, {T, attn_dim});
+    Tensor attn_out_3d(attn_out_buf, ops::DType::kBFloat16, {T, nq, hd});
+    Tensor gate(gate_buf, ops::DType::kBFloat16, {T, d_ff});
+    Tensor gate_flat(gate_buf, ops::DType::kBFloat16, {static_cast<std::int64_t>(T) * d_ff});
+    Tensor up(up_buf, ops::DType::kBFloat16, {T, d_ff});
+    Tensor up_flat(up_buf, ops::DType::kBFloat16, {static_cast<std::int64_t>(T) * d_ff});
+    Tensor ffn_act(ffn_act_buf, ops::DType::kBFloat16, {T, d_ff});
+    Tensor ffn_act_flat(ffn_act_buf, ops::DType::kBFloat16, {static_cast<std::int64_t>(T) * d_ff});
+    Tensor positions(pos_buf, ops::DType::kInt32, {T});
+    Tensor slot_mapping(slot_mapping_buf, ops::DType::kInt32, {T});
+    Tensor block_table(block_table_buf, ops::DType::kInt32, {1, max_blocks});
+    Tensor query_start_loc(qsl_buf, ops::DType::kInt32, {2});
+    Tensor context_lens(ctx_buf, ops::DType::kInt32, {1});
 
-    const int max_slots = kv_mgr->max_slots();
+    auto sync =
+        cudaMemcpyAsync(hidden.data(), input_embeds.data(), static_cast<size_t>(T) * D * bf16_size,
+                        cudaMemcpyDeviceToDevice, stream_);
+    ASSERT_TRUE(cuda_check(sync).has_value());
 
-    ASSERT_TRUE(cuda_check(cudaMemcpyAsync(
-        hidden_a->data(), input_embeds->data(),
-        static_cast<size_t>(T) * D * sizeof(__nv_bfloat16), cudaMemcpyDeviceToDevice, stream_)));
-
-    __nv_bfloat16* hidden = static_cast<__nv_bfloat16*>(hidden_a->data());
-    __nv_bfloat16* next_hidden = static_cast<__nv_bfloat16*>(hidden_b->data());
-
+    const float attn_scale = 1.0f / std::sqrt(static_cast<float>(hd));
     std::string out_dir = dir_ + "/our_layer_outputs";
     std::string mkdir_cmd = "mkdir -p " + out_dir;
     int ret = system(mkdir_cmd.c_str());
     (void)ret;
 
-    auto dump_bf16_to_f32 = [&](const char* name, const __nv_bfloat16* src, size_t n) {
-        cudaDeviceSynchronize();
-        std::vector<__nv_bfloat16> tmp(n);
-        std::vector<float> f32(n);
-        cudaMemcpy(tmp.data(), src, n * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost);
-        for (size_t i = 0; i < n; ++i) f32[i] = __bfloat162float(tmp[i]);
-        save_bin(out_dir + "/" + name, f32.data(), n);
-    };
+    dump_bf16_to_f32(out_dir, "embedding.bin", hidden, static_cast<size_t>(T) * D);
 
     std::vector<float> host_hidden(static_cast<size_t>(T) * D);
     std::vector<__nv_bfloat16> host_bf16(static_cast<size_t>(T) * D);
 
-    dump_bf16_to_f32("embedding.bin", hidden, static_cast<size_t>(T) * D);
-
     for (int l = 0; l < n_layers; ++l) {
-        bool is_first_layer = (l == 0);
+        const bool is_first_layer = (l == 0);
         const std::string p = "model.layers." + std::to_string(l);
 
-        auto rms_attn = loader_->load<__nv_bfloat16>(*backend_, p + ".input_layernorm.weight", {D}); ASSERT_TRUE(rms_attn);
-        auto qkv_w = loader_->load<__nv_bfloat16>(*backend_, p + ".self_attn.q_proj.weight", {nq * hd, D}); ASSERT_TRUE(qkv_w);
-        auto k_w = loader_->load<__nv_bfloat16>(*backend_, p + ".self_attn.k_proj.weight", {nkv * hd, D}); ASSERT_TRUE(k_w);
-        auto v_w = loader_->load<__nv_bfloat16>(*backend_, p + ".self_attn.v_proj.weight", {nkv * hd, D}); ASSERT_TRUE(v_w);
-        auto o_w = loader_->load<__nv_bfloat16>(*backend_, p + ".self_attn.o_proj.weight", {D, nq * hd}); ASSERT_TRUE(o_w);
-        auto rms_ffn = loader_->load<__nv_bfloat16>(*backend_, p + ".post_attention_layernorm.weight", {D}); ASSERT_TRUE(rms_ffn);
-        auto gate_w = loader_->load<__nv_bfloat16>(*backend_, p + ".mlp.gate_proj.weight", {d_ff, D}); ASSERT_TRUE(gate_w);
-        auto up_w = loader_->load<__nv_bfloat16>(*backend_, p + ".mlp.up_proj.weight", {d_ff, D}); ASSERT_TRUE(up_w);
-        auto down_w = loader_->load<__nv_bfloat16>(*backend_, p + ".mlp.down_proj.weight", {D, d_ff}); ASSERT_TRUE(down_w);
+        auto rms_attn =
+            loader_->load_tensor<__nv_bfloat16>(*backend_, p + ".input_layernorm.weight", {D});
+        ASSERT_TRUE(rms_attn);
+        auto qkv_w = loader_->load_tensor<__nv_bfloat16>(*backend_, p + ".self_attn.q_proj.weight",
+                                                         {nq * hd, D});
+        auto k_w = loader_->load_tensor<__nv_bfloat16>(*backend_, p + ".self_attn.k_proj.weight",
+                                                       {nkv * hd, D});
+        auto v_w = loader_->load_tensor<__nv_bfloat16>(*backend_, p + ".self_attn.v_proj.weight",
+                                                       {nkv * hd, D});
+        auto o_w = loader_->load_tensor<__nv_bfloat16>(*backend_, p + ".self_attn.o_proj.weight",
+                                                       {D, nq * hd});
+        auto rms_ffn = loader_->load_tensor<__nv_bfloat16>(
+            *backend_, p + ".post_attention_layernorm.weight", {D});
+        auto gate_w =
+            loader_->load_tensor<__nv_bfloat16>(*backend_, p + ".mlp.gate_proj.weight", {d_ff, D});
+        auto up_w =
+            loader_->load_tensor<__nv_bfloat16>(*backend_, p + ".mlp.up_proj.weight", {d_ff, D});
+        auto down_w =
+            loader_->load_tensor<__nv_bfloat16>(*backend_, p + ".mlp.down_proj.weight", {D, d_ff});
+        ASSERT_TRUE(qkv_w && k_w && v_w && o_w && rms_ffn && gate_w && up_w && down_w);
 
-        // Merge QKV: Q weight [nq*hd, D], K weight [nkv*hd, D], V weight [nkv*hd, D]
         const size_t q_elems = static_cast<size_t>(nq * hd) * D;
         const size_t kv_elems = static_cast<size_t>(nkv * hd) * D;
-        auto qkv_merged = alloc_buf(*backend_,(q_elems + 2 * kv_elems) * sizeof(__nv_bfloat16));
-        cudaMemcpy(qkv_merged->data(), (*qkv_w)->data(), q_elems * sizeof(__nv_bfloat16), cudaMemcpyDeviceToDevice);
-        cudaMemcpy(static_cast<__nv_bfloat16*>(qkv_merged->data()) + q_elems, (*k_w)->data(), kv_elems * sizeof(__nv_bfloat16), cudaMemcpyDeviceToDevice);
-        cudaMemcpy(static_cast<__nv_bfloat16*>(qkv_merged->data()) + q_elems + kv_elems, (*v_w)->data(), kv_elems * sizeof(__nv_bfloat16), cudaMemcpyDeviceToDevice);
+        auto qkv_merged_buf =
+            alloc_buf(*backend_, (q_elems + 2 * kv_elems) * sizeof(__nv_bfloat16));
+        cudaMemcpy(qkv_merged_buf->data(), qkv_w->data(), q_elems * sizeof(__nv_bfloat16),
+                   cudaMemcpyDeviceToDevice);
+        cudaMemcpy(static_cast<__nv_bfloat16*>(qkv_merged_buf->data()) + q_elems, k_w->data(),
+                   kv_elems * sizeof(__nv_bfloat16), cudaMemcpyDeviceToDevice);
+        cudaMemcpy(static_cast<__nv_bfloat16*>(qkv_merged_buf->data()) + q_elems + kv_elems,
+                   v_w->data(), kv_elems * sizeof(__nv_bfloat16), cudaMemcpyDeviceToDevice);
+        Tensor qkv_weight(qkv_merged_buf, ops::DType::kBFloat16, {qkv_dim, D});
 
-        std::shared_ptr<Buffer> q_norm_w, k_norm_w;
-        auto qn = loader_->load<__nv_bfloat16>(*backend_, p + ".self_attn.q_norm.weight", {hd});
-        if (qn) q_norm_w = std::move(*qn);
-        auto kn = loader_->load<__nv_bfloat16>(*backend_, p + ".self_attn.k_norm.weight", {hd});
-        if (kn) k_norm_w = std::move(*kn);
+        std::shared_ptr<Buffer> q_norm_buf, k_norm_buf;
+        auto qn =
+            loader_->load_tensor<__nv_bfloat16>(*backend_, p + ".self_attn.q_norm.weight", {hd});
+        if (qn) q_norm_buf = qn->buffer();
+        auto kn =
+            loader_->load_tensor<__nv_bfloat16>(*backend_, p + ".self_attn.k_norm.weight", {hd});
+        if (kn) k_norm_buf = kn->buffer();
 
-        ASSERT_TRUE(backend_->rms_norm(ops::DType::kBFloat16, RmsNormParams{
-            .input_ = hidden, .weight_ = static_cast<__nv_bfloat16*>((*rms_attn)->data()),
-            .output_ = static_cast<__nv_bfloat16*>(normed->data()),
-            .rows_ = T, .dim_ = D, .eps_ = eps,
-        }));
+        ASSERT_TRUE(
+            ops::map_result(ops::rms_norm(&normed, hidden, *rms_attn, eps, ctx)).has_value());
         if (is_first_layer)
-            dump_bf16_to_f32("l0_attn_norm.bin", static_cast<__nv_bfloat16*>(normed->data()), static_cast<size_t>(T) * D);
+            dump_bf16_to_f32(out_dir, "l0_attn_norm.bin", normed, static_cast<size_t>(T) * D);
 
-        ASSERT_TRUE(backend_->gemm(ops::DType::kBFloat16, GemmParams{
-            .a_ = static_cast<__nv_bfloat16*>(normed->data()), .b_ = static_cast<__nv_bfloat16*>(qkv_merged->data()), .c_ = static_cast<__nv_bfloat16*>(qkv_out->data()),
-            .m_ = T, .n_ = qkv_dim, .k_ = D,
-            .lda_ = D, .ldb_ = D, .ldc_ = qkv_dim,
-            .trans_b_ = true,
-        }));
-
-        ASSERT_TRUE(backend_->split_qkv(ops::DType::kBFloat16, SplitQkvParams{
-            .qkv_ = static_cast<__nv_bfloat16*>(qkv_out->data()), .q_ = static_cast<__nv_bfloat16*>(q_buf->data()), .k_ = static_cast<__nv_bfloat16*>(k_buf->data()), .v_ = static_cast<__nv_bfloat16*>(v_buf->data()),
-            .num_tokens_ = T, .num_q_heads_ = nq, .num_kv_heads_ = nkv, .head_dim_ = hd,
-        }));
+        ASSERT_TRUE(
+            ops::map_result(ops::gemm(&qkv_out, normed, qkv_weight, false, true, 1.0f, 0.0f, ctx))
+                .has_value());
+        ASSERT_TRUE(ops::map_result(ops::split_qkv(qkv_out, &q, &k, &v, ctx)).has_value());
         if (is_first_layer) {
-            dump_bf16_to_f32("l0_q.bin", static_cast<__nv_bfloat16*>(q_buf->data()), static_cast<size_t>(T) * nq * hd);
-            dump_bf16_to_f32("l0_k.bin", static_cast<__nv_bfloat16*>(k_buf->data()), static_cast<size_t>(T) * nkv * hd);
-            dump_bf16_to_f32("l0_v.bin", static_cast<__nv_bfloat16*>(v_buf->data()), static_cast<size_t>(T) * nkv * hd);
+            dump_bf16_to_f32(out_dir, "l0_q.bin", q, static_cast<size_t>(T) * nq * hd);
+            dump_bf16_to_f32(out_dir, "l0_k.bin", k, static_cast<size_t>(T) * nkv * hd);
+            dump_bf16_to_f32(out_dir, "l0_v.bin", v, static_cast<size_t>(T) * nkv * hd);
         }
 
-        if (q_norm_w) {
-            ASSERT_TRUE(backend_->rms_norm(ops::DType::kBFloat16, RmsNormParams{
-                .input_ = static_cast<__nv_bfloat16*>(q_buf->data()), .weight_ = static_cast<__nv_bfloat16*>(q_norm_w->data()), .output_ = static_cast<__nv_bfloat16*>(q_buf->data()),
-                .rows_ = T * nq, .dim_ = hd, .eps_ = eps,
-            }));
+        if (q_norm_buf) {
+            ASSERT_TRUE(
+                ops::map_result(ops::rms_norm(&q_norm_2d, q_norm_2d,
+                                              Tensor(q_norm_buf, ops::DType::kBFloat16, {hd}), eps,
+                                              ctx))
+                    .has_value());
         }
-        if (k_norm_w) {
-            ASSERT_TRUE(backend_->rms_norm(ops::DType::kBFloat16, RmsNormParams{
-                .input_ = static_cast<__nv_bfloat16*>(k_buf->data()), .weight_ = static_cast<__nv_bfloat16*>(k_norm_w->data()), .output_ = static_cast<__nv_bfloat16*>(k_buf->data()),
-                .rows_ = T * nkv, .dim_ = hd, .eps_ = eps,
-            }));
+        if (k_norm_buf) {
+            ASSERT_TRUE(
+                ops::map_result(ops::rms_norm(&k_norm_2d, k_norm_2d,
+                                              Tensor(k_norm_buf, ops::DType::kBFloat16, {hd}), eps,
+                                              ctx))
+                    .has_value());
         }
         if (is_first_layer) {
-            dump_bf16_to_f32("l0_q_normed.bin", static_cast<__nv_bfloat16*>(q_buf->data()), static_cast<size_t>(T) * nq * hd);
-            dump_bf16_to_f32("l0_k_normed.bin", static_cast<__nv_bfloat16*>(k_buf->data()), static_cast<size_t>(T) * nkv * hd);
+            dump_bf16_to_f32(out_dir, "l0_q_normed.bin", q, static_cast<size_t>(T) * nq * hd);
+            dump_bf16_to_f32(out_dir, "l0_k_normed.bin", k, static_cast<size_t>(T) * nkv * hd);
         }
 
-        ASSERT_TRUE(backend_->rope(ops::DType::kBFloat16, RopeParams{
-            .q_ = static_cast<__nv_bfloat16*>(q_buf->data()), .k_ = static_cast<__nv_bfloat16*>(k_buf->data()), .positions_ = static_cast<int32_t*>(pos_buf->data()),
-            .rope_cache_ = rope_cache.data(), .num_tokens_ = T, .num_q_heads_ = nq,
-            .num_kv_heads_ = nkv, .head_dim_ = hd, .rotary_dim_ = hd,
-            .rope_cache_max_position_ = config_.max_seq_len_,
-        }));
+        ASSERT_TRUE(ops::map_result(ops::rope(&q, &k, positions, rope_cache.tensor(), hd, ctx))
+                        .has_value());
 
-        // Write K/V into paged cache, then read back via prefill_attention
-        // (mirrors qwen3_model.cpp production path)
-        ASSERT_TRUE(backend_->write_kv_cache(ops::DType::kBFloat16, WriteKVCacheParams{
-            .k_new_ = static_cast<__nv_bfloat16*>(k_buf->data()),
-            .v_new_ = static_cast<__nv_bfloat16*>(v_buf->data()),
-            .k_cache_ = kv_mgr->k_cache(l),
-            .v_cache_ = kv_mgr->v_cache(l),
-            .slot_mapping_ = static_cast<int32_t*>(slot_mapping_dev->data()),
-            .total_tokens_ = T,
-            .num_kv_heads_ = nkv,
-            .head_dim_ = hd,
-            .max_slots_ = max_slots,
-        }));
+        {
+            auto k_cache = kv_mgr->k_cache(l);
+            auto v_cache = kv_mgr->v_cache(l);
+            ASSERT_TRUE(
+                ops::map_result(ops::write_kv_cache(k, v, &k_cache, &v_cache, slot_mapping, ctx))
+                    .has_value());
+        }
+        {
+            auto k_blocks = kv_mgr->k_cache_blocks(l);
+            auto v_blocks = kv_mgr->v_cache_blocks(l);
+            ASSERT_TRUE(ops::map_result(ops::prefill_attention(q, k_blocks, v_blocks, block_table,
+                                                               query_start_loc, context_lens,
+                                                               &attn_out_3d, attn_scale, ctx))
+                            .has_value());
+        }
 
-        ASSERT_TRUE(backend_->prefill_attention(ops::DType::kBFloat16, PrefillAttnParams{
-            .q_ = static_cast<__nv_bfloat16*>(q_buf->data()),
-            .k_cache_ = kv_mgr->k_cache(l),
-            .v_cache_ = kv_mgr->v_cache(l),
-            .block_table_ = static_cast<int32_t*>(block_table_dev->data()),
-            .query_start_loc_ = static_cast<int32_t*>(qsl_dev->data()),
-            .context_lens_ = static_cast<int32_t*>(ctx_dev->data()),
-            .output_ = static_cast<__nv_bfloat16*>(attn_out->data()),
-            .num_tokens_ = T,
-            .batch_size_ = 1,
-            .max_blocks_per_req_ = max_blocks,
-            .num_q_heads_ = nq,
-            .num_kv_heads_ = nkv,
-            .head_dim_ = hd,
-            .cache_block_size_ = kKVBlockSize,
-        }));
-
-        ASSERT_TRUE(backend_->gemm(ops::DType::kBFloat16, GemmParams{
-            .a_ = static_cast<__nv_bfloat16*>(attn_out->data()), .b_ = static_cast<__nv_bfloat16*>((*o_w)->data()), .c_ = next_hidden,
-            .m_ = T, .n_ = D, .k_ = attn_dim,
-            .lda_ = attn_dim, .ldb_ = attn_dim, .ldc_ = D,
-            .trans_b_ = true,
-        }));
+        ASSERT_TRUE(
+            ops::map_result(ops::gemm(&next_hidden, attn_out, *o_w, false, true, 1.0f, 0.0f, ctx))
+                .has_value());
         if (is_first_layer)
-            dump_bf16_to_f32("l0_o_proj.bin", next_hidden, static_cast<size_t>(T) * D);
+            dump_bf16_to_f32(out_dir, "l0_o_proj.bin", next_hidden, static_cast<size_t>(T) * D);
 
-        ASSERT_TRUE(backend_->element_add(ops::DType::kBFloat16, ElementAddParams{
-            .dst_ = next_hidden, .src_ = hidden, .n_ = static_cast<int64_t>(T) * D,
-        }));
+        ASSERT_TRUE(
+            ops::map_result(ops::element_add(&next_hidden_flat, hidden_flat, ctx)).has_value());
         std::swap(hidden, next_hidden);
+        std::swap(hidden_flat, next_hidden_flat);
         if (is_first_layer)
-            dump_bf16_to_f32("l0_attn_residual.bin", hidden, static_cast<size_t>(T) * D);
+            dump_bf16_to_f32(out_dir, "l0_attn_residual.bin", hidden, static_cast<size_t>(T) * D);
 
-        ASSERT_TRUE(backend_->rms_norm(ops::DType::kBFloat16, RmsNormParams{
-            .input_ = hidden, .weight_ = static_cast<__nv_bfloat16*>((*rms_ffn)->data()),
-            .output_ = static_cast<__nv_bfloat16*>(normed->data()),
-            .rows_ = T, .dim_ = D, .eps_ = eps,
-        }));
+        ASSERT_TRUE(
+            ops::map_result(ops::rms_norm(&normed, hidden, *rms_ffn, eps, ctx)).has_value());
         if (is_first_layer)
-            dump_bf16_to_f32("l0_ffn_norm.bin", static_cast<__nv_bfloat16*>(normed->data()), static_cast<size_t>(T) * D);
+            dump_bf16_to_f32(out_dir, "l0_ffn_norm.bin", normed, static_cast<size_t>(T) * D);
 
-        ASSERT_TRUE(backend_->gemm(ops::DType::kBFloat16, GemmParams{
-            .a_ = static_cast<__nv_bfloat16*>(normed->data()), .b_ = static_cast<__nv_bfloat16*>((*gate_w)->data()), .c_ = static_cast<__nv_bfloat16*>(gate->data()),
-            .m_ = T, .n_ = d_ff, .k_ = D,
-            .lda_ = D, .ldb_ = D, .ldc_ = d_ff,
-            .trans_b_ = true,
-        }));
+        ASSERT_TRUE(ops::map_result(ops::gemm(&gate, normed, *gate_w, false, true, 1.0f, 0.0f, ctx))
+                        .has_value());
         if (is_first_layer)
-            dump_bf16_to_f32("l0_gate.bin", static_cast<__nv_bfloat16*>(gate->data()), static_cast<size_t>(T) * d_ff);
+            dump_bf16_to_f32(out_dir, "l0_gate.bin", gate, static_cast<size_t>(T) * d_ff);
 
-        ASSERT_TRUE(backend_->gemm(ops::DType::kBFloat16, GemmParams{
-            .a_ = static_cast<__nv_bfloat16*>(normed->data()), .b_ = static_cast<__nv_bfloat16*>((*up_w)->data()), .c_ = static_cast<__nv_bfloat16*>(up->data()),
-            .m_ = T, .n_ = d_ff, .k_ = D,
-            .lda_ = D, .ldb_ = D, .ldc_ = d_ff,
-            .trans_b_ = true,
-        }));
+        ASSERT_TRUE(ops::map_result(ops::gemm(&up, normed, *up_w, false, true, 1.0f, 0.0f, ctx))
+                        .has_value());
         if (is_first_layer)
-            dump_bf16_to_f32("l0_up.bin", static_cast<__nv_bfloat16*>(up->data()), static_cast<size_t>(T) * d_ff);
+            dump_bf16_to_f32(out_dir, "l0_up.bin", up, static_cast<size_t>(T) * d_ff);
 
-        ASSERT_TRUE(backend_->silu_mul(ops::DType::kBFloat16, SiluMulParams{
-            .gate_ = static_cast<__nv_bfloat16*>(gate->data()), .up_ = static_cast<__nv_bfloat16*>(up->data()), .output_ = static_cast<__nv_bfloat16*>(ffn_act->data()),
-            .n_ = static_cast<int64_t>(T) * d_ff,
-        }));
+        ASSERT_TRUE(
+            ops::map_result(ops::silu_mul(&ffn_act_flat, gate_flat, up_flat, ctx)).has_value());
         if (is_first_layer)
-            dump_bf16_to_f32("l0_silu_mul.bin", static_cast<__nv_bfloat16*>(ffn_act->data()), static_cast<size_t>(T) * d_ff);
+            dump_bf16_to_f32(out_dir, "l0_silu_mul.bin", ffn_act, static_cast<size_t>(T) * d_ff);
 
-        ASSERT_TRUE(backend_->gemm(ops::DType::kBFloat16, GemmParams{
-            .a_ = static_cast<__nv_bfloat16*>(ffn_act->data()), .b_ = static_cast<__nv_bfloat16*>((*down_w)->data()), .c_ = next_hidden,
-            .m_ = T, .n_ = D, .k_ = d_ff,
-            .lda_ = d_ff, .ldb_ = d_ff, .ldc_ = D,
-            .trans_b_ = true,
-        }));
+        ASSERT_TRUE(
+            ops::map_result(ops::gemm(&next_hidden, ffn_act, *down_w, false, true, 1.0f, 0.0f, ctx))
+                .has_value());
         if (is_first_layer)
-            dump_bf16_to_f32("l0_down.bin", next_hidden, static_cast<size_t>(T) * D);
+            dump_bf16_to_f32(out_dir, "l0_down.bin", next_hidden, static_cast<size_t>(T) * D);
 
-        ASSERT_TRUE(backend_->element_add(ops::DType::kBFloat16, ElementAddParams{
-            .dst_ = next_hidden, .src_ = hidden, .n_ = static_cast<int64_t>(T) * D,
-        }));
+        ASSERT_TRUE(
+            ops::map_result(ops::element_add(&next_hidden_flat, hidden_flat, ctx)).has_value());
         std::swap(hidden, next_hidden);
+        std::swap(hidden_flat, next_hidden_flat);
 
         cudaDeviceSynchronize();
-        cudaMemcpy(host_bf16.data(), hidden, T * D * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost);
+        cudaMemcpy(host_bf16.data(), hidden.data(),
+                   static_cast<size_t>(T) * D * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost);
         for (int i = 0; i < T * D; ++i)
-            host_hidden[static_cast<size_t>(i)] = __bfloat162float(host_bf16[static_cast<size_t>(i)]);
-        save_bin(out_dir + "/layer_" + std::to_string(l) + ".bin",
-                 host_hidden.data(), static_cast<size_t>(T) * D);
+            host_hidden[static_cast<size_t>(i)] =
+                __bfloat162float(host_bf16[static_cast<size_t>(i)]);
+        save_bin(out_dir + "/layer_" + std::to_string(l) + ".bin", host_hidden.data(),
+                 static_cast<size_t>(T) * D);
     }
 
-    ASSERT_TRUE(backend_->rms_norm(ops::DType::kBFloat16, RmsNormParams{
-        .input_ = hidden, .weight_ = static_cast<__nv_bfloat16*>((*rms_final)->data()),
-        .output_ = static_cast<__nv_bfloat16*>(normed->data()),
-        .rows_ = T, .dim_ = D, .eps_ = eps,
-    }));
+    ASSERT_TRUE(ops::map_result(ops::rms_norm(&normed, hidden, *rms_final, eps, ctx)).has_value());
     cudaDeviceSynchronize();
-    cudaMemcpy(host_bf16.data(), normed->data(), T * D * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost);
+    cudaMemcpy(host_bf16.data(), normed.data(), static_cast<size_t>(T) * D * sizeof(__nv_bfloat16),
+               cudaMemcpyDeviceToHost);
     for (int i = 0; i < T * D; ++i)
         host_hidden[static_cast<size_t>(i)] = __bfloat162float(host_bf16[static_cast<size_t>(i)]);
     save_bin(out_dir + "/final_norm.bin", host_hidden.data(), static_cast<size_t>(T) * D);

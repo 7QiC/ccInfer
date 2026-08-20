@@ -1,8 +1,5 @@
 #pragma once
 
-#include <cuda_bf16.h>
-#include <cuda_fp16.h>
-
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -12,8 +9,12 @@
 #include <utility>
 #include <vector>
 
-#include "base/result.h"
+#include <cuda_bf16.h>
+#include <cuda_fp16.h>
+
 #include "backend/backend.h"
+#include "base/result.h"
+#include "core/tensor.h"
 
 namespace ccinfer {
 
@@ -64,7 +65,11 @@ public:
 
     template <typename T>
     Result<std::shared_ptr<Buffer>> load(Backend& backend, const std::string& name,
-                                               const std::vector<int64_t>& expected_shape) const;
+                                         const std::vector<int64_t>& expected_shape) const;
+
+    template <typename T>
+    Result<Tensor> load_tensor(Backend& backend, const std::string& name,
+                               const std::vector<int64_t>& expected_shape) const;
 
 private:
     explicit WeightLoader(std::string path);
@@ -83,8 +88,7 @@ private:
 
 template <typename T>
 Result<std::shared_ptr<Buffer>> WeightLoader::load(
-    Backend& backend, const std::string& name,
-    const std::vector<int64_t>& expected_shape) const {
+    Backend& backend, const std::string& name, const std::vector<int64_t>& expected_shape) const {
     if (data_ == nullptr || size_ == 0) {
         return std::unexpected(ErrorCode::ModelLoadFailed);
     }
@@ -149,6 +153,17 @@ Result<std::shared_ptr<Buffer>> WeightLoader::load(
     if (!sync_r) return std::unexpected(sync_r.error());
 
     return std::move(buf);
+}
+
+template <typename T>
+Result<Tensor> WeightLoader::load_tensor(Backend& backend, const std::string& name,
+                                         const std::vector<int64_t>& expected_shape) const {
+    auto buffer = load<T>(backend, name, expected_shape);
+    if (!buffer) return std::unexpected(buffer.error());
+    auto tensor_buffer = std::move(*buffer);
+    void* data = tensor_buffer->data();
+    return Tensor::from_buffer(std::move(tensor_buffer), data, SafetensorDType<T>::value,
+                               expected_shape);
 }
 
 }  // namespace ccinfer

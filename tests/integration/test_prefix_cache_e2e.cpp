@@ -1,15 +1,14 @@
-#include <gtest/gtest.h>
+#include <cmath>
+#include <vector>
 
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
-
-#include <cmath>
-#include <vector>
+#include <gtest/gtest.h>
 
 #include "backend/backend.h"
 #include "cache/kv_cache_manager.h"
 #include "cache/kv_cache_storage.h"
-#include "kernel/cuda_kernels.h"
+#include "ops/ops.h"
 
 namespace ccinfer {
 namespace {
@@ -27,11 +26,11 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
 
     auto backend_r = Backend::create(0);
     ASSERT_TRUE(backend_r.has_value());
-    auto& backend = **backend_r;
+    auto &backend = **backend_r;
 
     // 1. Init storage and manager.
-    auto sr = KVCacheStorage::create<__nv_bfloat16>(backend, kNumLayers, kMaxBlocks, block_size, nkv,
-                                                     hd);
+    auto sr = KVCacheStorage::create(backend, kNumLayers, kMaxBlocks, block_size, nkv, hd,
+                                     ops::DType::kBFloat16);
     ASSERT_TRUE(sr.has_value());
 
     KVCacheManager mgr;
@@ -63,9 +62,9 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
         h_k[i] = __float2bfloat16(static_cast<float>((i + 1) % 100) * 0.01f);
         h_v[i] = __float2bfloat16(static_cast<float>((i + 50) % 100) * 0.01f);
     }
-    cudaMemcpyAsync(mgr.k_cache(0), h_k.data(), kv_elems * sizeof(__nv_bfloat16),
+    cudaMemcpyAsync(mgr.k_cache(0).data(), h_k.data(), kv_elems * sizeof(__nv_bfloat16),
                     cudaMemcpyHostToDevice, stream);
-    cudaMemcpyAsync(mgr.v_cache(0), h_v.data(), kv_elems * sizeof(__nv_bfloat16),
+    cudaMemcpyAsync(mgr.v_cache(0).data(), h_v.data(), kv_elems * sizeof(__nv_bfloat16),
                     cudaMemcpyHostToDevice, stream);
 
     mgr.release_blocks(pr1->block_table);
@@ -100,8 +99,7 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
     std::vector<int32_t> h_query_start_loc = {0, kNumTokens};
     std::vector<int32_t> h_context_lens = {kNumTokens};
     std::vector<int32_t> h_block_table(1 * (kMaxBlocks), -1);
-    for (int b = 0; b < pr2->block_table.size(); ++b)
-        h_block_table[b] = pr2->block_table[b];
+    for (int b = 0; b < pr2->block_table.size(); ++b) h_block_table[b] = pr2->block_table[b];
 
     int32_t *d_qsl, *d_ctx, *d_bt;
     cudaMalloc(&d_qsl, 2 * sizeof(int32_t));
@@ -113,19 +111,27 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
     cudaMemcpyAsync(d_bt, h_block_table.data(), 1 * kMaxBlocks * sizeof(int32_t),
                     cudaMemcpyHostToDevice, stream);
 
-    auto attn_r = launch_prefill_attention(
-        d_q,
-        static_cast<const __nv_bfloat16*>(mgr.k_cache(0)),
-        static_cast<const __nv_bfloat16*>(mgr.v_cache(0)),
-        d_bt, d_qsl, d_ctx, d_output, /*batch_size=*/1, kNumTokens, kMaxBlocks, nq, nkv, hd,
-        block_size, stream);
-    ASSERT_TRUE(attn_r.has_value());
+    constexpr ops::Device kCuda0{ops::DeviceType::kCUDA, 0};
+    ops::Tensor q(d_q, ops::DType::kBFloat16, kCuda0, {kNumTokens, nq, hd});
+    auto k_cache = mgr.k_cache_blocks(0);
+    auto v_cache = mgr.v_cache_blocks(0);
+    ops::Tensor block_table(d_bt, ops::DType::kInt32, kCuda0, {1, kMaxBlocks});
+    ops::Tensor query_start_loc(d_qsl, ops::DType::kInt32, kCuda0, {2});
+    ops::Tensor context_lens(d_ctx, ops::DType::kInt32, kCuda0, {1});
+    ops::Tensor out(d_output, ops::DType::kBFloat16, kCuda0, {kNumTokens, nq, hd});
+    const float scale = 1.0f / std::sqrt(static_cast<float>(hd));
+    ASSERT_TRUE(
+        ops::map_result(ops::prefill_attention(q, k_cache, v_cache, block_table, query_start_loc,
+                                               context_lens, &out, scale, {stream}))
+            .has_value());
     cudaStreamSynchronize(stream);
 
-    std::vector<float> h_out(q_elems);
-    cudaMemcpy(h_out.data(), d_output, q_elems * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost);
+    std::vector<__nv_bfloat16> h_out_bf16(static_cast<size_t>(q_elems));
+    cudaMemcpy(h_out_bf16.data(), d_output, q_elems * sizeof(__nv_bfloat16),
+               cudaMemcpyDeviceToHost);
     for (int64_t i = 0; i < q_elems; ++i) {
-        EXPECT_TRUE(std::isfinite(h_out[i])) << "non-finite at index " << i;
+        EXPECT_TRUE(std::isfinite(__bfloat162float(h_out_bf16[static_cast<size_t>(i)])))
+            << "non-finite at index " << i;
     }
 
     // 7. Release second request.
@@ -141,8 +147,8 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
         mgr.cache_full_blocks(px->block_table, t, 32);
         mgr.release_blocks(px->block_table);
         // Some may collide with previous hashes; count actual cached blocks.
-        cached_count = mgr.stats().block_cached_idle + mgr.stats().block_active +
-                       mgr.stats().block_free;
+        cached_count =
+            mgr.stats().block_cached_idle + mgr.stats().block_active + mgr.stats().block_free;
     }
 
     // At this point free list should be 0 or close to it.

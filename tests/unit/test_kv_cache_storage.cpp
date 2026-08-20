@@ -1,9 +1,8 @@
-#include <gtest/gtest.h>
+#include <vector>
 
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
-
-#include <vector>
+#include <gtest/gtest.h>
 
 #include "backend/backend.h"
 #include "cache/block.h"
@@ -21,35 +20,27 @@ TEST(KVCacheStorageTest, LayerOffsetsAreCorrect) {
     auto backend_r = Backend::create(0);
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
-    auto s_r = KVCacheStorage::create<__nv_bfloat16>(backend, kNumLayers, kMaxBlocks, kKVBlockSize,
-                                         kNvKVHeads, kHeadDim);
+    auto s_r = KVCacheStorage::create(backend, kNumLayers, kMaxBlocks, kKVBlockSize, kNvKVHeads,
+                                      kHeadDim, ops::DType::kBFloat16);
     ASSERT_TRUE(s_r.has_value());
     auto& storage = **s_r;
 
-    int64_t layer_bytes =
-        static_cast<int64_t>(kMaxBlocks) * kKVBlockSize * kNvKVHeads * kHeadDim *
-        sizeof(__nv_bfloat16);
+    const int64_t layer_bytes = static_cast<int64_t>(kMaxBlocks) * kKVBlockSize * kNvKVHeads *
+                                kHeadDim * sizeof(__nv_bfloat16);
 
-    // k_layer(0) == k_data() (first layer starts at beginning of buffer)
-    EXPECT_EQ(storage.k_layer(0), storage.k_data());
-    EXPECT_EQ(storage.v_layer(0), storage.v_data());
+    Tensor k0 = storage.k_layer_tensor(0);
+    Tensor k1 = storage.k_layer_tensor(1);
+    Tensor k2 = storage.k_layer_tensor(2);
+    EXPECT_EQ(k0.data(), static_cast<char*>(k1.data()) - layer_bytes);
+    EXPECT_EQ(k1.data(), static_cast<char*>(k2.data()) - layer_bytes);
 
-    // Successive k_layers should be exactly one layer's bytes apart
-    auto* k0 = static_cast<char*>(storage.k_layer(0));
-    auto* k1 = static_cast<char*>(storage.k_layer(1));
-    auto* k2 = static_cast<char*>(storage.k_layer(2));
-    EXPECT_EQ(k1 - k0, layer_bytes);
-    EXPECT_EQ(k2 - k1, layer_bytes);
+    Tensor v0 = storage.v_layer_tensor(0);
+    Tensor v1 = storage.v_layer_tensor(1);
+    Tensor v2 = storage.v_layer_tensor(2);
+    EXPECT_EQ(v0.data(), static_cast<char*>(v1.data()) - layer_bytes);
+    EXPECT_EQ(v1.data(), static_cast<char*>(v2.data()) - layer_bytes);
 
-    auto* v0 = static_cast<char*>(storage.v_layer(0));
-    auto* v1 = static_cast<char*>(storage.v_layer(1));
-    auto* v2 = static_cast<char*>(storage.v_layer(2));
-    EXPECT_EQ(v1 - v0, layer_bytes);
-    EXPECT_EQ(v2 - v1, layer_bytes);
-
-    // Distinct storage: k and v are separate allocations
-    EXPECT_NE(storage.k_data(), storage.v_data());
-    EXPECT_NE(k0, v0);
+    EXPECT_NE(k0.data(), v0.data());
 }
 
 TEST(KVCacheStorageTest, LayersAreIndependent) {
@@ -61,60 +52,59 @@ TEST(KVCacheStorageTest, LayersAreIndependent) {
     auto backend_r = Backend::create(0);
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
-    auto s_r = KVCacheStorage::create<__nv_bfloat16>(backend, kNumLayers, kMaxBlocks, kKVBlockSize,
-                                         kNvKVHeads, kHeadDim);
+    auto s_r = KVCacheStorage::create(backend, kNumLayers, kMaxBlocks, kKVBlockSize, kNvKVHeads,
+                                      kHeadDim, ops::DType::kBFloat16);
     ASSERT_TRUE(s_r.has_value());
     auto& storage = **s_r;
 
-    int64_t layer_elems =
+    const int64_t layer_elems =
         static_cast<int64_t>(kMaxBlocks) * kKVBlockSize * kNvKVHeads * kHeadDim;
-    int64_t layer_bytes = layer_elems * sizeof(__nv_bfloat16);
+    const int64_t layer_bytes = layer_elems * sizeof(__nv_bfloat16);
 
-    // Write per-element patterns: layer 0 = {0.0, 1.0, 2.0, ...}, layer 1 = {100.0, 101.0, ...}
-    std::vector<__nv_bfloat16> data0(layer_elems);
-    std::vector<__nv_bfloat16> data1(layer_elems);
+    std::vector<__nv_bfloat16> data0(static_cast<size_t>(layer_elems));
+    std::vector<__nv_bfloat16> data1(static_cast<size_t>(layer_elems));
     for (int64_t i = 0; i < layer_elems; ++i) {
-        data0[i] = __float2bfloat16(static_cast<float>(i));
-        data1[i] = __float2bfloat16(static_cast<float>(100 + i));
+        data0[static_cast<size_t>(i)] = __float2bfloat16(static_cast<float>(i));
+        data1[static_cast<size_t>(i)] = __float2bfloat16(static_cast<float>(100 + i));
     }
-    ASSERT_EQ(cudaMemcpy(storage.k_layer(0), data0.data(), layer_bytes,
-                         cudaMemcpyHostToDevice), cudaSuccess);
-    ASSERT_EQ(cudaMemcpy(storage.k_layer(1), data1.data(), layer_bytes,
-                         cudaMemcpyHostToDevice), cudaSuccess);
+    ASSERT_EQ(cudaMemcpy(storage.k_layer_tensor(0).data(), data0.data(), layer_bytes,
+                         cudaMemcpyHostToDevice),
+              cudaSuccess);
+    ASSERT_EQ(cudaMemcpy(storage.k_layer_tensor(1).data(), data1.data(), layer_bytes,
+                         cudaMemcpyHostToDevice),
+              cudaSuccess);
     ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
 
-    // Read back layer 0 — should be {0, 1, 2, ...}, not affected by layer 1 write
-    std::vector<__nv_bfloat16> actual(layer_elems);
-    ASSERT_EQ(cudaMemcpy(actual.data(), storage.k_layer(0), layer_bytes,
-                         cudaMemcpyDeviceToHost), cudaSuccess);
+    std::vector<__nv_bfloat16> actual(static_cast<size_t>(layer_elems));
+    ASSERT_EQ(cudaMemcpy(actual.data(), storage.k_layer_tensor(0).data(), layer_bytes,
+                         cudaMemcpyDeviceToHost),
+              cudaSuccess);
     ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
     for (int64_t i = 0; i < layer_elems; ++i) {
-        EXPECT_FLOAT_EQ(__bfloat162float(actual[i]), static_cast<float>(i))
-            << "k_layer(0)[" << i << "] corrupted by k_layer(1) write";
+        EXPECT_FLOAT_EQ(__bfloat162float(actual[static_cast<size_t>(i)]), static_cast<float>(i));
+    }
+    ASSERT_EQ(cudaMemcpy(actual.data(), storage.k_layer_tensor(1).data(), layer_bytes,
+                         cudaMemcpyDeviceToHost),
+              cudaSuccess);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    for (int64_t i = 0; i < layer_elems; ++i) {
+        EXPECT_FLOAT_EQ(__bfloat162float(actual[static_cast<size_t>(i)]),
+                        static_cast<float>(100 + i));
     }
 
-    // Read back layer 1 — should be {100, 101, 102, ...}
-    ASSERT_EQ(cudaMemcpy(actual.data(), storage.k_layer(1), layer_bytes,
-                         cudaMemcpyDeviceToHost), cudaSuccess);
+    ASSERT_EQ(cudaMemcpy(storage.v_layer_tensor(0).data(), data0.data(), layer_bytes,
+                         cudaMemcpyHostToDevice),
+              cudaSuccess);
+    ASSERT_EQ(cudaMemcpy(storage.v_layer_tensor(1).data(), data1.data(), layer_bytes,
+                         cudaMemcpyHostToDevice),
+              cudaSuccess);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    ASSERT_EQ(cudaMemcpy(actual.data(), storage.v_layer_tensor(0).data(), layer_bytes,
+                         cudaMemcpyDeviceToHost),
+              cudaSuccess);
     ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
     for (int64_t i = 0; i < layer_elems; ++i) {
-        EXPECT_FLOAT_EQ(__bfloat162float(actual[i]), static_cast<float>(100 + i))
-            << "k_layer(1)[" << i << "] incorrect";
-    }
-
-    // Same for v_layers
-    ASSERT_EQ(cudaMemcpy(storage.v_layer(0), data0.data(), layer_bytes,
-                         cudaMemcpyHostToDevice), cudaSuccess);
-    ASSERT_EQ(cudaMemcpy(storage.v_layer(1), data1.data(), layer_bytes,
-                         cudaMemcpyHostToDevice), cudaSuccess);
-    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
-
-    ASSERT_EQ(cudaMemcpy(actual.data(), storage.v_layer(0), layer_bytes,
-                         cudaMemcpyDeviceToHost), cudaSuccess);
-    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
-    for (int64_t i = 0; i < layer_elems; ++i) {
-        EXPECT_FLOAT_EQ(__bfloat162float(actual[i]), static_cast<float>(i))
-            << "v_layer(0)[" << i << "] corrupted";
+        EXPECT_FLOAT_EQ(__bfloat162float(actual[static_cast<size_t>(i)]), static_cast<float>(i));
     }
 }
 
@@ -127,33 +117,31 @@ TEST(KVCacheStorageTest, ZeroInitialized) {
     auto backend_r = Backend::create(0);
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
-    auto s_r = KVCacheStorage::create<__nv_bfloat16>(backend, kNumLayers, kMaxBlocks, kKVBlockSize,
-                                         kNvKVHeads, kHeadDim);
+    auto s_r = KVCacheStorage::create(backend, kNumLayers, kMaxBlocks, kKVBlockSize, kNvKVHeads,
+                                      kHeadDim, ops::DType::kBFloat16);
     ASSERT_TRUE(s_r.has_value());
     auto& storage = **s_r;
 
-    int64_t layer_elems =
+    const int64_t layer_elems =
         static_cast<int64_t>(kMaxBlocks) * kKVBlockSize * kNvKVHeads * kHeadDim;
-    int64_t layer_bytes = layer_elems * sizeof(__nv_bfloat16);
+    const int64_t layer_bytes = layer_elems * sizeof(__nv_bfloat16);
 
-    // Read back k_layer(0) — should be all zeros from cudaMalloc
-    std::vector<__nv_bfloat16> host(layer_elems, __float2bfloat16(-1.0f));
-    ASSERT_EQ(cudaMemcpy(host.data(), storage.k_layer(0), layer_bytes,
-                         cudaMemcpyDeviceToHost), cudaSuccess);
+    std::vector<__nv_bfloat16> host(static_cast<size_t>(layer_elems), __float2bfloat16(-1.0f));
+    ASSERT_EQ(cudaMemcpy(host.data(), storage.k_layer_tensor(0).data(), layer_bytes,
+                         cudaMemcpyDeviceToHost),
+              cudaSuccess);
     ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
     for (int64_t i = 0; i < layer_elems; ++i) {
-        EXPECT_FLOAT_EQ(__bfloat162float(host[i]), 0.0f)
-            << "k_layer(0)[" << i << "] not zero-initialised";
+        EXPECT_FLOAT_EQ(__bfloat162float(host[static_cast<size_t>(i)]), 0.0f);
     }
 
-    // v_layer(0) should also be zero
-    host.assign(layer_elems, __float2bfloat16(-1.0f));
-    ASSERT_EQ(cudaMemcpy(host.data(), storage.v_layer(0), layer_bytes,
-                         cudaMemcpyDeviceToHost), cudaSuccess);
+    host.assign(static_cast<size_t>(layer_elems), __float2bfloat16(-1.0f));
+    ASSERT_EQ(cudaMemcpy(host.data(), storage.v_layer_tensor(0).data(), layer_bytes,
+                         cudaMemcpyDeviceToHost),
+              cudaSuccess);
     ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
-    for (int64_t i = 0; i < std::min(int64_t{16}, layer_elems); ++i) {
-        EXPECT_FLOAT_EQ(__bfloat162float(host[i]), 0.0f)
-            << "v_layer(0)[" << i << "] not zero-initialised";
+    for (int64_t i = 0; i < layer_elems; ++i) {
+        EXPECT_FLOAT_EQ(__bfloat162float(host[static_cast<size_t>(i)]), 0.0f);
     }
 }
 

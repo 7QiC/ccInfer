@@ -1,15 +1,14 @@
-#include <gtest/gtest.h>
-
-#include <cuda_bf16.h>
-#include <cuda_runtime.h>
-
 #include <memory>
 #include <unordered_map>
 
-#include "cache/kv_cache_manager.h"
-#include "cache/kv_cache_storage.h"
+#include <cuda_bf16.h>
+#include <cuda_runtime.h>
+#include <gtest/gtest.h>
+
 #include "backend/backend.h"
 #include "base/execution.h"
+#include "cache/kv_cache_manager.h"
+#include "cache/kv_cache_storage.h"
 #include "worker/batch_translator.h"
 
 namespace ccinfer {
@@ -22,8 +21,9 @@ protected:
         ASSERT_TRUE(b.has_value());
         backend_ = std::move(*b);
 
-        auto sr = KVCacheStorage::create<__nv_bfloat16>(*backend_, /*num_layers=*/1, /*max_blocks=*/32,
-                                                        kBlockSize, /*num_kv_heads=*/4, /*head_dim=*/64);
+        auto sr =
+            KVCacheStorage::create(*backend_, /*num_layers=*/1, /*max_blocks=*/32, kBlockSize,
+                                   /*num_kv_heads=*/4, /*head_dim=*/64, ops::DType::kBFloat16);
         ASSERT_TRUE(sr.has_value());
 
         auto r = kv_mgr_.init(std::move(*sr), 32, kBlockSize);
@@ -93,7 +93,7 @@ TEST_F(BatchTranslatorTest, DecodeNoNewBlock) {
     // Set up: prefill already done (8-token prompt), context fits in 1 block.
     sequences_[1].prompt_tokens = std::vector<int32_t>(8, 1);
     sequences_[1].kv_written = 8;
-    sequences_[1].prompt_processed = 8;  // prefill complete
+    sequences_[1].prompt_processed = 8;       // prefill complete
     auto alloc = kv_mgr_.allocate_blocks(1);  // 16 tokens → 1 block
     ASSERT_TRUE(alloc.has_value());
     for (int i = 0; i < alloc->size(); ++i) {

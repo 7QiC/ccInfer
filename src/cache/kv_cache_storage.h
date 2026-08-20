@@ -5,9 +5,11 @@
 #include <memory>
 
 #include "base/result.h"
-#include "backend/backend.h"
+#include "core/tensor.h"
 
 namespace ccinfer {
+
+class Backend;
 
 class KVCacheStorage {
 public:
@@ -19,48 +21,43 @@ public:
     KVCacheStorage(const KVCacheStorage&) = delete;
     KVCacheStorage& operator=(const KVCacheStorage&) = delete;
 
-    template <typename KVDType>
     static Result<std::unique_ptr<KVCacheStorage>> create(Backend& backend, int num_layers,
                                                           int max_blocks, int block_size,
-                                                          int num_kv_heads, int head_dim);
+                                                          int num_kv_heads, int head_dim,
+                                                          ops::DType dtype);
 
-    void* k_data();
-    void* v_data();
-    const void* k_data() const;
-    const void* v_data() const;
-
-    void* k_layer(int layer);
-    void* v_layer(int layer);
-    const void* k_layer(int layer) const;
-    const void* v_layer(int layer) const;
+    // Slot-major 3D view of one layer: [max_slots, num_kv_heads, head_dim].
+    Tensor k_layer_tensor(int layer);
+    Tensor v_layer_tensor(int layer);
+    // Paged 4D view of one layer: [max_blocks, block_size, num_kv_heads, head_dim].
+    Tensor k_block_tensor(int layer);
+    Tensor v_block_tensor(int layer);
 
     int num_layers() const { return num_layers_; }
+    int max_blocks() const { return max_blocks_; }
+    int block_size() const { return block_size_; }
+    int num_kv_heads() const { return num_kv_heads_; }
+    int head_dim() const { return head_dim_; }
     int max_slots() const { return max_slots_; }
     int64_t layer_stride() const { return layer_stride_; }
     std::size_t elem_size() const { return elem_size_; }
+    ops::DType dtype() const { return dtype_; }
 
 private:
     Result<void> init(Backend& backend, int num_layers, int max_blocks, int block_size,
-                      int num_kv_heads, int head_dim, std::size_t elem_size);
+                      int num_kv_heads, int head_dim, ops::DType dtype);
 
     std::shared_ptr<Buffer> k_data_;
     std::shared_ptr<Buffer> v_data_;
     int64_t layer_stride_ = 0;
     std::size_t elem_size_ = 0;
+    ops::DType dtype_ = ops::DType::kUnknown;
     int max_slots_ = 0;
+    int max_blocks_ = 0;
+    int block_size_ = 0;
+    int num_kv_heads_ = 0;
+    int head_dim_ = 0;
     int num_layers_ = 0;
 };
-
-template <typename KVDType>
-Result<std::unique_ptr<KVCacheStorage>> KVCacheStorage::create(Backend& backend,
-                                                               int num_layers, int max_blocks,
-                                                               int block_size, int num_kv_heads,
-                                                               int head_dim) {
-    auto storage = std::make_unique<KVCacheStorage>();
-    auto r = storage->init(backend, num_layers, max_blocks, block_size, num_kv_heads, head_dim,
-                           sizeof(KVDType));
-    if (!r) return std::unexpected(r.error());
-    return storage;
-}
 
 }  // namespace ccinfer

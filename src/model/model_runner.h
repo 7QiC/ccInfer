@@ -8,12 +8,11 @@
 #include <utility>
 #include <vector>
 
-#include "base/result.h"
-#include "backend/params.h"
-#include "cache/kv_cache_manager.h"
 #include "backend/backend.h"
-#include "core/traits.h"
 #include "base/execution.h"
+#include "base/result.h"
+#include "cache/kv_cache_manager.h"
+#include "core/traits.h"
 #include "model/config.h"
 #include "model/model.h"
 
@@ -23,8 +22,7 @@ class ModelRunner {
 public:
     template <typename Traits>
     static Result<std::vector<WorkItemResult>> inference(Model& model, const PhysicalBatch& batch,
-                                                         Backend& backend,
-                                                         KVCacheManager& kv_mgr,
+                                                         Backend& backend, KVCacheManager& kv_mgr,
                                                          const SamplingParams& sampling = {}) {
         static_assert(runner_traits_valid_v<Traits>, "RunnerTraits has unknown dtype tags");
 
@@ -38,8 +36,9 @@ public:
         }
 
         // Validate physical batch.
-        if (!batch.token_ids || !batch.positions || !batch.slot_mapping || !batch.block_table ||
-            !batch.query_start_loc || !batch.context_lens || !batch.logits_indices) {
+        if (!batch.token_ids.valid() || !batch.positions.valid() || !batch.slot_mapping.valid() ||
+            !batch.block_table.valid() || !batch.query_start_loc.valid() ||
+            !batch.context_lens.valid() || !batch.logits_indices.valid()) {
             return std::unexpected(ErrorCode::InvalidArgument);
         }
 
@@ -102,7 +101,7 @@ public:
         // D2H: query_start_loc (validate + reuse later).
         std::vector<int32_t> qsl_host(B + 1);
         {
-            auto r = backend.memcpy_d2h(qsl_host.data(), batch.query_start_loc->data(),
+            auto r = backend.memcpy_d2h(qsl_host.data(), batch.query_start_loc.data(),
                                         static_cast<std::size_t>(B + 1) * sizeof(int32_t));
             if (!r) return std::unexpected(r.error());
             if (qsl_host[0] != 0) return std::unexpected(ErrorCode::InvalidArgument);
@@ -121,7 +120,7 @@ public:
         int max_pos = 0;
         {
             std::vector<int32_t> pos_host(T);
-            auto r = backend.memcpy_d2h(pos_host.data(), batch.positions->data(),
+            auto r = backend.memcpy_d2h(pos_host.data(), batch.positions.data(),
                                         static_cast<std::size_t>(T) * sizeof(int32_t));
             if (!r) return std::unexpected(r.error());
             for (int t = 0; t < T; ++t) {
@@ -140,7 +139,7 @@ public:
             const int max_ctx = batch.max_blocks_per_req * block_sz;
 
             std::vector<int32_t> ctx_host(B);
-            auto r = backend.memcpy_d2h(ctx_host.data(), batch.context_lens->data(),
+            auto r = backend.memcpy_d2h(ctx_host.data(), batch.context_lens.data(),
                                         static_cast<std::size_t>(B) * sizeof(int32_t));
             if (!r) return std::unexpected(r.error());
             for (int i = 0; i < B; ++i) {
@@ -155,7 +154,7 @@ public:
         // D2H: logits_indices (validate before forward to avoid KV side-effects).
         std::vector<int32_t> li_host(B);
         {
-            auto r = backend.memcpy_d2h(li_host.data(), batch.logits_indices->data(),
+            auto r = backend.memcpy_d2h(li_host.data(), batch.logits_indices.data(),
                                         static_cast<std::size_t>(B) * sizeof(int32_t));
             if (!r) return std::unexpected(r.error());
             for (int i = 0; i < B; ++i) {
@@ -172,15 +171,15 @@ public:
 
         // Build ForwardInput.
         ForwardInput input;
-        input.token_ids_ = static_cast<const int32_t*>(batch.token_ids->data());
-        input.positions_ = static_cast<const int32_t*>(batch.positions->data());
+        input.token_ids = batch.token_ids;
+        input.positions = batch.positions;
         input.num_tokens_ = T;
         input.max_position_id_ = max_pos;
         input.kv_mgr_ = &kv_mgr;
-        input.slot_mapping_ = static_cast<const int32_t*>(batch.slot_mapping->data());
-        input.block_table_ = static_cast<const int32_t*>(batch.block_table->data());
-        input.query_start_loc_ = static_cast<const int32_t*>(batch.query_start_loc->data());
-        input.context_lens_ = static_cast<const int32_t*>(batch.context_lens->data());
+        input.slot_mapping = batch.slot_mapping;
+        input.block_table = batch.block_table;
+        input.query_start_loc = batch.query_start_loc;
+        input.context_lens = batch.context_lens;
         input.batch_size_ = B;
         input.max_blocks_per_req_ = batch.max_blocks_per_req;
         input.mode_ = batch.mode;
@@ -191,39 +190,25 @@ public:
         if (V_size > kMax / T_size) return std::unexpected(ErrorCode::InvalidArgument);
         const std::size_t logits_elems = T_size * V_size;
         if (logits_elems > kMax / sizeof(float)) return std::unexpected(ErrorCode::InvalidArgument);
-        auto logits_r = backend.allocate_buffer(logits_elems * sizeof(float));
+        auto logits_r = Tensor::empty(backend, ops::DType::kFloat32, {T, V});
         if (!logits_r) return std::unexpected(logits_r.error());
-        auto logits = std::move(*logits_r);
-
-        auto tokens_r = backend.allocate_buffer(static_cast<std::size_t>(B) * sizeof(int32_t));
+        auto tokens_r = Tensor::empty(backend, ops::DType::kInt32, {B});
         if (!tokens_r) return std::unexpected(tokens_r.error());
-        auto tokens_gpu = std::move(*tokens_r);
 
         ForwardOutput output;
-        output.logits_ = logits->data();
-        output.tokens_out_ = static_cast<int32_t*>(tokens_gpu->data());
+        output.logits = std::move(*logits_r);
+        output.tokens_out = std::move(*tokens_r);
         auto fwd_r = model.forward(input, output, backend);
         if (!fwd_r) return std::unexpected(fwd_r.error());
 
-        SampleParams sp;
-        sp.logits_ = static_cast<const float*>(logits->data());
-        sp.logits_indices_ = static_cast<const int32_t*>(batch.logits_indices->data());
-        sp.tokens_out_ = static_cast<int32_t*>(tokens_gpu->data());
-        sp.num_tokens_ = T;
-        sp.batch_size_ = B;
-        sp.vocab_size_ = V;
-        sp.top_k_ = 0;
-        sp.top_p_ = 1.0f;
-        sp.temperature_ = 0.0f;
-        sp.seed_ = sampling.seed;
-
-        auto s_r = backend.sample(sp);
+        auto s_r = ops::map_result(ops::greedy_sample(output.logits, batch.logits_indices,
+                                                      &output.tokens_out, backend.context()));
         if (!s_r) return std::unexpected(s_r.error());
 
         // D2H: sampled tokens.
         std::vector<int32_t> tokens_host(B);
         {
-            auto r = backend.memcpy_d2h(tokens_host.data(), tokens_gpu->data(),
+            auto r = backend.memcpy_d2h(tokens_host.data(), output.tokens_out.data(),
                                         static_cast<std::size_t>(B) * sizeof(int32_t));
             if (!r) return std::unexpected(r.error());
         }

@@ -1,9 +1,10 @@
 #include "model/qwen3/qwen3_model.h"
 
-#include <cuda_runtime.h>
-
+#include <cmath>
 #include <cstdint>
 #include <utility>
+
+#include <cuda_runtime.h>
 
 #include "backend/backend.h"
 #include "cache/kv_cache_manager.h"
@@ -11,8 +12,7 @@
 namespace ccinfer {
 
 Result<std::unique_ptr<Model>> Qwen3Model::create(const ModelConfig& config,
-                                                  const WeightLoader& loader,
-                                                  Backend& backend) {
+                                                  const WeightLoader& loader, Backend& backend) {
     auto weights = Qwen3Weights::load(backend, config, loader);
     if (!weights) return std::unexpected(weights.error());
 
@@ -32,25 +32,15 @@ Qwen3Model::Qwen3Model(ModelConfig config, Qwen3Weights weights, RopeCache rope_
 
 Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& output,
                                  Backend& backend) {
-    if (output.logits_ == nullptr) return std::unexpected(ErrorCode::InvalidArgument);
+    if (!output.logits.valid()) return std::unexpected(ErrorCode::InvalidArgument);
     if (input.num_tokens_ <= 0) return std::unexpected(ErrorCode::InvalidArgument);
-    if (input.positions_ == nullptr) return std::unexpected(ErrorCode::InvalidArgument);
 
-    // token_ids_ and input_embeds_ must be mutually exclusive.
-    if ((input.token_ids_ == nullptr) == (input.input_embeds_ == nullptr)) {
+    // Exactly one of token_ids / input_embeds must be valid.
+    if (input.token_ids.valid() == input.input_embeds.valid()) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
 
-    if (input.kv_mgr_ == nullptr || input.slot_mapping_ == nullptr ||
-        input.block_table_ == nullptr || input.context_lens_ == nullptr || input.batch_size_ <= 0 ||
-        input.max_blocks_per_req_ <= 0) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-    const int cache_block_size = input.kv_mgr_->block_size();
-    if (cache_block_size <= 0) return std::unexpected(ErrorCode::InvalidArgument);
-
-    if ((input.mode_ == ForwardMode::Prefill || input.mode_ == ForwardMode::Mixed) &&
-        input.query_start_loc_ == nullptr) {
+    if (input.kv_mgr_ == nullptr) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
 
@@ -82,332 +72,193 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
 
     const int qkv_dim = (nq + 2 * nkv) * hd;
     const int attn_dim = nq * hd;
-    const int max_slots = input.kv_mgr_->max_slots();
-    const int64_t T64 = T;
-    const int64_t D64 = D;
 
-    auto alloc = [&](std::size_t bytes) -> Result<std::shared_ptr<Buffer>> {
-        auto r = backend.allocate_buffer(bytes);
-        if (!r) return std::unexpected(r.error());
-        return std::move(*r);
+    const std::int64_t T64 = T;
+    const std::int64_t d_ff64 = d_ff;
+
+    auto alloc_tensor = [&](std::initializer_list<std::int64_t> shape) -> Result<Tensor> {
+        return Tensor::empty(backend, ops::DType::kBFloat16, shape);
     };
 
-    auto hidden_a = alloc(static_cast<std::size_t>(T) * D * sizeof(__nv_bfloat16));
-    if (!hidden_a) return std::unexpected(hidden_a.error());
-    auto hidden_b = alloc(static_cast<std::size_t>(T) * D * sizeof(__nv_bfloat16));
-    if (!hidden_b) return std::unexpected(hidden_b.error());
-    auto normed = alloc(static_cast<std::size_t>(T) * D * sizeof(__nv_bfloat16));
-    if (!normed) return std::unexpected(normed.error());
-    auto qkv_out = alloc(static_cast<std::size_t>(T) * qkv_dim * sizeof(__nv_bfloat16));
-    if (!qkv_out) return std::unexpected(qkv_out.error());
-    auto q_buf = alloc(static_cast<std::size_t>(T) * nq * hd * sizeof(__nv_bfloat16));
-    if (!q_buf) return std::unexpected(q_buf.error());
-    auto k_buf = alloc(static_cast<std::size_t>(T) * nkv * hd * sizeof(__nv_bfloat16));
-    if (!k_buf) return std::unexpected(k_buf.error());
-    auto v_buf = alloc(static_cast<std::size_t>(T) * nkv * hd * sizeof(__nv_bfloat16));
-    if (!v_buf) return std::unexpected(v_buf.error());
-    auto attn_out = alloc(static_cast<std::size_t>(T) * attn_dim * sizeof(__nv_bfloat16));
-    if (!attn_out) return std::unexpected(attn_out.error());
-    auto gate = alloc(static_cast<std::size_t>(T) * d_ff * sizeof(__nv_bfloat16));
-    if (!gate) return std::unexpected(gate.error());
-    auto up_buf = alloc(static_cast<std::size_t>(T) * d_ff * sizeof(__nv_bfloat16));
-    if (!up_buf) return std::unexpected(up_buf.error());
-    auto ffn_act = alloc(static_cast<std::size_t>(T) * d_ff * sizeof(__nv_bfloat16));
-    if (!ffn_act) return std::unexpected(ffn_act.error());
+    auto hidden_r = alloc_tensor({T, D});
+    if (!hidden_r) return std::unexpected(hidden_r.error());
+    Tensor hidden = std::move(*hidden_r);
+    Tensor hidden_flat = hidden.flat();
 
-    if (input.token_ids_ != nullptr) {
-        auto er = backend.embed(EmbedParams{
-            .embed_table_ = weights_.embed_->data(),
-            .token_ids_ = input.token_ids_,
-            .input_embeds_ = (*hidden_a)->data(),
-            .num_tokens_ = T,
-            .d_model_ = D,
-        });
-        if (!er) return er;
+    auto next_hidden_r = alloc_tensor({T, D});
+    if (!next_hidden_r) return std::unexpected(next_hidden_r.error());
+    Tensor next_hidden = std::move(*next_hidden_r);
+    Tensor next_hidden_flat = next_hidden.flat();
+
+    auto normed_r = alloc_tensor({T, D});
+    if (!normed_r) return std::unexpected(normed_r.error());
+    Tensor normed = std::move(*normed_r);
+
+    auto qkv_out_r = alloc_tensor({T, qkv_dim});
+    if (!qkv_out_r) return std::unexpected(qkv_out_r.error());
+    Tensor qkv_out = std::move(*qkv_out_r);
+
+    auto q_r = alloc_tensor({T, nq, hd});
+    if (!q_r) return std::unexpected(q_r.error());
+    Tensor q = std::move(*q_r);
+    Tensor q_norm_2d = q.view({T64 * nq, hd});
+
+    auto k_r = alloc_tensor({T, nkv, hd});
+    if (!k_r) return std::unexpected(k_r.error());
+    Tensor k = std::move(*k_r);
+    Tensor k_norm_2d = k.view({T64 * nkv, hd});
+
+    auto v_r = alloc_tensor({T, nkv, hd});
+    if (!v_r) return std::unexpected(v_r.error());
+    Tensor v = std::move(*v_r);
+
+    auto attn_out_r = alloc_tensor({T, attn_dim});
+    if (!attn_out_r) return std::unexpected(attn_out_r.error());
+    Tensor attn_out = std::move(*attn_out_r);
+    Tensor attn_out_3d = attn_out.view({T, nq, hd});
+
+    auto gate_r = alloc_tensor({T, d_ff});
+    if (!gate_r) return std::unexpected(gate_r.error());
+    Tensor gate = std::move(*gate_r);
+    Tensor gate_flat = gate.flat();
+
+    auto up_r = alloc_tensor({T, d_ff});
+    if (!up_r) return std::unexpected(up_r.error());
+    Tensor up = std::move(*up_r);
+    Tensor up_flat = up.flat();
+
+    auto ffn_act_r = alloc_tensor({T, d_ff});
+    if (!ffn_act_r) return std::unexpected(ffn_act_r.error());
+    Tensor ffn_act = std::move(*ffn_act_r);
+    Tensor ffn_act_flat = ffn_act.flat();
+
+    const ops::ExecutionContext ctx = backend.context();
+
+    if (input.token_ids.valid()) {
+        auto r = ops::map_result(ops::embed(weights_.embed, input.token_ids, &hidden, ctx));
+        if (!r) return std::unexpected(r.error());
     } else {
-        auto r = backend.memcpy_d2d((*hidden_a)->data(), input.input_embeds_,
-                                    static_cast<std::size_t>(T) * D * sizeof(__nv_bfloat16));
+        auto r = backend.memcpy_d2d(hidden.data(), input.input_embeds.data(), hidden.nbytes());
         if (!r) return std::unexpected(r.error());
     }
 
-    auto* hidden = static_cast<__nv_bfloat16*>((*hidden_a)->data());
-    auto* next_hidden = static_cast<__nv_bfloat16*>((*hidden_b)->data());
+    const float attn_scale = 1.0f / std::sqrt(static_cast<float>(hd));
 
     for (int l = 0; l < n_layers; ++l) {
         const auto& lw = weights_.layers_[static_cast<std::size_t>(l)];
 
         {
-            auto r = backend.rms_norm(ops::DType::kBFloat16, RmsNormParams{
-                .input_ = hidden,
-                .weight_ = lw.rms_attn_->data(),
-                .output_ = (*normed)->data(),
-                .rows_ = T,
-                .dim_ = D,
-                .eps_ = eps,
-            });
-            if (!r) return r;
-        }
-
-        // QKV projection: qkv_out[T,qkv_dim] = normed[T,D] @ qkv_weight[qkv_dim,D]^T
-        {
-            auto r = backend.gemm(ops::DType::kBFloat16, GemmParams{
-                .a_ = (*normed)->data(),
-                .b_ = lw.qkv_->data(),
-                .c_ = (*qkv_out)->data(),
-                .m_ = T,
-                .n_ = qkv_dim,
-                .k_ = D,
-                .lda_ = D,
-                .ldb_ = D,
-                .ldc_ = qkv_dim,
-                .trans_b_ = true,
-            });
-            if (!r) return r;
+            auto r = ops::map_result(ops::rms_norm(&normed, hidden, lw.rms_attn, eps, ctx));
+            if (!r) return std::unexpected(r.error());
         }
 
         {
-            auto r = backend.split_qkv(ops::DType::kBFloat16, SplitQkvParams{
-                .qkv_ = (*qkv_out)->data(),
-                .q_ = (*q_buf)->data(),
-                .k_ = (*k_buf)->data(),
-                .v_ = (*v_buf)->data(),
-                .num_tokens_ = T,
-                .num_q_heads_ = nq,
-                .num_kv_heads_ = nkv,
-                .head_dim_ = hd,
-            });
-            if (!r) return r;
-        }
-
-        // In-place Q/K norm (Qwen3); in-place safe.
-        if (lw.q_norm_) {
-            auto r = backend.rms_norm(ops::DType::kBFloat16, RmsNormParams{
-                .input_ = (*q_buf)->data(),
-                .weight_ = lw.q_norm_->data(),
-                .output_ = (*q_buf)->data(),
-                .rows_ = T * nq,
-                .dim_ = hd,
-                .eps_ = eps,
-            });
-            if (!r) return r;
-        }
-        if (lw.k_norm_) {
-            auto r = backend.rms_norm(ops::DType::kBFloat16, RmsNormParams{
-                .input_ = (*k_buf)->data(),
-                .weight_ = lw.k_norm_->data(),
-                .output_ = (*k_buf)->data(),
-                .rows_ = T * nkv,
-                .dim_ = hd,
-                .eps_ = eps,
-            });
-            if (!r) return r;
+            auto r =
+                ops::map_result(ops::gemm(&qkv_out, normed, lw.qkv, false, true, 1.0f, 0.0f, ctx));
+            if (!r) return std::unexpected(r.error());
         }
 
         {
-            auto r = backend.rope(ops::DType::kBFloat16, RopeParams{
-                .q_ = (*q_buf)->data(),
-                .k_ = (*k_buf)->data(),
-                .positions_ = input.positions_,
-                .rope_cache_ = rope_cache_.data(),
-                .num_tokens_ = T,
-                .num_q_heads_ = nq,
-                .num_kv_heads_ = nkv,
-                .head_dim_ = hd,
-                .rotary_dim_ = hd,
-                .rope_cache_max_position_ = rope_cache_.max_position(),
-            });
-            if (!r) return r;
+            auto r = ops::map_result(ops::split_qkv(qkv_out, &q, &k, &v, ctx));
+            if (!r) return std::unexpected(r.error());
+        }
+
+        if (lw.q_norm.valid()) {
+            auto r = ops::map_result(ops::rms_norm(&q_norm_2d, q_norm_2d, lw.q_norm, eps, ctx));
+            if (!r) return std::unexpected(r.error());
+        }
+        if (lw.k_norm.valid()) {
+            auto r = ops::map_result(ops::rms_norm(&k_norm_2d, k_norm_2d, lw.k_norm, eps, ctx));
+            if (!r) return std::unexpected(r.error());
         }
 
         {
-            auto r = backend.write_kv_cache(ops::DType::kBFloat16, WriteKVCacheParams{
-                .k_new_ = (*k_buf)->data(),
-                .v_new_ = (*v_buf)->data(),
-                .k_cache_ = input.kv_mgr_->k_cache(l),
-                .v_cache_ = input.kv_mgr_->v_cache(l),
-                .slot_mapping_ = input.slot_mapping_,
-                .total_tokens_ = T,
-                .num_kv_heads_ = nkv,
-                .head_dim_ = hd,
-                .max_slots_ = max_slots,
-            });
-            if (!r) return r;
-        }
-
-        if (input.mode_ == ForwardMode::Decode) {
-            auto r = backend.decode_attention(ops::DType::kBFloat16, DecodeAttnParams{
-                .q_ = (*q_buf)->data(),
-                .k_cache_ = input.kv_mgr_->k_cache(l),
-                .v_cache_ = input.kv_mgr_->v_cache(l),
-                .block_table_ = input.block_table_,
-                .context_lens_ = input.context_lens_,
-                .output_ = (*attn_out)->data(),
-                .batch_size_ = B,
-                .max_blocks_per_req_ = input.max_blocks_per_req_,
-                .num_q_heads_ = nq,
-                .num_kv_heads_ = nkv,
-                .head_dim_ = hd,
-                .cache_block_size_ = cache_block_size,
-            });
-            if (!r) return r;
-        } else {
-            auto r = backend.prefill_attention(ops::DType::kBFloat16, PrefillAttnParams{
-                .q_ = (*q_buf)->data(),
-                .k_cache_ = input.kv_mgr_->k_cache(l),
-                .v_cache_ = input.kv_mgr_->v_cache(l),
-                .block_table_ = input.block_table_,
-                .query_start_loc_ = input.query_start_loc_,
-                .context_lens_ = input.context_lens_,
-                .output_ = (*attn_out)->data(),
-                .num_tokens_ = T,
-                .batch_size_ = B,
-                .max_blocks_per_req_ = input.max_blocks_per_req_,
-                .num_q_heads_ = nq,
-                .num_kv_heads_ = nkv,
-                .head_dim_ = hd,
-                .cache_block_size_ = cache_block_size,
-            });
-            if (!r) return r;
-        }
-
-        // Output projection: next_hidden[T,D] = attn_out[T,attn_dim] @ o_weight[D,attn_dim]^T
-        {
-            auto r = backend.gemm(ops::DType::kBFloat16, GemmParams{
-                .a_ = (*attn_out)->data(),
-                .b_ = lw.o_->data(),
-                .c_ = next_hidden,
-                .m_ = T,
-                .n_ = D,
-                .k_ = attn_dim,
-                .lda_ = attn_dim,
-                .ldb_ = attn_dim,
-                .ldc_ = D,
-                .trans_b_ = true,
-            });
-            if (!r) return r;
+            auto r =
+                ops::map_result(ops::rope(&q, &k, input.positions, rope_cache_.tensor(), hd, ctx));
+            if (!r) return std::unexpected(r.error());
         }
 
         {
-            auto r = backend.element_add(ops::DType::kBFloat16, ElementAddParams{
-                .dst_ = next_hidden,
-                .src_ = hidden,
-                .n_ = T64 * D64,
-            });
-            if (!r) return r;
+            auto k_cache = input.kv_mgr_->k_cache(l);
+            auto v_cache = input.kv_mgr_->v_cache(l);
+            auto r = ops::map_result(
+                ops::write_kv_cache(k, v, &k_cache, &v_cache, input.slot_mapping, ctx));
+            if (!r) return std::unexpected(r.error());
+        }
+
+        {
+            auto k_blocks = input.kv_mgr_->k_cache_blocks(l);
+            auto v_blocks = input.kv_mgr_->v_cache_blocks(l);
+            if (input.mode_ == ForwardMode::Decode) {
+                auto r = ops::map_result(
+                    ops::decode_attention(q, k_blocks, v_blocks, input.block_table,
+                                          input.context_lens, &attn_out_3d, attn_scale, ctx));
+                if (!r) return std::unexpected(r.error());
+            } else {
+                auto r = ops::map_result(ops::prefill_attention(
+                    q, k_blocks, v_blocks, input.block_table, input.query_start_loc,
+                    input.context_lens, &attn_out_3d, attn_scale, ctx));
+                if (!r) return std::unexpected(r.error());
+            }
+        }
+
+        {
+            auto r = ops::map_result(
+                ops::gemm(&next_hidden, attn_out, lw.o, false, true, 1.0f, 0.0f, ctx));
+            if (!r) return std::unexpected(r.error());
+        }
+
+        {
+            auto r = ops::map_result(ops::element_add(&next_hidden_flat, hidden_flat, ctx));
+            if (!r) return std::unexpected(r.error());
         }
         std::swap(hidden, next_hidden);
+        std::swap(hidden_flat, next_hidden_flat);
 
         {
-            auto r = backend.rms_norm(ops::DType::kBFloat16, RmsNormParams{
-                .input_ = hidden,
-                .weight_ = lw.rms_ffn_->data(),
-                .output_ = (*normed)->data(),
-                .rows_ = T,
-                .dim_ = D,
-                .eps_ = eps,
-            });
-            if (!r) return r;
-        }
-
-        // Gate projection: gate[T,d_ff] = normed[T,D] @ gate_weight[d_ff,D]^T
-        {
-            auto r = backend.gemm(ops::DType::kBFloat16, GemmParams{
-                .a_ = (*normed)->data(),
-                .b_ = lw.gate_->data(),
-                .c_ = (*gate)->data(),
-                .m_ = T,
-                .n_ = d_ff,
-                .k_ = D,
-                .lda_ = D,
-                .ldb_ = D,
-                .ldc_ = d_ff,
-                .trans_b_ = true,
-            });
-            if (!r) return r;
-        }
-
-        // Up projection: up[T,d_ff] = normed[T,D] @ up_weight[d_ff,D]^T
-        {
-            auto r = backend.gemm(ops::DType::kBFloat16, GemmParams{
-                .a_ = (*normed)->data(),
-                .b_ = lw.up_->data(),
-                .c_ = (*up_buf)->data(),
-                .m_ = T,
-                .n_ = d_ff,
-                .k_ = D,
-                .lda_ = D,
-                .ldb_ = D,
-                .ldc_ = d_ff,
-                .trans_b_ = true,
-            });
-            if (!r) return r;
+            auto r = ops::map_result(ops::rms_norm(&normed, hidden, lw.rms_ffn, eps, ctx));
+            if (!r) return std::unexpected(r.error());
         }
 
         {
-            auto r = backend.silu_mul(ops::DType::kBFloat16, SiluMulParams{
-                .gate_ = (*gate)->data(),
-                .up_ = (*up_buf)->data(),
-                .output_ = (*ffn_act)->data(),
-                .n_ = T64 * d_ff,
-            });
-            if (!r) return r;
-        }
-
-        // Down projection: next_hidden[T,D] = ffn_act[T,d_ff] @ down_weight[D,d_ff]^T
-        {
-            auto r = backend.gemm(ops::DType::kBFloat16, GemmParams{
-                .a_ = (*ffn_act)->data(),
-                .b_ = lw.down_->data(),
-                .c_ = next_hidden,
-                .m_ = T,
-                .n_ = D,
-                .k_ = d_ff,
-                .lda_ = d_ff,
-                .ldb_ = d_ff,
-                .ldc_ = D,
-                .trans_b_ = true,
-            });
-            if (!r) return r;
+            auto r =
+                ops::map_result(ops::gemm(&gate, normed, lw.gate, false, true, 1.0f, 0.0f, ctx));
+            if (!r) return std::unexpected(r.error());
         }
 
         {
-            auto r = backend.element_add(ops::DType::kBFloat16, ElementAddParams{
-                .dst_ = next_hidden,
-                .src_ = hidden,
-                .n_ = T64 * D64,
-            });
-            if (!r) return r;
+            auto r = ops::map_result(ops::gemm(&up, normed, lw.up, false, true, 1.0f, 0.0f, ctx));
+            if (!r) return std::unexpected(r.error());
+        }
+
+        {
+            auto r = ops::map_result(ops::silu_mul(&ffn_act_flat, gate_flat, up_flat, ctx));
+            if (!r) return std::unexpected(r.error());
+        }
+
+        {
+            auto r = ops::map_result(
+                ops::gemm(&next_hidden, ffn_act, lw.down, false, true, 1.0f, 0.0f, ctx));
+            if (!r) return std::unexpected(r.error());
+        }
+
+        {
+            auto r = ops::map_result(ops::element_add(&next_hidden_flat, hidden_flat, ctx));
+            if (!r) return std::unexpected(r.error());
         }
         std::swap(hidden, next_hidden);
+        std::swap(hidden_flat, next_hidden_flat);
     }
 
     {
-        auto r = backend.rms_norm(ops::DType::kBFloat16, RmsNormParams{
-            .input_ = hidden,
-            .weight_ = weights_.rms_final_->data(),
-            .output_ = (*normed)->data(),
-            .rows_ = T,
-            .dim_ = D,
-            .eps_ = eps,
-        });
-        if (!r) return r;
+        auto r = ops::map_result(ops::rms_norm(&normed, hidden, weights_.rms_final, eps, ctx));
+        if (!r) return std::unexpected(r.error());
     }
 
-    // LM head: logits[T,V] = normed[T,D] @ lm_head_weight[V,D]^T.
     {
-        auto r = backend.gemm_logits(GemmParams{
-            .a_ = (*normed)->data(),
-            .b_ = weights_.lm_head_->data(),
-            .c_ = output.logits_,
-            .m_ = T,
-            .n_ = V,
-            .k_ = D,
-            .lda_ = D,
-            .ldb_ = D,
-            .ldc_ = V,
-            .trans_b_ = true,
-        });
-        if (!r) return r;
+        auto r = ops::map_result(
+            ops::gemm(&output.logits, normed, weights_.lm_head, false, true, 1.0f, 0.0f, ctx));
+        if (!r) return std::unexpected(r.error());
     }
 
     return {};

@@ -1,84 +1,62 @@
 #pragma once
 
-#include <array>
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <memory>
+#include <span>
 
-#include "ops/ops.h"
+#include "backend/buffer.h"
+#include "base/result.h"
 
 namespace ccinfer {
 
-template <int MaxRank = 5>
-struct Tensor {
-    void* data_ = nullptr;
-    ops::DType dtype_ = ops::DType::kFloat32;
-    int rank_ = 0;
-    std::array<int64_t, MaxRank> shape_{};
-    std::array<int64_t, MaxRank> stride_{};
+class Backend;
 
-    static Tensor make(void* data, ops::DType dtype, std::initializer_list<int64_t> shape) {
-        assert(static_cast<int>(shape.size()) <= MaxRank);
-        Tensor t;
-        t.data_ = data;
-        t.dtype_ = dtype;
-        t.rank_ = static_cast<int>(shape.size());
-        int i = 0;
-        for (auto s : shape) t.shape_[i++] = s;
-        int64_t st = 1;
-        for (int d = t.rank_ - 1; d >= 0; d--) {
-            t.stride_[d] = st;
-            st *= t.shape_[d];
-        }
-        return t;
-    }
+// Framework-side Tensor: a ccop::Tensor view plus the Buffer that owns the
+// underlying allocation. Copies share ownership (PyTorch-style value
+// semantics); views produced by view/flat/slice/select keep the same owner.
+class Tensor final : public ops::Tensor {
+public:
+    Tensor() = default;
+    Tensor(const Tensor&) = default;
+    Tensor& operator=(const Tensor&) = default;
+    Tensor(Tensor&&) = default;
+    Tensor& operator=(Tensor&&) = default;
 
-    [[nodiscard]] int64_t numel() const noexcept {
-        int64_t n = 1;
-        for (int i = 0; i < rank_; i++) n *= shape_[i];
-        return n;
-    }
+    // Wraps an already-allocated Buffer. Never fails.
+    Tensor(std::shared_ptr<Buffer> buffer, ops::DType dtype,
+           std::initializer_list<std::int64_t> shape);
 
-    [[nodiscard]] size_t nbytes() const noexcept {
-        return static_cast<size_t>(numel()) * ops::dtype_size(dtype_);
-    }
+    // Uninitialized device tensor (torch.empty style).
+    static Result<Tensor> empty(Backend& backend, ops::DType dtype,
+                                std::initializer_list<std::int64_t> shape);
 
-    [[nodiscard]] bool is_contiguous() const noexcept {
-        int64_t expected = 1;
-        for (int d = rank_ - 1; d >= 0; --d) {
-            if (stride_[d] != expected) return false;
-            expected *= shape_[d];
-        }
-        return true;
-    }
+    // Allocates a device tensor and copies host data into it.
+    static Result<Tensor> from_host(Backend& backend, const void* src, ops::DType dtype,
+                                    std::initializer_list<std::int64_t> shape);
 
-    [[nodiscard]] Tensor slice(int dim, int64_t start, int64_t end) const {
-        assert(dim >= 0 && dim < rank_);
-        assert(start >= 0 && end >= start && end <= shape_[dim]);
+    // Wraps a sub-range of an existing Buffer at an explicit byte offset.
+    static Tensor from_buffer(std::shared_ptr<Buffer> buffer, void* data, ops::DType dtype,
+                              std::initializer_list<std::int64_t> shape);
+    static Tensor from_buffer(std::shared_ptr<Buffer> buffer, void* data, ops::DType dtype,
+                              std::span<const std::int64_t> shape);
 
+    [[nodiscard]] const std::shared_ptr<Buffer>& buffer() const noexcept { return buffer_; }
+
+    Tensor view(std::initializer_list<std::int64_t> shape) const;
+    Tensor flat() const;
+    Tensor slice(int dim, std::int64_t start, std::int64_t end) const;
+    Tensor select(int dim, std::int64_t index) const;
+
+private:
+    Tensor with_view(const ops::Tensor& view) const {
         Tensor t = *this;
-        t.shape_[dim] = end - start;
-        t.data_ =
-            static_cast<char*>(t.data_) + start * stride_[dim] * ops::dtype_size(dtype_);
+        static_cast<ops::Tensor&>(t) = view;
         return t;
     }
 
-    [[nodiscard]] Tensor select(int dim, int64_t idx) const {
-        assert(dim >= 0 && dim < rank_);
-        assert(idx >= 0 && idx < shape_[dim]);
-
-        Tensor t = *this;
-        t.data_ = static_cast<char*>(t.data_) + idx * stride_[dim] * ops::dtype_size(dtype_);
-        for (int i = dim; i < t.rank_ - 1; i++) {
-            t.shape_[i] = t.shape_[i + 1];
-            t.stride_[i] = t.stride_[i + 1];
-        }
-        t.shape_[t.rank_ - 1] = 0;
-        t.stride_[t.rank_ - 1] = 0;
-        t.rank_--;
-        return t;
-    }
+    std::shared_ptr<Buffer> buffer_;
 };
 
 }  // namespace ccinfer

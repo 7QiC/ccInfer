@@ -1,8 +1,3 @@
-#include <gtest/gtest.h>
-
-#include <cuda_bf16.h>
-#include <cuda_runtime.h>
-
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -13,11 +8,14 @@
 #include <string>
 #include <vector>
 
+#include <cuda_bf16.h>
+#include <cuda_runtime.h>
+#include <gtest/gtest.h>
+
 #include "backend/backend.h"
 #include "cache/block.h"
 #include "cache/kv_cache_manager.h"
 #include "cache/kv_cache_storage.h"
-#include "kernel/cuda_kernels.h"
 #include "model/config.h"
 #include "model/loader.h"
 #include "model/registry.h"
@@ -80,8 +78,9 @@ ForwardFixture prepare_single_prefill(Backend& backend, const ModelConfig& confi
     const int T = static_cast<int>(token_ids_host.size());
     const int max_blocks = std::max(1, (T + kKVBlockSize - 1) / kKVBlockSize);
 
-    auto storage = KVCacheStorage::create<__nv_bfloat16>(
-        backend, config.n_layers_, max_blocks, kKVBlockSize, config.n_kv_heads_, config.head_dim_);
+    auto storage =
+        KVCacheStorage::create(backend, config.n_layers_, max_blocks, kKVBlockSize,
+                               config.n_kv_heads_, config.head_dim_, ops::DType::kBFloat16);
     if (!storage) {
         fprintf(stderr, "prepare_single_prefill: KVCacheStorage::create failed\n");
         fixture.kv_mgr.reset();
@@ -157,21 +156,22 @@ std::vector<float> run_prefill_logits(Backend& backend, const ModelConfig& confi
     auto output_logits = alloc_buf(backend, static_cast<size_t>(T) * V * sizeof(float));
 
     ForwardInput fwd_in{};
-    fwd_in.token_ids_ = static_cast<int32_t*>(fixture.token_ids->data());
+    fwd_in.token_ids = Tensor(fixture.token_ids, ops::DType::kInt32, {T});
     fwd_in.num_tokens_ = T;
-    fwd_in.positions_ = static_cast<int32_t*>(fixture.positions->data());
+    fwd_in.positions = Tensor(fixture.positions, ops::DType::kInt32, {T});
     fwd_in.max_position_id_ = T - 1;
     fwd_in.mode_ = ForwardMode::Prefill;
     fwd_in.kv_mgr_ = fixture.kv_mgr.get();
-    fwd_in.slot_mapping_ = static_cast<int32_t*>(fixture.slot_mapping->data());
-    fwd_in.block_table_ = static_cast<int32_t*>(fixture.block_table->data());
-    fwd_in.query_start_loc_ = static_cast<int32_t*>(fixture.query_start_loc->data());
-    fwd_in.context_lens_ = static_cast<int32_t*>(fixture.context_lens->data());
+    fwd_in.slot_mapping = Tensor(fixture.slot_mapping, ops::DType::kInt32, {T});
+    fwd_in.block_table =
+        Tensor(fixture.block_table, ops::DType::kInt32, {1, fixture.max_blocks_per_req});
+    fwd_in.query_start_loc = Tensor(fixture.query_start_loc, ops::DType::kInt32, {2});
+    fwd_in.context_lens = Tensor(fixture.context_lens, ops::DType::kInt32, {1});
     fwd_in.batch_size_ = 1;
     fwd_in.max_blocks_per_req_ = fixture.max_blocks_per_req;
 
     ForwardOutput fwd_out{};
-    fwd_out.logits_ = output_logits->data();
+    fwd_out.logits = Tensor(output_logits, ops::DType::kFloat32, {T, V});
 
     auto fwd_result = (*model)->forward(fwd_in, fwd_out, backend);
     if (!fwd_result) {
@@ -191,23 +191,22 @@ std::vector<float> run_prefill_logits(Backend& backend, const ModelConfig& confi
 
 struct GenFixture {
     std::unique_ptr<KVCacheManager> kv_mgr;
-    std::shared_ptr<Buffer> token_ids;       // [1] — single token per decode step
+    std::shared_ptr<Buffer> token_ids;        // [1] — single token per decode step
     std::shared_ptr<Buffer> positions;        // [1]
     std::shared_ptr<Buffer> slot_mapping;     // [1]
     std::shared_ptr<Buffer> block_table;      // [1, max_blocks]
     std::shared_ptr<Buffer> query_start_loc;  // [2]
     std::shared_ptr<Buffer> context_lens;     // [1]
     int max_blocks_per_req = 0;
-    int current_context_len = 0;   // total tokens written to KV cache
-    int next_slot = 0;             // next free slot index
-    std::vector<int32_t> block_ids; // physical block IDs
+    int current_context_len = 0;     // total tokens written to KV cache
+    int next_slot = 0;               // next free slot index
+    std::vector<int32_t> block_ids;  // physical block IDs
 };
 
 // Creates a GenFixture with enough blocks for prompt + max_new_tokens.
 // Returns a fixture with kv_mgr == nullptr on failure.
 GenFixture prepare_generation(Backend& backend, const ModelConfig& config,
-                              const std::vector<int32_t>& prompt_tokens,
-                              int max_new_tokens) {
+                              const std::vector<int32_t>& prompt_tokens, int max_new_tokens) {
     GenFixture f;
     f.kv_mgr = std::make_unique<KVCacheManager>();
 
@@ -215,19 +214,25 @@ GenFixture prepare_generation(Backend& backend, const ModelConfig& config,
     const int total_tokens = prompt_len + max_new_tokens;
     const int total_blocks = std::max(1, (total_tokens + kKVBlockSize - 1) / kKVBlockSize);
 
-    auto storage = KVCacheStorage::create<__nv_bfloat16>(
-        backend, config.n_layers_, total_blocks, kKVBlockSize, config.n_kv_heads_,
-        config.head_dim_);
-    if (!storage) { f.kv_mgr.reset(); return f; }
+    auto storage =
+        KVCacheStorage::create(backend, config.n_layers_, total_blocks, kKVBlockSize,
+                               config.n_kv_heads_, config.head_dim_, ops::DType::kBFloat16);
+    if (!storage) {
+        f.kv_mgr.reset();
+        return f;
+    }
     if (!f.kv_mgr->init(std::move(*storage), total_blocks, kKVBlockSize)) {
-        f.kv_mgr.reset(); return f;
+        f.kv_mgr.reset();
+        return f;
     }
     auto blocks = f.kv_mgr->allocate_blocks(total_blocks);
-    if (!blocks) { f.kv_mgr.reset(); return f; }
+    if (!blocks) {
+        f.kv_mgr.reset();
+        return f;
+    }
     f.max_blocks_per_req = blocks->size();
     f.block_ids.resize(static_cast<size_t>(blocks->size()));
-    for (int i = 0; i < blocks->size(); ++i)
-        f.block_ids[static_cast<size_t>(i)] = (*blocks)[i];
+    for (int i = 0; i < blocks->size(); ++i) f.block_ids[static_cast<size_t>(i)] = (*blocks)[i];
 
     f.token_ids = alloc_buf(backend, sizeof(int32_t));
     f.positions = alloc_buf(backend, sizeof(int32_t));
@@ -237,8 +242,7 @@ GenFixture prepare_generation(Backend& backend, const ModelConfig& config,
     f.context_lens = alloc_buf(backend, sizeof(int32_t));
 
     cudaMemcpy(f.block_table->data(), f.block_ids.data(),
-               static_cast<size_t>(f.max_blocks_per_req) * sizeof(int32_t),
-               cudaMemcpyHostToDevice);
+               static_cast<size_t>(f.max_blocks_per_req) * sizeof(int32_t), cudaMemcpyHostToDevice);
 
     return f;
 }
@@ -247,8 +251,7 @@ GenFixture prepare_generation(Backend& backend, const ModelConfig& config,
 // Writes KV for this token into the cache and returns logits for the NEXT token.
 // Returns empty vector on error.
 std::vector<float> run_decode_step(Backend& backend, const ModelConfig& config,
-                                   std::unique_ptr<Model>& model,
-                                   GenFixture& f, int32_t token_id) {
+                                   std::unique_ptr<Model>& model, GenFixture& f, int32_t token_id) {
     const int V = config.vocab_size_;
     const int pos = f.current_context_len;
     const int slot = f.next_slot;
@@ -266,21 +269,21 @@ std::vector<float> run_decode_step(Backend& backend, const ModelConfig& config,
     auto logits_buf = alloc_buf(backend, static_cast<size_t>(V) * sizeof(float));
 
     ForwardInput fwd_in{};
-    fwd_in.token_ids_ = static_cast<int32_t*>(f.token_ids->data());
+    fwd_in.token_ids = Tensor(f.token_ids, ops::DType::kInt32, {1});
     fwd_in.num_tokens_ = 1;
-    fwd_in.positions_ = static_cast<int32_t*>(f.positions->data());
+    fwd_in.positions = Tensor(f.positions, ops::DType::kInt32, {1});
     fwd_in.max_position_id_ = pos;
     fwd_in.mode_ = ForwardMode::Decode;
     fwd_in.kv_mgr_ = f.kv_mgr.get();
-    fwd_in.slot_mapping_ = static_cast<int32_t*>(f.slot_mapping->data());
-    fwd_in.block_table_ = static_cast<int32_t*>(f.block_table->data());
-    fwd_in.query_start_loc_ = static_cast<int32_t*>(f.query_start_loc->data());
-    fwd_in.context_lens_ = static_cast<int32_t*>(f.context_lens->data());
+    fwd_in.slot_mapping = Tensor(f.slot_mapping, ops::DType::kInt32, {1});
+    fwd_in.block_table = Tensor(f.block_table, ops::DType::kInt32, {1, f.max_blocks_per_req});
+    fwd_in.query_start_loc = Tensor(f.query_start_loc, ops::DType::kInt32, {2});
+    fwd_in.context_lens = Tensor(f.context_lens, ops::DType::kInt32, {1});
     fwd_in.batch_size_ = 1;
     fwd_in.max_blocks_per_req_ = f.max_blocks_per_req;
 
     ForwardOutput fwd_out{};
-    fwd_out.logits_ = logits_buf->data();
+    fwd_out.logits = Tensor(logits_buf, ops::DType::kFloat32, {1, V});
 
     if (!model->forward(fwd_in, fwd_out, backend)) {
         fprintf(stderr, "run_decode_step: forward failed at pos=%d\n", pos);
@@ -292,8 +295,7 @@ std::vector<float> run_decode_step(Backend& backend, const ModelConfig& config,
     f.next_slot = slot + 1;
 
     std::vector<float> logits(static_cast<size_t>(V));
-    cudaMemcpy(logits.data(), logits_buf->data(),
-               V * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(logits.data(), logits_buf->data(), V * sizeof(float), cudaMemcpyDeviceToHost);
     return logits;
 }
 
@@ -301,15 +303,17 @@ int32_t argmax(const std::vector<float>& v) {
     int32_t best = 0;
     float best_val = v[0];
     for (size_t i = 1; i < v.size(); ++i) {
-        if (v[i] > best_val) { best_val = v[i]; best = static_cast<int32_t>(i); }
+        if (v[i] > best_val) {
+            best_val = v[i];
+            best = static_cast<int32_t>(i);
+        }
     }
     return best;
 }
 
 // Run full greedy generation: prefill + decode loop.
 // Returns generated NEW token IDs (excluding prompt).  Empty on error.
-std::vector<int32_t> run_greedy_generation(Backend& backend,
-                                           const ModelConfig& config,
+std::vector<int32_t> run_greedy_generation(Backend& backend, const ModelConfig& config,
                                            const WeightLoader& loader,
                                            const std::vector<int32_t>& prompt_tokens,
                                            int max_new_tokens) {
@@ -329,8 +333,8 @@ std::vector<int32_t> run_greedy_generation(Backend& backend,
     const int V = config.vocab_size_;
 
     {
-        auto prefill_logits_buf = alloc_buf(backend,
-            static_cast<size_t>(prompt_len) * V * sizeof(float));
+        auto prefill_logits_buf =
+            alloc_buf(backend, static_cast<size_t>(prompt_len) * V * sizeof(float));
 
         std::vector<int32_t> positions_host(static_cast<size_t>(prompt_len));
         std::vector<int32_t> slot_mapping_host(static_cast<size_t>(prompt_len));
@@ -348,31 +352,31 @@ std::vector<int32_t> run_greedy_generation(Backend& backend,
         auto pf_qsl = alloc_buf(backend, 2 * sizeof(int32_t));
         auto pf_ctx = alloc_buf(backend, sizeof(int32_t));
 
-        cudaMemcpy(pf_token_ids->data(), prompt_tokens.data(),
-                   prompt_len * sizeof(int32_t), cudaMemcpyHostToDevice);
-        cudaMemcpy(pf_pos->data(), positions_host.data(),
-                   prompt_len * sizeof(int32_t), cudaMemcpyHostToDevice);
-        cudaMemcpy(pf_slot->data(), slot_mapping_host.data(),
-                   prompt_len * sizeof(int32_t), cudaMemcpyHostToDevice);
+        cudaMemcpy(pf_token_ids->data(), prompt_tokens.data(), prompt_len * sizeof(int32_t),
+                   cudaMemcpyHostToDevice);
+        cudaMemcpy(pf_pos->data(), positions_host.data(), prompt_len * sizeof(int32_t),
+                   cudaMemcpyHostToDevice);
+        cudaMemcpy(pf_slot->data(), slot_mapping_host.data(), prompt_len * sizeof(int32_t),
+                   cudaMemcpyHostToDevice);
         cudaMemcpy(pf_qsl->data(), qsl.data(), 2 * sizeof(int32_t), cudaMemcpyHostToDevice);
         cudaMemcpy(pf_ctx->data(), ctx.data(), sizeof(int32_t), cudaMemcpyHostToDevice);
 
         ForwardInput fwd_in{};
-        fwd_in.token_ids_ = static_cast<int32_t*>(pf_token_ids->data());
+        fwd_in.token_ids = Tensor(pf_token_ids, ops::DType::kInt32, {prompt_len});
         fwd_in.num_tokens_ = prompt_len;
-        fwd_in.positions_ = static_cast<int32_t*>(pf_pos->data());
+        fwd_in.positions = Tensor(pf_pos, ops::DType::kInt32, {prompt_len});
         fwd_in.max_position_id_ = prompt_len - 1;
         fwd_in.mode_ = ForwardMode::Prefill;
         fwd_in.kv_mgr_ = f.kv_mgr.get();
-        fwd_in.slot_mapping_ = static_cast<int32_t*>(pf_slot->data());
-        fwd_in.block_table_ = static_cast<int32_t*>(f.block_table->data());
-        fwd_in.query_start_loc_ = static_cast<int32_t*>(pf_qsl->data());
-        fwd_in.context_lens_ = static_cast<int32_t*>(pf_ctx->data());
+        fwd_in.slot_mapping = Tensor(pf_slot, ops::DType::kInt32, {prompt_len});
+        fwd_in.block_table = Tensor(f.block_table, ops::DType::kInt32, {1, f.max_blocks_per_req});
+        fwd_in.query_start_loc = Tensor(pf_qsl, ops::DType::kInt32, {2});
+        fwd_in.context_lens = Tensor(pf_ctx, ops::DType::kInt32, {1});
         fwd_in.batch_size_ = 1;
         fwd_in.max_blocks_per_req_ = f.max_blocks_per_req;
 
         ForwardOutput fwd_out{};
-        fwd_out.logits_ = prefill_logits_buf->data();
+        fwd_out.logits = Tensor(prefill_logits_buf, ops::DType::kFloat32, {prompt_len, V});
 
         if (!(*model)->forward(fwd_in, fwd_out, backend)) {
             fprintf(stderr, "run_greedy_generation: prefill failed\n");
@@ -385,8 +389,8 @@ std::vector<int32_t> run_greedy_generation(Backend& backend,
 
         std::vector<float> last_logits(static_cast<size_t>(V));
         cudaMemcpy(last_logits.data(),
-                   static_cast<float*>(prefill_logits_buf->data())
-                       + static_cast<int64_t>(prompt_len - 1) * V,
+                   static_cast<float*>(prefill_logits_buf->data()) +
+                       static_cast<int64_t>(prompt_len - 1) * V,
                    V * sizeof(float), cudaMemcpyDeviceToHost);
         int32_t first_token = argmax(last_logits);
 
@@ -481,9 +485,8 @@ TEST_F(LogitsMatchTest, SingleToken) {
             max_idx = i;
         }
     }
-    printf("Single-token max_diff=%.6f at token %d (ccinf=%.4f ref=%.4f)\n",
-           max_diff, max_idx, logits[static_cast<size_t>(max_idx)],
-           ref_logits[static_cast<size_t>(max_idx)]);
+    printf("Single-token max_diff=%.6f at token %d (ccinf=%.4f ref=%.4f)\n", max_diff, max_idx,
+           logits[static_cast<size_t>(max_idx)], ref_logits[static_cast<size_t>(max_idx)]);
 
     // BF16-matching accumulation (RMSNorm rounds sum_sq after each element).
     // With this strategy, single-token max_diff stays under 0.10.
@@ -532,14 +535,12 @@ TEST_F(LogitsMatchTest, CompareWithReference) {
         our_idx[static_cast<size_t>(i)] = i;
         ref_idx[static_cast<size_t>(i)] = i;
     }
-    std::partial_sort(our_idx.begin(), our_idx.begin() + 5, our_idx.end(),
-                      [&](int a, int b) {
-                          return logits[static_cast<size_t>(a)] > logits[static_cast<size_t>(b)];
-                      });
-    std::partial_sort(ref_idx.begin(), ref_idx.begin() + 5, ref_idx.end(),
-                      [&](int a, int b) {
-                          return ref_logits[static_cast<size_t>(a)] > ref_logits[static_cast<size_t>(b)];
-                      });
+    std::partial_sort(our_idx.begin(), our_idx.begin() + 5, our_idx.end(), [&](int a, int b) {
+        return logits[static_cast<size_t>(a)] > logits[static_cast<size_t>(b)];
+    });
+    std::partial_sort(ref_idx.begin(), ref_idx.begin() + 5, ref_idx.end(), [&](int a, int b) {
+        return ref_logits[static_cast<size_t>(a)] > ref_logits[static_cast<size_t>(b)];
+    });
 
     int top5_match = 0;
     for (int i = 0; i < 5; ++i) {
@@ -566,10 +567,9 @@ TEST_F(LogitsMatchTest, TopKAgreement) {
     std::vector<int> idx(static_cast<size_t>(V));
     for (int i = 0; i < V; ++i) idx[static_cast<size_t>(i)] = i;
 
-    std::partial_sort(idx.begin(), idx.begin() + 5, idx.end(),
-                      [&](int a, int b) {
-                          return logits[static_cast<size_t>(a)] > logits[static_cast<size_t>(b)];
-                      });
+    std::partial_sort(idx.begin(), idx.begin() + 5, idx.end(), [&](int a, int b) {
+        return logits[static_cast<size_t>(a)] > logits[static_cast<size_t>(b)];
+    });
 
     for (int i = 0; i < 5; ++i) {
         EXPECT_TRUE(std::isfinite(logits[static_cast<size_t>(idx[i])]))
@@ -582,8 +582,7 @@ TEST_F(LogitsMatchTest, GreedyGenerationMatches) {
     // Loads HF metadata, runs ccInfer generation, compares token-by-token.
 
     auto load_hf_gen = [&](const std::string& ref_dir) -> std::vector<int32_t> {
-        std::string meta_path =
-            dir_ + "/ccinfer_correctness_ref/" + ref_dir + "/metadata.json";
+        std::string meta_path = dir_ + "/ccinfer_correctness_ref/" + ref_dir + "/metadata.json";
         std::ifstream f(meta_path);
         if (!f.is_open()) {
             printf("  SKIP: no HF reference at %s\n", meta_path.c_str());
@@ -597,7 +596,11 @@ TEST_F(LogitsMatchTest, GreedyGenerationMatches) {
         return gen;
     };
 
-    struct GenCase { std::string prompt; std::string ref_dir; int max_tokens; };
+    struct GenCase {
+        std::string prompt;
+        std::string ref_dir;
+        int max_tokens;
+    };
     const std::vector<GenCase> test_cases = {
         {"Hello", "Hello", 16},
         {"Hello world", "Hello_world", 16},
@@ -617,15 +620,14 @@ TEST_F(LogitsMatchTest, GreedyGenerationMatches) {
             GTEST_SKIP() << "HF reference not found for: " << tc.prompt;
         }
 
-        auto cc_gen = run_greedy_generation(*backend_, config_, *loader_,
-                                            prompt_tokens, tc.max_tokens);
+        auto cc_gen =
+            run_greedy_generation(*backend_, config_, *loader_, prompt_tokens, tc.max_tokens);
         ASSERT_FALSE(cc_gen.empty()) << "Generation failed for: " << tc.prompt;
 
         printf("  Prompt tokens: ");
         for (auto t : prompt_tokens) printf("%d ", t);
         printf("\n  HF generated:   ");
-        for (size_t i = 0; i < cc_gen.size() && i < hf_gen.size(); ++i)
-            printf("%d ", hf_gen[i]);
+        for (size_t i = 0; i < cc_gen.size() && i < hf_gen.size(); ++i) printf("%d ", hf_gen[i]);
         printf("\n  ccInfer generated: ");
         for (auto t : cc_gen) printf("%d ", t);
         printf("\n");
@@ -643,8 +645,7 @@ TEST_F(LogitsMatchTest, GreedyGenerationMatches) {
         }
 
         printf("  Match: %zu/%zu tokens exact", static_cast<size_t>(match_count), compare_len);
-        if (first_divergence >= 0)
-            printf(" (first divergence at token %d)", first_divergence);
+        if (first_divergence >= 0) printf(" (first divergence at token %d)", first_divergence);
         printf("\n");
 
         // For BF16 greedy generation, we expect exact match for at least the

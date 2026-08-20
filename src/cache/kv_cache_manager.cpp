@@ -54,12 +54,12 @@ Result<void> KVCacheManager::init(std::unique_ptr<KVCacheStorage> storage, int m
     return {};
 }
 
-// Data pointers.
+// Data views.
 
-void* KVCacheManager::k_cache(int layer) { return kv_storage_->k_layer(layer); }
-void* KVCacheManager::v_cache(int layer) { return kv_storage_->v_layer(layer); }
-const void* KVCacheManager::k_cache(int layer) const { return kv_storage_->k_layer(layer); }
-const void* KVCacheManager::v_cache(int layer) const { return kv_storage_->v_layer(layer); }
+Tensor KVCacheManager::k_cache(int layer) { return kv_storage_->k_layer_tensor(layer); }
+Tensor KVCacheManager::v_cache(int layer) { return kv_storage_->v_layer_tensor(layer); }
+Tensor KVCacheManager::k_cache_blocks(int layer) { return kv_storage_->k_block_tensor(layer); }
+Tensor KVCacheManager::v_cache_blocks(int layer) { return kv_storage_->v_block_tensor(layer); }
 
 int KVCacheManager::max_slots() const { return kv_storage_->max_slots(); }
 

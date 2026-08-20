@@ -19,7 +19,7 @@ target_link_libraries(test_device_buffer PRIVATE engine gtest_main CUDA::cudart)
 gtest_discover_tests(test_device_buffer)
 
 add_executable(test_tensor test_tensor.cpp)
-target_link_libraries(test_tensor PRIVATE engine gtest_main)
+target_link_libraries(test_tensor PRIVATE engine gtest_main CUDA::cudart)
 gtest_discover_tests(test_tensor)
 
 add_executable(test_config test_config.cpp)
@@ -51,3 +51,7 @@ gtest_discover_tests(test_scheduler)
 add_executable(test_prefix_cache test_prefix_cache.cpp)
 target_link_libraries(test_prefix_cache PRIVATE engine gtest_main)
 gtest_discover_tests(test_prefix_cache)
+
+add_executable(test_rope_cache test_rope_cache.cpp)
+target_link_libraries(test_rope_cache PRIVATE engine gtest_main CUDA::cudart)
+gtest_discover_tests(test_rope_cache)

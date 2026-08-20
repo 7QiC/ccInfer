@@ -7,6 +7,7 @@
 #include "base/result.h"
 #include "cache/block.h"
 #include "cache/cache_stats.h"
+#include "core/tensor.h"
 
 namespace ccinfer {
 
@@ -25,10 +26,12 @@ public:
 
     Result<void> init(std::unique_ptr<KVCacheStorage> storage, int max_blocks, int block_size);
 
-    void* k_cache(int layer);
-    void* v_cache(int layer);
-    const void* k_cache(int layer) const;
-    const void* v_cache(int layer) const;
+    // Slot-major 3D view of one layer: [max_slots, num_kv_heads, head_dim].
+    Tensor k_cache(int layer);
+    Tensor v_cache(int layer);
+    // Paged 4D view of one layer: [max_blocks, block_size, num_kv_heads, head_dim].
+    Tensor k_cache_blocks(int layer);
+    Tensor v_cache_blocks(int layer);
 
     int max_slots() const;
 
