@@ -38,13 +38,16 @@ public:
 
     struct TranslateResult {
         PhysicalBatch physical_batch;
+        ScheduledBatch adjusted_batch;  // prefix-cache hits may alter WorkItems
         std::vector<PerItemAlloc> per_item;
     };
 
     // Build a GPU-ready PhysicalBatch from the scheduled batch and current
-    // SequenceState.  Allocates additional KV blocks as needed.
+    // SequenceState.  Allocates additional KV blocks as needed.  The original
+    // batch is not modified; any prefix-cache adjustment is returned in
+    // TranslateResult::adjusted_batch.
     Result<TranslateResult> translate(
-        ScheduledBatch& batch,
+        const ScheduledBatch& batch,
         const std::unordered_map<SequenceId, SequenceState>& sequences);
 
     // Persist changes to SequenceState after a successful forward pass.

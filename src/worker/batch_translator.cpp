@@ -50,7 +50,7 @@ BatchTranslator::BatchTranslator(Backend& backend, KVCacheManager& kv_mgr, int b
 // any KV blocks that were allocated.
 
 Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
-    ScheduledBatch& batch, const std::unordered_map<SequenceId, SequenceState>& sequences) {
+    const ScheduledBatch& batch, const std::unordered_map<SequenceId, SequenceState>& sequences) {
     if (block_size_ <= 0) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
@@ -63,6 +63,7 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
         return std::unexpected(ErrorCode::InvalidArgument);
     }
     const int num_items = static_cast<int>(batch.items.size());
+    std::vector<WorkItem> adjusted_items = batch.items;
     std::vector<PerItemAlloc> per_item(static_cast<std::size_t>(num_items));
 
     auto fail = [&](ErrorCode ec) -> Result<TranslateResult> {
@@ -81,7 +82,7 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
     constexpr int kIntMax = std::numeric_limits<int>::max();
 
     for (int i = 0; i < num_items; ++i) {
-        auto& item = batch.items[i];
+        auto& item = adjusted_items[i];
 
         // Resolve seq_id before adjusting the item.
         SequenceId seq_id = 0;
@@ -244,7 +245,7 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
 
     int offset = 0;
     for (int i = 0; i < num_items; ++i) {
-        const auto& item = batch.items[i];
+        const auto& item = adjusted_items[i];
 
         SequenceId seq_id = 0;
         std::visit([&](const auto& w) { seq_id = w.seq_id; }, item);
@@ -293,7 +294,7 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
     for (int i = 0; i < batch_size; ++i) {
         const int last_token_index = query_start_loc[static_cast<std::size_t>(i) + 1] - 1;
 
-        if (auto* pf = std::get_if<PrefillChunk>(&batch.items[i])) {
+        if (auto* pf = std::get_if<PrefillChunk>(&adjusted_items[i])) {
             logits_indices[static_cast<std::size_t>(i)] = pf->needs_sample ? last_token_index : -1;
         } else {
             logits_indices[static_cast<std::size_t>(i)] = last_token_index;
@@ -304,14 +305,18 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
     TranslateResult result;
 
     auto& pb = result.physical_batch;
-    pb.query_start_loc_host = query_start_loc;
-    pb.logits_indices_host = logits_indices;
+    pb.item_token_counts.resize(B_sz);
+    pb.sample_flags.resize(B_sz);
+    for (std::size_t i = 0; i < B_sz; ++i) {
+        pb.item_token_counts[i] = static_cast<int32_t>(per_item[i].slot_mapping.size());
+        pb.sample_flags[i] = logits_indices[i] >= 0;
+    }
     pb.max_position_id = max_position_id;
     // Recompute mode after Phase 1: prefix-cache hits may have converted
     // PrefillChunks to DecodeOneToken items.
     bool has_prefill = false;
     bool has_decode = false;
-    for (const auto& item : batch.items) {
+    for (const auto& item : adjusted_items) {
         if (std::holds_alternative<PrefillChunk>(item))
             has_prefill = true;
         else
@@ -339,7 +344,7 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
                     pb.item_kinds[static_cast<std::size_t>(i)] = WorkKind::DecodeOneToken;
                 }
             },
-            batch.items[i]);
+            adjusted_items[i]);
     }
 
     if (T_sz > kMax / sizeof(int32_t)) return fail(ErrorCode::InvalidArgument);
@@ -381,6 +386,9 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
     auto sync_r = backend_.synchronize();
     if (!sync_r) return fail(sync_r.error());
 
+    result.adjusted_batch.batch_id = batch.batch_id;
+    result.adjusted_batch.sampling = batch.sampling;
+    result.adjusted_batch.items = std::move(adjusted_items);
     result.per_item = std::move(per_item);
     return result;
 }

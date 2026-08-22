@@ -50,10 +50,10 @@ struct PhysicalBatch {
     std::vector<SequenceId> item_seq_ids;
     std::vector<WorkKind> item_kinds;
 
-    // Host copies kept for ModelRunner result construction / cheap validation,
+    // CPU-side per-item metadata used by ModelRunner to build WorkItemResults,
     // avoiding D2H round-trips of data BatchTranslator already produced.
-    std::vector<int32_t> query_start_loc_host;  // [batch_size + 1]
-    std::vector<int32_t> logits_indices_host;   // [batch_size]
+    std::vector<int32_t> item_token_counts;  // [batch_size] tokens per physical seq
+    std::vector<bool> sample_flags;          // [batch_size] sample this seq's logits
     int max_position_id = 0;
 };
 

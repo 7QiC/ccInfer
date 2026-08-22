@@ -381,7 +381,7 @@ void Worker::process_batch(PendingBatch pending) {
 
     if (model_) {
         BatchTranslator translator(*backend_, *kv_mgr_, kKVBlockSize);
-        const ScheduledBatch requested_batch = pending.batch;
+        const ScheduledBatch& requested_batch = pending.batch;
 
         auto tr = translator.translate(pending.batch, sequences);
         if (!tr) {
@@ -393,6 +393,7 @@ void Worker::process_batch(PendingBatch pending) {
         sync_capacity();  // reflect allocated blocks before forward.
 
         auto& phys_batch = tr->physical_batch;
+        auto& adjusted_batch = tr->adjusted_batch;
         auto& per_item = tr->per_item;
 
         auto exec_r = ModelRunner::inference<BF16RunnerTraits>(*model_, phys_batch, *backend_,
@@ -447,7 +448,7 @@ void Worker::process_batch(PendingBatch pending) {
             }
         }
 
-        auto commit_r = translator.commit(pending.batch, sequences, per_item);
+        auto commit_r = translator.commit(adjusted_batch, sequences, per_item);
         if (!commit_r) {
             translator.rollback(per_item);
             sync_capacity();
@@ -456,7 +457,7 @@ void Worker::process_batch(PendingBatch pending) {
         }
 
         // Cache full blocks into prefix cache for prefill items.
-        for (const auto& item : pending.batch.items) {
+        for (const auto& item : adjusted_batch.items) {
             if (std::holds_alternative<PrefillChunk>(item)) {
                 const auto& pc = std::get<PrefillChunk>(item);
                 auto it = sequences.find(pc.seq_id);

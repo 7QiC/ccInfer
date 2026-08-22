@@ -98,34 +98,20 @@ public:
             return std::unexpected(ErrorCode::Unsupported);
         }
 
-        // BatchTranslator already built these host arrays; reuse them instead of
-        // copying the same data back from device.
-        if (batch.query_start_loc_host.size() != static_cast<std::size_t>(B + 1) ||
-            batch.logits_indices_host.size() != static_cast<std::size_t>(B)) {
-            return std::unexpected(ErrorCode::InvalidArgument);
-        }
-        const auto& qsl_host = batch.query_start_loc_host;
-        const auto& li_host = batch.logits_indices_host;
-        if (qsl_host[0] != 0 || qsl_host[B] != T) {
+        // BatchTranslator already built this per-item metadata; reuse it instead
+        // of copying query_start_loc/logits_indices back from device.
+        if (batch.item_token_counts.size() != static_cast<std::size_t>(B) ||
+            batch.sample_flags.size() != static_cast<std::size_t>(B)) {
             return std::unexpected(ErrorCode::InvalidArgument);
         }
         for (int i = 0; i < B; ++i) {
-            const int len = qsl_host[i + 1] - qsl_host[i];
+            const int len = batch.item_token_counts[i];
             if (len <= 0) return std::unexpected(ErrorCode::InvalidArgument);
             if (batch.mode == ForwardMode::Decode && len != 1)
                 return std::unexpected(ErrorCode::InvalidArgument);
             if (batch.item_kinds[i] == WorkKind::DecodeOneToken && len != 1)
                 return std::unexpected(ErrorCode::InvalidArgument);
-        }
-
-        for (int i = 0; i < B; ++i) {
-            if (li_host[i] == -1) continue;  // skip-sample sentinel
-            if (li_host[i] < 0 || li_host[i] >= T)
-                return std::unexpected(ErrorCode::InvalidArgument);
-            if (batch.mode == ForwardMode::Decode && li_host[i] != i)
-                return std::unexpected(ErrorCode::InvalidArgument);
-            if ((batch.mode == ForwardMode::Prefill || batch.mode == ForwardMode::Mixed) &&
-                li_host[i] != qsl_host[i + 1] - 1)
+            if (batch.mode == ForwardMode::Decode && !batch.sample_flags[i])
                 return std::unexpected(ErrorCode::InvalidArgument);
         }
 
@@ -184,10 +170,10 @@ public:
             wr.item_index = static_cast<int>(batch.item_indices[i]);
             wr.seq_id = batch.item_seq_ids[i];
             wr.kind = batch.item_kinds[i];
-            // li_host[i] == -1 means skip-sample — intermediate prefill chunk.
-            wr.sampled_tokens =
-                (li_host[i] >= 0) ? std::vector<int32_t>{tokens_host[i]} : std::vector<int32_t>{};
-            wr.tokens_consumed = qsl_host[i + 1] - qsl_host[i];
+            wr.sampled_tokens = batch.sample_flags[i]
+                                    ? std::vector<int32_t>{tokens_host[i]}
+                                    : std::vector<int32_t>{};
+            wr.tokens_consumed = batch.item_token_counts[i];
             wr.eos = false;
             results.push_back(std::move(wr));
         }

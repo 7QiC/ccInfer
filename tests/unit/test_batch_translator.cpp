@@ -64,7 +64,7 @@ TEST_F(BatchTranslatorTest, PrefillAllocatesBlocks) {
     EXPECT_EQ(pb.max_blocks_per_req, 1);
 
     // Commit: kv_written and prompt_processed advance.
-    auto commit_r = translator_->commit(batch, sequences_, result->per_item);
+    auto commit_r = translator_->commit(result->adjusted_batch, sequences_, result->per_item);
     ASSERT_TRUE(commit_r.has_value());
     EXPECT_EQ(sequences_[1].kv_written, 16);
     EXPECT_EQ(sequences_[1].prompt_processed, 16);
@@ -116,7 +116,7 @@ TEST_F(BatchTranslatorTest, DecodeNoNewBlock) {
     EXPECT_EQ(pb.num_tokens, 1);
     EXPECT_EQ(pb.batch_size, 1);
 
-    auto commit_r = translator_->commit(batch, sequences_, result->per_item);
+    auto commit_r = translator_->commit(result->adjusted_batch, sequences_, result->per_item);
     ASSERT_TRUE(commit_r.has_value());
     EXPECT_EQ(sequences_[1].kv_written, 9);
     EXPECT_EQ(sequences_[1].block_table.size(), 1);  // unchanged
@@ -150,7 +150,7 @@ TEST_F(BatchTranslatorTest, MixedBatchTranslatesDecodeAndPrefill) {
     EXPECT_EQ(pb.item_kinds[0], WorkKind::DecodeOneToken);
     EXPECT_EQ(pb.item_kinds[1], WorkKind::PrefillChunk);
 
-    auto commit_r = translator_->commit(batch, sequences_, result->per_item);
+    auto commit_r = translator_->commit(result->adjusted_batch, sequences_, result->per_item);
     ASSERT_TRUE(commit_r.has_value());
     EXPECT_EQ(sequences_[2].kv_written, 9);
     EXPECT_EQ(sequences_[1].kv_written, 16);
@@ -169,7 +169,7 @@ TEST_F(BatchTranslatorTest, PrefillSpansMultipleBlocks) {
     EXPECT_EQ(result->physical_batch.max_blocks_per_req, 2);
     EXPECT_EQ(result->physical_batch.num_tokens, 20);
 
-    auto commit_r = translator_->commit(batch, sequences_, result->per_item);
+    auto commit_r = translator_->commit(result->adjusted_batch, sequences_, result->per_item);
     ASSERT_TRUE(commit_r.has_value());
     EXPECT_EQ(sequences_[1].kv_written, 20);
     EXPECT_EQ(sequences_[1].block_table.size(), 2);
@@ -188,13 +188,13 @@ TEST_F(BatchTranslatorTest, PartialPrefixHitOnlyRunsUncachedSuffix) {
 
     auto result = translator_->translate(batch, sequences_);
     ASSERT_TRUE(result.has_value());
-    ASSERT_TRUE(std::holds_alternative<PrefillChunk>(batch.items[0]));
-    const auto& pc = std::get<PrefillChunk>(batch.items[0]);
+    ASSERT_TRUE(std::holds_alternative<PrefillChunk>(result->adjusted_batch.items[0]));
+    const auto& pc = std::get<PrefillChunk>(result->adjusted_batch.items[0]);
     EXPECT_EQ(pc.prompt_span.start, 16);
     EXPECT_EQ(pc.prompt_span.length, 4);
     EXPECT_EQ(result->physical_batch.num_tokens, 4);
 
-    auto commit_r = translator_->commit(batch, sequences_, result->per_item);
+    auto commit_r = translator_->commit(result->adjusted_batch, sequences_, result->per_item);
     ASSERT_TRUE(commit_r.has_value());
     EXPECT_EQ(sequences_[1].kv_written, 20);
     EXPECT_EQ(sequences_[1].prompt_processed, 20);
@@ -216,12 +216,12 @@ TEST_F(BatchTranslatorTest, FullPrefixHitBootstrapDoesNotCommitScratchKv) {
     int free_before = kv_mgr_.num_free_blocks();
     auto result = translator_->translate(batch, sequences_);
     ASSERT_TRUE(result.has_value());
-    ASSERT_TRUE(std::holds_alternative<DecodeOneToken>(batch.items[0]));
+    ASSERT_TRUE(std::holds_alternative<DecodeOneToken>(result->adjusted_batch.items[0]));
     EXPECT_EQ(result->physical_batch.mode, ForwardMode::Decode);
     EXPECT_EQ(result->physical_batch.num_tokens, 1);
     EXPECT_LT(kv_mgr_.num_free_blocks(), free_before);
 
-    auto commit_r = translator_->commit(batch, sequences_, result->per_item);
+    auto commit_r = translator_->commit(result->adjusted_batch, sequences_, result->per_item);
     ASSERT_TRUE(commit_r.has_value());
     EXPECT_EQ(sequences_[1].kv_written, 16);
     EXPECT_EQ(sequences_[1].prompt_processed, 16);
