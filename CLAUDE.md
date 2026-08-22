@@ -21,11 +21,17 @@ Activate the Python environment by default and execute tasks in this environment
 
 ## Architecture
 
-- `src/common/`  — Project-level utilities
-- `src/engine/`  — Inference engine
-- `src/server/`  — HTTP server, scheduler
+- `src/base/`  — Common types, `Result<T>`, error codes, channels, request types
+- `src/backend/`  — GPU backend abstraction (`Backend`, `Buffer`)
+- `src/core/`  — Framework `Tensor` and dtype/traits
+- `src/cache/`  — Paged KV cache and prefix cache
+- `src/executor/`, `src/worker/`, `src/scheduler/`  — Execution pipeline
+- `src/model/`  — Model config, loader, registry, Qwen3, rope cache
+- `src/ops/`  — Operator library facade (ccop)
+- `src/http/`  — HTTP/SSE server
+- `src/tokenizer/`  — Tokenizer
 - `tests/unit/`  — Unit tests (GTest)
-- `tests/kernel` — Kernel tests
+- `tests/integration/`  — Integration tests
 
 ## Principles
 
@@ -42,5 +48,5 @@ Activate the Python environment by default and execute tasks in this environment
 - **IWYU:** explicit includes, forward-declare in headers, no indirect relies
 - **Members:** snake_case with trailing underscore, e.g. `int count_;`
 - **Error handling:** `Result<T>` = `std::expected<T, ErrorCode>`, no exceptions in hot paths
-- **CUDA:** Device memory via `DeviceBuffer<T>` RAII
+- **CUDA:** Device memory via `Buffer` RAII
 - **Tests:** GTest, test file per module

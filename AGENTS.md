@@ -4,8 +4,8 @@ Contributor guide for ccInfer, a high-performance C++23 LLM inference framework 
 
 ## Project Structure & Module Organization
 
-- `src/` — Source code. `base/` holds common types (`Result<T>`, error codes); `backend/` abstracts the GPU backend with `DeviceBuffer<T>` RAII; `cache/` implements the paged KV cache and prefix cache; `core/` defines tensors and dtypes; `executor/`, `worker/`, and `scheduler/` form the execution pipeline; `kernel/` contains CUDA kernels; `model/` handles model loading and Qwen3; `http/` and `tokenizer/` make up the server layer; `main.cpp` is the server entry point.
-- `tests/` — `unit/` GTest tests, `kernel/` CUDA kernel tests (`.cu`), `integration/` end-to-end tests.
+- `src/` — Source code. `base/` holds common types (`Result<T>`, error codes, channels); `backend/` abstracts the GPU backend (`Backend`, `Buffer`); `cache/` implements the paged KV cache and prefix cache; `core/` defines the framework `Tensor` and dtype traits; `executor/`, `worker/`, and `scheduler/` form the execution pipeline; `model/` handles model loading and Qwen3; `ops/` is the operator-library facade (ccop); `http/` and `tokenizer/` make up the server layer; `main.cpp` is the server entry point.
+- `tests/` — `unit/` GTest tests and `integration/` end-to-end tests.
 - `docs/`, `scripts/`, `models/`, `tools/` — Architecture docs, Python benchmark/profiling scripts, downloaded model weights, and helper utilities.
 
 ## Build, Test, and Development Commands
@@ -30,7 +30,7 @@ C++23 with the `ccinfer` namespace. `.clang-format` enforces Google base style: 
 
 ## Testing Guidelines
 
-Tests use GTest, one test file per module, named `test_<module>.cpp` (`.cu` for kernel tests). Unit tests should run without a GPU; kernel tests must synchronize and assert CUDA errors. Run everything with `ctest --test-dir build`, or a single suite with `ctest --test-dir build -R test_scheduler`. Integration tests require a local Qwen3-0.6B model. Never weaken assertions or relax tolerances to make a failing test pass — fix the root cause.
+Tests use GTest, one test file per module, named `test_<module>.cpp`. Unit tests should run without a GPU; integration tests may require a GPU and/or a local Qwen3-0.6B model. Run everything with `ctest --test-dir build`, or a single suite with `ctest --test-dir build -R test_scheduler`. Never weaken assertions or relax tolerances to make a failing test pass — fix the root cause.
 
 ## Commit & Pull Request Guidelines
 
