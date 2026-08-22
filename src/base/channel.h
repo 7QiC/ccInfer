@@ -3,7 +3,6 @@
 #include <boost/asio/experimental/channel.hpp>
 #include <boost/system/error_code.hpp>
 
-#include "base/error_code.h"
 #include "base/result.h"
 #include "base/types.h"
 
