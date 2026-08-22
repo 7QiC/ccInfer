@@ -55,6 +55,27 @@ TEST(TensorTest, FlatSharesOwner) {
     EXPECT_EQ(flat.shape(0), 24);
 }
 
+TEST(TensorTest, FlatAndViewKeepOffsetViewDataPointer) {
+    auto backend_r = Backend::create(0);
+    ASSERT_TRUE(backend_r.has_value());
+    auto& backend = **backend_r;
+
+    auto buffer_r = backend.allocate_buffer(10 * sizeof(float));
+    ASSERT_TRUE(buffer_r.has_value());
+    auto buffer = std::move(*buffer_r);
+    void* offset_data = static_cast<char*>(buffer->data()) + 2 * sizeof(float);
+
+    Tensor t = Tensor::from_buffer(buffer, offset_data, ops::DType::kFloat32, {2, 4});
+    Tensor flat = t.flat();
+    Tensor viewed = t.view({2, 4});
+
+    EXPECT_EQ(flat.data(), t.data());
+    EXPECT_EQ(viewed.data(), t.data());
+    EXPECT_NE(t.data(), t.buffer()->data());
+    EXPECT_EQ(flat.numel(), 8);
+    EXPECT_EQ(viewed.numel(), 8);
+}
+
 TEST(TensorTest, SliceAdjustsViewOnly) {
     auto backend_r = Backend::create(0);
     ASSERT_TRUE(backend_r.has_value());
