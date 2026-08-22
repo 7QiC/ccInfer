@@ -27,7 +27,7 @@ public:
     asio::awaitable<Result<void>> abort_sequence(SequenceId seq_id) override;
     asio::awaitable<Result<BatchResult>> execute_batch(ScheduledBatch batch) override;
 
-    EngineCapacity capacity() const override;
+    Capacity capacity() const override;
 
 private:
     std::unordered_map<SequenceId, SequenceSnapshot> sequences_;

@@ -56,7 +56,7 @@ void Scheduler::cancel(std::string request_id) {
     });
 }
 
-EngineCapacity Scheduler::capacity() const { return executor_.capacity(); }
+Capacity Scheduler::capacity() const { return executor_.capacity(); }
 
 void Scheduler::start() {
     // One-shot: after shutdown, start() is a no-op to prevent re-launching
@@ -367,44 +367,28 @@ asio::awaitable<void> Scheduler::wait_for_work() {
 // is capped to avoid overfilling KV with too many live sequences.
 
 ScheduledBatch Scheduler::build_scheduled_batch() {
-    ScheduledBatch batch;
-    batch.batch_id = next_batch_id_++;
+    BatchBuildContext ctx;
+    ctx.batch.batch_id = next_batch_id_++;
     budget_blocked_.clear();
 
     auto cap = executor_.capacity();
-    int bs = cap.block_size;
-    if (bs <= 0) {
+    ctx.block_size = cap.block_size;
+    if (ctx.block_size <= 0) {
         // Executor not initialised — fail all active to avoid busy spin.
         for (auto& [id, st] : active_) {
-            if (st && !st->finished && !st->cancelled)
-                send_error_event(st, ErrorCode::InternalError);
+            if (is_schedulable_state(st)) send_error_event(st, ErrorCode::InternalError);
         }
-        return batch;
+        return ctx.batch;
     }
     // KVCacheManager can satisfy new block allocations by evicting cached-idle
     // prefix blocks, not only by consuming currently free blocks. Keep the
     // scheduler's admission budget aligned with allocator behavior.
-    int budget = cap.free_blocks + cap.block_cached_idle;
-    int compute_budget = kScheduleComputeBudget;
-    std::vector<SequenceId> included;
-    bool sampling_set = false;
-    const int configured_chunk_size = runtime::prefill_chunk_size();
+    ctx.budget = cap.free_blocks + cap.block_cached_idle;
+    ctx.compute_budget = kScheduleComputeBudget;
 
-    auto is_schedulable_state = [](const StatePtr& state) {
-        return state && !state->finished && !state->cancelled;
-    };
-    auto has_started_execution = [](const StatePtr& state) {
-        return state && (state->suspended || state->prefill_done || state->prefill_cursor > 0);
-    };
-    auto count_started_active = [&]() {
-        int count = 0;
-        for (const auto& [_, state] : active_) {
-            if (is_schedulable_state(state) && has_started_execution(state)) ++count;
-        }
-        return count;
-    };
-
-    int started_active = count_started_active();
+    for (const auto& [_, state] : active_) {
+        if (is_schedulable_state(state) && has_started_execution(state)) ++ctx.started_active;
+    }
 
     auto has_prefill_work = [&]() {
         for (SequenceId id : active_order_) {
@@ -419,153 +403,161 @@ ScheduledBatch Scheduler::build_scheduled_batch() {
         return false;
     };
 
-    auto build_decode_batch = [&]() {
-        for (SequenceId id : active_order_) {
-            if (compute_budget <= 0) break;
-            auto it = active_.find(id);
-            if (it == active_.end()) continue;
+    const bool prefill_available = has_prefill_work();
+    build_decode_batch(ctx);
+    if (prefill_available && ctx.compute_budget > 0) {
+        build_prefill_batch(ctx);
+    }
 
-            auto& state = it->second;
-            if (!is_schedulable_state(state) || !state->prefill_done) continue;
-            if (state->tokens_generated >= state->sampling.max_tokens) {
-                state->finished = true;
-                continue;
-            }
-            if (state->last_token < 0) {
-                state->finished = true;
-                send_error_event(state, ErrorCode::BatchTranslationFailed);
-                continue;
-            }
+    if (!ctx.batch.items.empty()) {
+        reorder_after_batch(ctx.included);
+    }
 
-            int expected_ctx = static_cast<int>(state->prompt_tokens.size()) +
-                               state->tokens_generated - state->generated_in_prompt - 1;
+    return ctx.batch;
+}
 
-            if (expected_ctx < 0) {
-                state->finished = true;
-                send_error_event(state, ErrorCode::BatchTranslationFailed);
-                continue;
-            }
-            if (expected_ctx >= state->max_context_len) {
-                state->finished = true;
-                send_terminal_event(state);
-                continue;
-            }
+bool Scheduler::is_schedulable_state(const StatePtr& state) noexcept {
+    return state && !state->finished && !state->cancelled;
+}
 
-            int decode_blocks = (expected_ctx % bs == 0) ? 1 : 0;
-            if (decode_blocks > budget) {
+bool Scheduler::has_started_execution(const StatePtr& state) noexcept {
+    return state && (state->suspended || state->prefill_done || state->prefill_cursor > 0);
+}
+
+bool Scheduler::sampling_compatible(const SamplingParams& lhs, const SamplingParams& rhs) noexcept {
+    return lhs.temperature == rhs.temperature && lhs.top_p == rhs.top_p &&
+           lhs.top_k == rhs.top_k && lhs.seed == rhs.seed;
+}
+
+void Scheduler::build_decode_batch(BatchBuildContext& ctx) {
+    for (SequenceId id : active_order_) {
+        if (ctx.compute_budget <= 0) break;
+        auto it = active_.find(id);
+        if (it == active_.end()) continue;
+
+        auto& state = it->second;
+        if (!is_schedulable_state(state) || !state->prefill_done) continue;
+        if (state->tokens_generated >= state->sampling.max_tokens) {
+            state->finished = true;
+            continue;
+        }
+        if (state->last_token < 0) {
+            state->finished = true;
+            send_error_event(state, ErrorCode::BatchTranslationFailed);
+            continue;
+        }
+
+        int expected_ctx = static_cast<int>(state->prompt_tokens.size()) +
+                           state->tokens_generated - state->generated_in_prompt - 1;
+
+        if (expected_ctx < 0) {
+            state->finished = true;
+            send_error_event(state, ErrorCode::BatchTranslationFailed);
+            continue;
+        }
+        if (expected_ctx >= state->max_context_len) {
+            state->finished = true;
+            send_terminal_event(state);
+            continue;
+        }
+
+        int decode_blocks = (expected_ctx % ctx.block_size == 0) ? 1 : 0;
+        if (decode_blocks > ctx.budget) {
+            budget_blocked_.push_back(id);
+            continue;
+        }
+
+        if (ctx.sampling_set) {
+            if (!sampling_compatible(state->sampling, ctx.batch.sampling)) continue;
+        } else {
+            ctx.batch.sampling = state->sampling;
+            ctx.sampling_set = true;
+        }
+
+        ctx.batch.items.push_back(
+            DecodeOneToken{id, state->last_token, std::optional<int>(expected_ctx)});
+        ctx.budget -= decode_blocks;
+        ctx.compute_budget -= 1;
+        ctx.included.push_back(id);
+    }
+}
+
+void Scheduler::build_prefill_batch(BatchBuildContext& ctx) {
+    auto ceil_div = [](int a, int b) { return (a + b - 1) / b; };
+    const int configured_chunk_size = runtime::prefill_chunk_size();
+
+    for (size_t idx = 0; idx < active_order_.size(); ++idx) {
+        SequenceId id = active_order_[idx];
+        auto it = active_.find(id);
+        if (it == active_.end()) continue;
+
+        auto& state = it->second;
+        if (!is_schedulable_state(state) || state->prefill_done) continue;
+        const bool already_started = has_started_execution(state);
+        if (!already_started && ctx.started_active >= kMaxActiveScheduledSeqs) continue;
+
+        int prompt_len = static_cast<int>(state->prompt_tokens.size());
+        if (state->prefill_cursor < 0) state->prefill_cursor = 0;
+        if (state->prefill_cursor > prompt_len) {
+            state->finished = true;
+            send_error_event(state, ErrorCode::InvalidArgument);
+            continue;
+        }
+
+        int remaining = prompt_len - state->prefill_cursor;
+        if (remaining <= 0) {
+            state->prefill_done = true;
+            continue;
+        }
+
+        // Chunked prefill: limit tokens per batch to bound per-step latency.
+        // A configured size of 0 disables chunking for benchmark ablations.
+        int chunk_len = remaining;
+        if (configured_chunk_size > 0) {
+            chunk_len = std::min(remaining, configured_chunk_size);
+        }
+        if (ctx.compute_budget <= 0) break;
+        chunk_len = std::min(chunk_len, ctx.compute_budget);
+
+        // Incremental blocks: only count blocks beyond what's already owned.
+        int cur_blocks = ceil_div(state->prefill_cursor, ctx.block_size);
+        int total_blocks = ceil_div(state->prefill_cursor + chunk_len, ctx.block_size);
+        int additional = total_blocks - cur_blocks;
+        if (additional > ctx.budget) {
+            // Shrink chunk to fit in available budget.
+            int max_tokens_fit =
+                (cur_blocks + ctx.budget) * ctx.block_size - state->prefill_cursor;
+            if (max_tokens_fit <= 0) {
                 budget_blocked_.push_back(id);
                 continue;
             }
-
-            if (sampling_set) {
-                if (state->sampling.temperature != batch.sampling.temperature ||
-                    state->sampling.top_p != batch.sampling.top_p ||
-                    state->sampling.top_k != batch.sampling.top_k ||
-                    state->sampling.seed != batch.sampling.seed)
-                    continue;
-            } else {
-                batch.sampling = state->sampling;
-                sampling_set = true;
-            }
-
-            batch.items.push_back(
-                DecodeOneToken{id, state->last_token, std::optional<int>(expected_ctx)});
-            budget -= decode_blocks;
-            compute_budget -= 1;
-            included.push_back(id);
+            chunk_len = max_tokens_fit;
+            total_blocks = ceil_div(state->prefill_cursor + chunk_len, ctx.block_size);
+            additional = total_blocks - cur_blocks;
         }
-    };
-    auto build_prefill_batch = [&]() {
-        auto ceil_div = [](int a, int b) { return (a + b - 1) / b; };
 
-        for (size_t idx = 0; idx < active_order_.size(); ++idx) {
-            SequenceId id = active_order_[idx];
-            auto it = active_.find(id);
-            if (it == active_.end()) continue;
-
-            auto& state = it->second;
-            if (!is_schedulable_state(state) || state->prefill_done) continue;
-            const bool already_started = has_started_execution(state);
-            if (!already_started && started_active >= kMaxActiveScheduledSeqs) continue;
-
-            int prompt_len = static_cast<int>(state->prompt_tokens.size());
-            if (state->prefill_cursor < 0) state->prefill_cursor = 0;
-            if (state->prefill_cursor > prompt_len) {
-                state->finished = true;
-                send_error_event(state, ErrorCode::InvalidArgument);
-                continue;
-            }
-
-            int remaining = prompt_len - state->prefill_cursor;
-            if (remaining <= 0) {
-                state->prefill_done = true;
-                continue;
-            }
-
-            // Chunked prefill: limit tokens per batch to bound per-step latency.
-            // A configured size of 0 disables chunking for benchmark ablations.
-            int chunk_len = remaining;
-            if (configured_chunk_size > 0) {
-                chunk_len = std::min(remaining, configured_chunk_size);
-            }
-            if (compute_budget <= 0) break;
-            chunk_len = std::min(chunk_len, compute_budget);
-
-            // Incremental blocks: only count blocks beyond what's already owned.
-            int cur_blocks = ceil_div(state->prefill_cursor, bs);
-            int total_blocks = ceil_div(state->prefill_cursor + chunk_len, bs);
-            int additional = total_blocks - cur_blocks;
-            if (additional > budget) {
-                // Shrink chunk to fit in available budget.
-                int max_tokens_fit = (cur_blocks + budget) * bs - state->prefill_cursor;
-                if (max_tokens_fit <= 0) {
-                    budget_blocked_.push_back(id);
-                    continue;
-                }
-                chunk_len = max_tokens_fit;
-                total_blocks = ceil_div(state->prefill_cursor + chunk_len, bs);
-                additional = total_blocks - cur_blocks;
-            }
-
-            // Shared sampling per batch: use first item's sampling; skip
-            // items with incompatible params.
-            if (sampling_set) {
-                if (state->sampling.temperature != batch.sampling.temperature ||
-                    state->sampling.top_p != batch.sampling.top_p ||
-                    state->sampling.top_k != batch.sampling.top_k ||
-                    state->sampling.seed != batch.sampling.seed)
-                    continue;
-            } else {
-                batch.sampling = state->sampling;
-                sampling_set = true;
-            }
-
-            bool is_final = (state->prefill_cursor + chunk_len >= prompt_len);
-            bool needs_sample = is_final;
-            if (state->suspended && !state->generated_tokens.empty()) {
-                needs_sample = false;
-            }
-            batch.items.push_back(PrefillChunk{id, TokenSpan{state->prefill_cursor, chunk_len},
-                                               std::optional<int>(state->prefill_cursor),
-                                               needs_sample});
-            budget -= additional;
-            compute_budget -= chunk_len;
-            if (!already_started) ++started_active;
-            included.push_back(id);
+        // Shared sampling per batch: use first item's sampling; skip
+        // items with incompatible params.
+        if (ctx.sampling_set) {
+            if (!sampling_compatible(state->sampling, ctx.batch.sampling)) continue;
+        } else {
+            ctx.batch.sampling = state->sampling;
+            ctx.sampling_set = true;
         }
-    };  // build_prefill_batch lambda
 
-    const bool prefill_available = has_prefill_work();
-    build_decode_batch();
-    if (prefill_available && compute_budget > 0) {
-        build_prefill_batch();
+        bool is_final = (state->prefill_cursor + chunk_len >= prompt_len);
+        bool needs_sample = is_final;
+        if (state->suspended && !state->generated_tokens.empty()) {
+            needs_sample = false;
+        }
+        ctx.batch.items.push_back(
+            PrefillChunk{id, TokenSpan{state->prefill_cursor, chunk_len},
+                         std::optional<int>(state->prefill_cursor), needs_sample});
+        ctx.budget -= additional;
+        ctx.compute_budget -= chunk_len;
+        if (!already_started) ++ctx.started_active;
+        ctx.included.push_back(id);
     }
-
-    if (!batch.items.empty()) {
-        reorder_after_batch(included);
-    }
-
-    return batch;
 }
 
 void Scheduler::reorder_after_batch(const std::vector<SequenceId>& included) {

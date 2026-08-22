@@ -98,75 +98,39 @@ public:
             return std::unexpected(ErrorCode::Unsupported);
         }
 
-        // D2H: query_start_loc (validate + reuse later).
-        std::vector<int32_t> qsl_host(B + 1);
-        {
-            auto r = backend.memcpy_d2h(qsl_host.data(), batch.query_start_loc.data(),
-                                        static_cast<std::size_t>(B + 1) * sizeof(int32_t));
-            if (!r) return std::unexpected(r.error());
-            if (qsl_host[0] != 0) return std::unexpected(ErrorCode::InvalidArgument);
-            if (qsl_host[B] != T) return std::unexpected(ErrorCode::InvalidArgument);
-            for (int i = 0; i < B; ++i) {
-                int len = qsl_host[i + 1] - qsl_host[i];
-                if (len <= 0) return std::unexpected(ErrorCode::InvalidArgument);
-                if (batch.mode == ForwardMode::Decode && len != 1)
-                    return std::unexpected(ErrorCode::InvalidArgument);
-                if (batch.item_kinds[i] == WorkKind::DecodeOneToken && len != 1)
-                    return std::unexpected(ErrorCode::InvalidArgument);
-            }
+        // BatchTranslator already built these host arrays; reuse them instead of
+        // copying the same data back from device.
+        if (batch.query_start_loc_host.size() != static_cast<std::size_t>(B + 1) ||
+            batch.logits_indices_host.size() != static_cast<std::size_t>(B)) {
+            return std::unexpected(ErrorCode::InvalidArgument);
         }
-
-        // D2H: positions (validate + compute max_position_id).
-        int max_pos = 0;
-        {
-            std::vector<int32_t> pos_host(T);
-            auto r = backend.memcpy_d2h(pos_host.data(), batch.positions.data(),
-                                        static_cast<std::size_t>(T) * sizeof(int32_t));
-            if (!r) return std::unexpected(r.error());
-            for (int t = 0; t < T; ++t) {
-                if (pos_host[t] < 0) return std::unexpected(ErrorCode::InvalidArgument);
-                if (pos_host[t] > max_pos) max_pos = pos_host[t];
-            }
+        const auto& qsl_host = batch.query_start_loc_host;
+        const auto& li_host = batch.logits_indices_host;
+        if (qsl_host[0] != 0 || qsl_host[B] != T) {
+            return std::unexpected(ErrorCode::InvalidArgument);
         }
-
-        // D2H: context_lens (validate).
-        {
-            const int block_sz = kv_mgr.block_size();
-            const int max_slots = kv_mgr.max_slots();
-            if (block_sz <= 0 || max_slots <= 0) return std::unexpected(ErrorCode::InvalidArgument);
-            if (batch.max_blocks_per_req > max_slots / block_sz)
+        for (int i = 0; i < B; ++i) {
+            const int len = qsl_host[i + 1] - qsl_host[i];
+            if (len <= 0) return std::unexpected(ErrorCode::InvalidArgument);
+            if (batch.mode == ForwardMode::Decode && len != 1)
                 return std::unexpected(ErrorCode::InvalidArgument);
-            const int max_ctx = batch.max_blocks_per_req * block_sz;
-
-            std::vector<int32_t> ctx_host(B);
-            auto r = backend.memcpy_d2h(ctx_host.data(), batch.context_lens.data(),
-                                        static_cast<std::size_t>(B) * sizeof(int32_t));
-            if (!r) return std::unexpected(r.error());
-            for (int i = 0; i < B; ++i) {
-                int ctx = ctx_host[i];
-                int qlen = qsl_host[i + 1] - qsl_host[i];
-                if (ctx <= 0) return std::unexpected(ErrorCode::InvalidArgument);
-                if (ctx < qlen) return std::unexpected(ErrorCode::InvalidArgument);
-                if (ctx > max_ctx) return std::unexpected(ErrorCode::InvalidArgument);
-            }
+            if (batch.item_kinds[i] == WorkKind::DecodeOneToken && len != 1)
+                return std::unexpected(ErrorCode::InvalidArgument);
         }
 
-        // D2H: logits_indices (validate before forward to avoid KV side-effects).
-        std::vector<int32_t> li_host(B);
-        {
-            auto r = backend.memcpy_d2h(li_host.data(), batch.logits_indices.data(),
-                                        static_cast<std::size_t>(B) * sizeof(int32_t));
-            if (!r) return std::unexpected(r.error());
-            for (int i = 0; i < B; ++i) {
-                if (li_host[i] == -1) continue;  // skip-sample sentinel
-                if (li_host[i] < 0 || li_host[i] >= T)
-                    return std::unexpected(ErrorCode::InvalidArgument);
-                if (batch.mode == ForwardMode::Decode && li_host[i] != i)
-                    return std::unexpected(ErrorCode::InvalidArgument);
-                if ((batch.mode == ForwardMode::Prefill || batch.mode == ForwardMode::Mixed) &&
-                    li_host[i] != qsl_host[i + 1] - 1)
-                    return std::unexpected(ErrorCode::InvalidArgument);
-            }
+        for (int i = 0; i < B; ++i) {
+            if (li_host[i] == -1) continue;  // skip-sample sentinel
+            if (li_host[i] < 0 || li_host[i] >= T)
+                return std::unexpected(ErrorCode::InvalidArgument);
+            if (batch.mode == ForwardMode::Decode && li_host[i] != i)
+                return std::unexpected(ErrorCode::InvalidArgument);
+            if ((batch.mode == ForwardMode::Prefill || batch.mode == ForwardMode::Mixed) &&
+                li_host[i] != qsl_host[i + 1] - 1)
+                return std::unexpected(ErrorCode::InvalidArgument);
+        }
+
+        if (batch.max_position_id < 0) {
+            return std::unexpected(ErrorCode::InvalidArgument);
         }
 
         // Build ForwardInput.
@@ -174,7 +138,7 @@ public:
         input.token_ids = batch.token_ids;
         input.positions = batch.positions;
         input.num_tokens_ = T;
-        input.max_position_id_ = max_pos;
+        input.max_position_id_ = batch.max_position_id;
         input.kv_mgr_ = &kv_mgr;
         input.slot_mapping = batch.slot_mapping;
         input.block_table = batch.block_table;

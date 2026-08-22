@@ -5,6 +5,7 @@
 
 #include "backend/buffer.h"
 #include "base/result.h"
+#include "ops/ops.h"
 
 namespace ccinfer {
 

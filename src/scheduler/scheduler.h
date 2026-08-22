@@ -64,7 +64,7 @@ public:
     void submit(SchedulerRequest req);
     void cancel(std::string request_id);
     void start();
-    EngineCapacity capacity() const;
+    Capacity capacity() const;
 
     // Fire-and-forget shutdown.  Prefer shutdown_async() for waitable shutdown.
     void shutdown();
@@ -82,6 +82,22 @@ private:
     void cancel_on_scheduler_thread(const std::string& request_id);
     void wake_on_scheduler_thread();
     void complete_shutdown_on_scheduler_thread();
+
+    struct BatchBuildContext {
+        ScheduledBatch batch;
+        int budget = 0;
+        int compute_budget = 0;
+        int block_size = 0;
+        int started_active = 0;
+        bool sampling_set = false;
+        std::vector<SequenceId> included;
+    };
+
+    void build_decode_batch(BatchBuildContext& ctx);
+    void build_prefill_batch(BatchBuildContext& ctx);
+    static bool is_schedulable_state(const StatePtr& state) noexcept;
+    static bool has_started_execution(const StatePtr& state) noexcept;
+    static bool sampling_compatible(const SamplingParams& lhs, const SamplingParams& rhs) noexcept;
 
     asio::awaitable<void> do_work();
     asio::awaitable<void> drain_pending();

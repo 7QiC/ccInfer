@@ -107,7 +107,7 @@ struct CLResult {
     size_t value = 0;
 };
 
-constexpr size_t kMaxContentLength = 64 * 1024 * 1024;  // 64 MB
+constexpr size_t kMaxBodySize = 64 * 1024 * 1024;  // 64 MB
 
 CLResult parse_content_length(std::string_view line) {
     if (!starts_with_ci(line, "content-length:")) {
@@ -125,9 +125,9 @@ CLResult parse_content_length(std::string_view line) {
         char ch = val[i];
         if (!std::isdigit(static_cast<unsigned char>(ch))) break;
         has_digit = true;
-        if (out > kMaxContentLength / 10) return {CLState::Invalid, 0};
+        if (out > kMaxBodySize / 10) return {CLState::Invalid, 0};
         out = out * 10 + static_cast<size_t>(ch - '0');
-        if (out > kMaxContentLength) return {CLState::Invalid, 0};
+        if (out > kMaxBodySize) return {CLState::Invalid, 0};
     }
     if (!has_digit) return {CLState::Invalid, 0};
     for (; i < val.size(); ++i) {
@@ -540,6 +540,15 @@ asio::awaitable<void> HttpServer::handle_chat(asio::ip::tcp::socket& socket, std
         co_return;
     }
 
+    SchedulerRequest sreq;
+    {
+        auto s = safe_json_get(req_json, "max_context_len", sreq.max_context_len);
+        if (s == JsonFieldState::Invalid || sreq.max_context_len <= 0) {
+            co_await write_response(socket, kBadRequest);
+            co_return;
+        }
+    }
+
     // Build HTTP-side state — request_id and channel owned by this coroutine.
     auto executor = co_await asio::this_coro::executor;
     auto request_id = "req-" + std::to_string(next_request_id_++);
@@ -551,11 +560,9 @@ asio::awaitable<void> HttpServer::handle_chat(asio::ip::tcp::socket& socket, std
         conn->channel = channel;
     }
 
-    SchedulerRequest sreq;
     sreq.request_id = request_id;
     sreq.prompt_tokens = std::move(prompt_tokens);
     sreq.sampling = sampling;
-    sreq.max_context_len = 2048;
     sreq.sink.executor = executor;
     sreq.sink.channel = channel;
     sreq.sink.on_send_failed = [&sched = scheduler_, request_id]() {

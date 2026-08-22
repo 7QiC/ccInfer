@@ -2,7 +2,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <vector>
 
 #include "base/types.h"
@@ -10,20 +9,6 @@
 #include "core/tensor.h"
 
 namespace ccinfer {
-
-struct DeviceCapacity {
-    int max_sequences = 0;
-    int active_sequences = 0;
-    int free_blocks = 0;
-    int max_blocks = 0;
-    int block_size = 0;
-    int block_active = 0;
-    int block_cached_idle = 0;
-    uint64_t prefix_lookup_hits = 0;
-    uint64_t prefix_lookup_misses = 0;
-    uint64_t prefix_evictions = 0;
-    uint64_t prefix_cached_blocks = 0;
-};
 
 // SequenceState — worker-local execution view used by BatchTranslator.
 // Logical fields are copied from Executor-owned SequenceSnapshot; block_table
@@ -64,6 +49,12 @@ struct PhysicalBatch {
     ForwardMode mode = ForwardMode::Prefill;
     std::vector<SequenceId> item_seq_ids;
     std::vector<WorkKind> item_kinds;
+
+    // Host copies kept for ModelRunner result construction / cheap validation,
+    // avoiding D2H round-trips of data BatchTranslator already produced.
+    std::vector<int32_t> query_start_loc_host;  // [batch_size + 1]
+    std::vector<int32_t> logits_indices_host;   // [batch_size]
+    int max_position_id = 0;
 };
 
 }  // namespace ccinfer

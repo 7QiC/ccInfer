@@ -240,6 +240,7 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
     std::vector<int32_t> query_start_loc(B_sz + 1);
     std::vector<int32_t> context_lens(B_sz);
     std::vector<int32_t> logits_indices(B_sz);
+    int max_position_id = 0;
 
     int offset = 0;
     for (int i = 0; i < num_items; ++i) {
@@ -267,9 +268,11 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
             item);
 
         for (int t = 0; t < new_tokens; ++t) {
-            positions_host[static_cast<std::size_t>(offset + t)] = seq.kv_written + t;
+            const int pos = seq.kv_written + t;
+            positions_host[static_cast<std::size_t>(offset + t)] = pos;
             slot_mapping_host[static_cast<std::size_t>(offset + t)] =
                 per_item[i].slot_mapping[static_cast<std::size_t>(t)];
+            max_position_id = std::max(max_position_id, pos);
         }
 
         BlockTable merged = seq.block_table;
@@ -301,6 +304,9 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
     TranslateResult result;
 
     auto& pb = result.physical_batch;
+    pb.query_start_loc_host = query_start_loc;
+    pb.logits_indices_host = logits_indices;
+    pb.max_position_id = max_position_id;
     // Recompute mode after Phase 1: prefix-cache hits may have converted
     // PrefillChunks to DecodeOneToken items.
     bool has_prefill = false;
@@ -392,7 +398,6 @@ Result<void> BatchTranslator::commit(const ScheduledBatch& batch,
     // Phase 1: validate all items before mutating any SequenceState.
     std::unordered_set<SequenceId> seen_seq_ids;
     std::vector<SequenceState*> to_update(num_items);
-    std::vector<int> new_tokens_per_item(num_items);
 
     for (std::size_t i = 0; i < num_items; ++i) {
         const std::size_t slot_cnt = per_item[i].slot_mapping.size();
@@ -444,30 +449,6 @@ Result<void> BatchTranslator::commit(const ScheduledBatch& batch,
             return std::unexpected(ErrorCode::RequestTooLong);
         }
 
-        if (std::holds_alternative<PrefillChunk>(batch.items[i])) {
-            const auto& pc = std::get<PrefillChunk>(batch.items[i]);
-            if (pc.prompt_span.start != seq.prompt_processed) {
-                return std::unexpected(ErrorCode::InvalidArgument);
-            }
-            const std::size_t p_size = seq.prompt_tokens.size();
-            if (static_cast<std::size_t>(pc.prompt_span.start) > p_size ||
-                static_cast<std::size_t>(pc.prompt_span.length) >
-                    p_size - static_cast<std::size_t>(pc.prompt_span.start)) {
-                return std::unexpected(ErrorCode::InvalidArgument);
-            }
-            if (pc.expected_context_len.has_value() && *pc.expected_context_len != seq.kv_written) {
-                return std::unexpected(ErrorCode::InvalidArgument);
-            }
-        } else {
-            if (static_cast<std::size_t>(seq.prompt_processed) != seq.prompt_tokens.size()) {
-                return std::unexpected(ErrorCode::InvalidArgument);
-            }
-            const auto& d = std::get<DecodeOneToken>(batch.items[i]);
-            if (d.expected_context_len.has_value() && *d.expected_context_len != seq.kv_written) {
-                return std::unexpected(ErrorCode::InvalidArgument);
-            }
-        }
-
         // Validate new_blocks: ids must be in range, non-duplicate, and not in
         // existing block_table.
         std::unordered_set<int32_t> existing;
@@ -489,7 +470,6 @@ Result<void> BatchTranslator::commit(const ScheduledBatch& batch,
         if (total_blocks_after < blocks_needed) return std::unexpected(ErrorCode::InvalidArgument);
 
         to_update[i] = &seq;
-        new_tokens_per_item[i] = new_tokens;
     }
 
     // Phase 2: mutate.

@@ -32,7 +32,6 @@ void SingleDeviceExecutor::shutdown() { worker_->shutdown(); }
 asio::awaitable<Result<CreateSequenceResult>> SingleDeviceExecutor::create_sequence(
     std::vector<int32_t> prompt_tokens, int max_context_len) {
     SequenceId seq_id = next_seq_id_++;
-    auto prompt_copy = prompt_tokens;
 
     auto result = worker_->prepare_sequence_resources(seq_id, prompt_tokens, max_context_len);
     if (!result) co_return std::unexpected(result.error());
@@ -40,7 +39,7 @@ asio::awaitable<Result<CreateSequenceResult>> SingleDeviceExecutor::create_seque
 
     SequenceSnapshot state;
     state.seq_id = seq_id;
-    state.prompt_tokens = std::move(prompt_copy);
+    state.prompt_tokens = std::move(prompt_tokens);
     state.max_context_len = max_context_len;
     state.kv_written = result->prompt_processed;
     state.prompt_processed = result->prompt_processed;
@@ -52,13 +51,12 @@ asio::awaitable<Result<SuspendSequenceResult>> SingleDeviceExecutor::suspend_seq
     SequenceId seq_id, std::vector<int32_t> prompt_tokens, int max_context_len) {
     auto it = sequences_.find(seq_id);
     if (it == sequences_.end()) co_return std::unexpected(ErrorCode::InvalidArgument);
-    auto prompt_copy = prompt_tokens;
 
     auto result = worker_->reset_sequence_resources(seq_id, prompt_tokens, max_context_len);
     if (!result) co_return std::unexpected(result.error());
 
     auto& state = it->second;
-    state.prompt_tokens = std::move(prompt_copy);
+    state.prompt_tokens = std::move(prompt_tokens);
     state.max_context_len = max_context_len;
     state.kv_written = result->prompt_processed;
     state.prompt_processed = result->prompt_processed;
@@ -94,7 +92,7 @@ asio::awaitable<Result<BatchResult>> SingleDeviceExecutor::execute_batch(Schedul
     for (const auto& item : batch.items) {
         SequenceId seq_id = 0;
         std::visit([&](const auto& w) { seq_id = w.seq_id; }, item);
-        if (!seen.insert(seq_id).second) continue;
+        if (!seen.insert(seq_id).second) co_return std::unexpected(ErrorCode::InvalidArgument);
 
         auto it = sequences_.find(seq_id);
         if (it == sequences_.end()) co_return std::unexpected(ErrorCode::InvalidArgument);
@@ -127,13 +125,7 @@ asio::awaitable<Result<BatchResult>> SingleDeviceExecutor::execute_batch(Schedul
     co_return std::move(result->batch);
 }
 
-EngineCapacity SingleDeviceExecutor::capacity() const {
-    auto cap = worker_->capacity();
-    return EngineCapacity{cap.max_sequences, cap.active_sequences, cap.free_blocks, cap.max_blocks,
-                          cap.block_size, cap.block_active, cap.block_cached_idle,
-                          cap.prefix_lookup_hits, cap.prefix_lookup_misses,
-                          cap.prefix_evictions, cap.prefix_cached_blocks};
-}
+Capacity SingleDeviceExecutor::capacity() const { return worker_->capacity(); }
 
 std::unique_ptr<Executor> Executor::create(boost::asio::io_context& io) {
     return std::make_unique<SingleDeviceExecutor>(io);

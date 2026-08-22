@@ -163,8 +163,8 @@ void Worker::enqueue_execute_batch(ScheduledBatch batch, std::vector<SequenceSna
     cv_.notify_one();
 }
 
-DeviceCapacity Worker::capacity() const {
-    return DeviceCapacity{kMaxSequences,
+Capacity Worker::capacity() const {
+    return Capacity{kMaxSequences,
                           active_sequences_.load(),
                           free_blocks_.load(),
                           max_blocks_.load(),

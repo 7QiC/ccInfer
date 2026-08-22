@@ -45,7 +45,7 @@ public:
     void enqueue_execute_batch(ScheduledBatch batch, std::vector<SequenceSnapshot> sequences,
                                std::shared_ptr<BatchChannel> chan);
 
-    DeviceCapacity capacity() const;
+    Capacity capacity() const;
 
 private:
     struct PendingBatch {

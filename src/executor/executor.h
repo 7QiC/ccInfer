@@ -29,7 +29,7 @@ public:
     virtual asio::awaitable<Result<void>> abort_sequence(SequenceId seq_id) = 0;
     virtual asio::awaitable<Result<BatchResult>> execute_batch(ScheduledBatch batch) = 0;
 
-    virtual EngineCapacity capacity() const = 0;
+    virtual Capacity capacity() const = 0;
 
     static std::unique_ptr<Executor> create(boost::asio::io_context& io);
 };

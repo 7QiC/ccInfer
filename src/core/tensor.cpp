@@ -90,7 +90,7 @@ Tensor Tensor::from_buffer(std::shared_ptr<Buffer> buffer, void* data, ops::DTyp
 
 Tensor Tensor::view(std::initializer_list<std::int64_t> shape) const {
     assert(buffer_ && "Tensor has no owner");
-    const ops::Tensor view(buffer_->data(), dtype(), device(), shape);
+    const ops::Tensor view(const_cast<void*>(data()), dtype(), device(), shape);
     assert(view.nbytes() <= buffer_->bytes());
     return with_view(view);
 }

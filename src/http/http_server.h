@@ -94,8 +94,7 @@ private:
     std::set<std::shared_ptr<ActiveConn>> active_conns_;
     bool accept_loop_done_{false};
 
-    static constexpr size_t kMaxBodySize = 64 * 1024 * 1024;  // 64 MB
-    static constexpr size_t kMaxHeaderSize = 128 * 1024;      // 128 KB
+    static constexpr size_t kMaxHeaderSize = 128 * 1024;  // 128 KB
 
     // Shutdown synchronisation.
     // shutdown_promise_ / shutdown_future_ are protected by shutdown_mutex_

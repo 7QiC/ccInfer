@@ -107,7 +107,7 @@ struct GeneratedToken {
     bool finished = false;
 };
 
-struct EngineCapacity {
+struct Capacity {
     int max_sequences = 0;
     int active_sequences = 0;
     int free_blocks = 0;
