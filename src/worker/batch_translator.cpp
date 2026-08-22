@@ -63,7 +63,6 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
         return std::unexpected(ErrorCode::InvalidArgument);
     }
     const int num_items = static_cast<int>(batch.items.size());
-    std::vector<WorkItem> adjusted_items = batch.items;
     std::vector<PerItemAlloc> per_item(static_cast<std::size_t>(num_items));
 
     auto fail = [&](ErrorCode ec) -> Result<TranslateResult> {
@@ -82,7 +81,7 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
     constexpr int kIntMax = std::numeric_limits<int>::max();
 
     for (int i = 0; i < num_items; ++i) {
-        auto& item = adjusted_items[i];
+        const auto& item = batch.items[i];
 
         // Resolve seq_id before adjusting the item.
         SequenceId seq_id = 0;
@@ -102,30 +101,6 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
             return fail(ErrorCode::InvalidArgument);
         }
 
-        // Adjust PrefillChunk for prefix-cache hits.  The scheduler does not
-        // know which tokens were already cached; the worker adjusts the span
-        // (or converts to a decode step if the entire prompt is cached).
-        if (std::holds_alternative<PrefillChunk>(item)) {
-            auto& pc = std::get<PrefillChunk>(item);
-            if (pc.prompt_span.start < seq.prompt_processed) {
-                int skip = seq.prompt_processed - pc.prompt_span.start;
-                if (skip >= pc.prompt_span.length) {
-                    // Entire chunk already cached.  Run a one-token bootstrap
-                    // decode from the last prompt token to produce a sample,
-                    // but do not commit that temporary KV slot; the next real
-                    // decode will write the sampled token at the same logical
-                    // position.
-                    per_item[i].prefix_cache_bootstrap = true;
-                    per_item[i].release_after_forward = true;
-                    item = DecodeOneToken{seq_id, seq.prompt_tokens.back(),
-                                          std::optional<int>(seq.kv_written)};
-                } else {
-                    pc.prompt_span.start += skip;
-                    pc.prompt_span.length -= skip;
-                }
-            }
-        }
-
         int new_tokens = 0;
         std::visit(
             [&](const auto& w) {
@@ -138,12 +113,16 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
             },
             item);
 
-        per_item[i].kv_tokens_to_commit = new_tokens;
-        per_item[i].prompt_tokens_to_commit =
-            std::holds_alternative<PrefillChunk>(item) ? new_tokens : 0;
-        if (per_item[i].prefix_cache_bootstrap) {
+        if (std::holds_alternative<PrefillChunk>(item)) {
+            per_item[i].kv_tokens_to_commit = new_tokens;
+            per_item[i].prompt_tokens_to_commit = new_tokens;
+        } else if (std::holds_alternative<DecodeOneToken>(item)) {
+            per_item[i].kv_tokens_to_commit = 1;
+            per_item[i].prompt_tokens_to_commit = 0;
+        } else {
             per_item[i].kv_tokens_to_commit = 0;
             per_item[i].prompt_tokens_to_commit = 0;
+            per_item[i].release_after_forward = true;
         }
 
         if (std::holds_alternative<PrefillChunk>(item)) {
@@ -172,15 +151,25 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
                     if (seq.prompt_tokens[t] < 0) return fail(ErrorCode::InvalidArgument);
                 }
             }
-        } else {
-            const auto& d = std::get<DecodeOneToken>(item);
-            if (d.input_token < 0) {
+        } else if (const auto* d = std::get_if<DecodeOneToken>(&item)) {
+            if (d->input_token < 0) {
                 return fail(ErrorCode::InvalidArgument);
             }
             if (static_cast<std::size_t>(seq.prompt_processed) != seq.prompt_tokens.size()) {
                 return fail(ErrorCode::InvalidArgument);
             }
-            if (d.expected_context_len.has_value() && *d.expected_context_len != seq.kv_written) {
+            if (d->expected_context_len.has_value() && *d->expected_context_len != seq.kv_written) {
+                return fail(ErrorCode::InvalidArgument);
+            }
+        } else {
+            const auto* b = std::get_if<BootstrapDecode>(&item);
+            if (b->input_token < 0) {
+                return fail(ErrorCode::InvalidArgument);
+            }
+            if (static_cast<std::size_t>(seq.prompt_processed) != seq.prompt_tokens.size()) {
+                return fail(ErrorCode::InvalidArgument);
+            }
+            if (b->expected_context_len.has_value() && *b->expected_context_len != seq.kv_written) {
                 return fail(ErrorCode::InvalidArgument);
             }
         }
@@ -245,7 +234,7 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
 
     int offset = 0;
     for (int i = 0; i < num_items; ++i) {
-        const auto& item = adjusted_items[i];
+        const auto& item = batch.items[i];
 
         SequenceId seq_id = 0;
         std::visit([&](const auto& w) { seq_id = w.seq_id; }, item);
@@ -294,7 +283,7 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
     for (int i = 0; i < batch_size; ++i) {
         const int last_token_index = query_start_loc[static_cast<std::size_t>(i) + 1] - 1;
 
-        if (auto* pf = std::get_if<PrefillChunk>(&adjusted_items[i])) {
+        if (auto* pf = std::get_if<PrefillChunk>(&batch.items[i])) {
             logits_indices[static_cast<std::size_t>(i)] = pf->needs_sample ? last_token_index : -1;
         } else {
             logits_indices[static_cast<std::size_t>(i)] = last_token_index;
@@ -316,7 +305,7 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
     // PrefillChunks to DecodeOneToken items.
     bool has_prefill = false;
     bool has_decode = false;
-    for (const auto& item : adjusted_items) {
+    for (const auto& item : batch.items) {
         if (std::holds_alternative<PrefillChunk>(item))
             has_prefill = true;
         else
@@ -340,11 +329,13 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
                 using T = std::decay_t<decltype(w)>;
                 if constexpr (std::is_same_v<T, PrefillChunk>) {
                     pb.item_kinds[static_cast<std::size_t>(i)] = WorkKind::PrefillChunk;
-                } else {
+                } else if constexpr (std::is_same_v<T, DecodeOneToken>) {
                     pb.item_kinds[static_cast<std::size_t>(i)] = WorkKind::DecodeOneToken;
+                } else {
+                    pb.item_kinds[static_cast<std::size_t>(i)] = WorkKind::BootstrapDecode;
                 }
             },
-            adjusted_items[i]);
+            batch.items[i]);
     }
 
     if (T_sz > kMax / sizeof(int32_t)) return fail(ErrorCode::InvalidArgument);
@@ -386,9 +377,6 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
     auto sync_r = backend_.synchronize();
     if (!sync_r) return fail(sync_r.error());
 
-    result.adjusted_batch.batch_id = batch.batch_id;
-    result.adjusted_batch.sampling = batch.sampling;
-    result.adjusted_batch.items = std::move(adjusted_items);
     result.per_item = std::move(per_item);
     return result;
 }

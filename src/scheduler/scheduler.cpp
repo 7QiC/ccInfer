@@ -338,6 +338,10 @@ asio::awaitable<void> Scheduler::drain_pending() {
         const int prompt_len = static_cast<int>(state->prompt_tokens.size());
         if (result->prompt_processed > 0 && result->prompt_processed < prompt_len) {
             state->prefill_cursor = result->prompt_processed;
+        } else if (result->prompt_processed >= prompt_len) {
+            state->prefill_cursor = prompt_len;
+            state->prefill_done = true;
+            state->bootstrap_pending = true;
         }
         state->sampling = req.sampling;
         state->max_context_len = req.max_context_len;
@@ -441,6 +445,36 @@ void Scheduler::build_decode_batch(BatchBuildContext& ctx) {
             state->finished = true;
             continue;
         }
+        if (state->bootstrap_pending) {
+            int expected_ctx = static_cast<int>(state->prompt_tokens.size()) +
+                               state->tokens_generated - state->generated_in_prompt;
+            if (expected_ctx >= state->max_context_len) {
+                state->finished = true;
+                send_terminal_event(state);
+                continue;
+            }
+
+            int decode_blocks = (expected_ctx % ctx.block_size == 0) ? 1 : 0;
+            if (decode_blocks > ctx.budget) {
+                budget_blocked_.push_back(id);
+                continue;
+            }
+
+            if (ctx.sampling_set) {
+                if (!sampling_compatible(state->sampling, ctx.batch.sampling)) continue;
+            } else {
+                ctx.batch.sampling = state->sampling;
+                ctx.sampling_set = true;
+            }
+
+            ctx.batch.items.push_back(BootstrapDecode{
+                id, state->prompt_tokens.back(), std::optional<int>(expected_ctx)});
+            ctx.budget -= decode_blocks;
+            ctx.compute_budget -= 1;
+            ctx.included.push_back(id);
+            continue;
+        }
+
         if (state->last_token < 0) {
             state->finished = true;
             send_error_event(state, ErrorCode::BatchTranslationFailed);
@@ -599,8 +633,10 @@ asio::awaitable<void> Scheduler::apply_and_push(const ScheduledBatch& batch,
                 using T = std::decay_t<decltype(w)>;
                 if constexpr (std::is_same_v<T, PrefillChunk>) {
                     expected_kind = WorkKind::PrefillChunk;
-                } else {
+                } else if constexpr (std::is_same_v<T, DecodeOneToken>) {
                     expected_kind = WorkKind::DecodeOneToken;
+                } else {
+                    expected_kind = WorkKind::BootstrapDecode;
                 }
             },
             original_item);
@@ -664,9 +700,8 @@ asio::awaitable<void> Scheduler::apply_and_push(const ScheduledBatch& batch,
                 if (state->suspended) state->suspended = false;
             }
         } else {
-            // Worker may convert PrefillChunk → DecodeOneToken when all
-            // prompt tokens are already in the prefix cache.  In that case
-            // mark prefill as done so the decode loop can start.
+            // BootstrapDecode and DecodeOneToken both represent one decode step.
+            state->bootstrap_pending = false;
             if (!state->prefill_done) {
                 state->prefill_cursor = static_cast<int>(state->prompt_tokens.size());
                 state->prefill_done = true;
@@ -690,8 +725,10 @@ asio::awaitable<void> Scheduler::apply_and_push(const ScheduledBatch& batch,
             }
         }
 
-        // eos only valid for decode items and final prefill chunks.
-        if (wr.eos && (wr.kind == WorkKind::DecodeOneToken || is_final_chunk))
+        // eos only valid for decode/bootstrap items and final prefill chunks.
+        if (wr.eos &&
+            (wr.kind == WorkKind::DecodeOneToken || wr.kind == WorkKind::BootstrapDecode ||
+             is_final_chunk))
             state->finished = true;
         if (state->sampling.max_tokens <= 0) state->finished = true;
         if (state->tokens_generated >= state->sampling.max_tokens) state->finished = true;
@@ -789,10 +826,11 @@ asio::awaitable<void> Scheduler::suspend_sequence_for_replay(StatePtr& state) {
     const int prompt_len = static_cast<int>(state->prompt_tokens.size());
     if (r->prompt_processed > 0 && r->prompt_processed < prompt_len) {
         state->prefill_cursor = r->prompt_processed;
-    } else if (r->prompt_processed >= prompt_len && !state->generated_tokens.empty()) {
+    } else if (r->prompt_processed >= prompt_len) {
         state->prefill_cursor = prompt_len;
         state->prefill_done = true;
         state->suspended = false;
+        state->bootstrap_pending = state->generated_tokens.empty();
     }
 
     co_return;

@@ -30,6 +30,7 @@ struct SchedulerRequestState {
     std::vector<int32_t> prompt_tokens;
     int prefill_cursor = 0;  // number of prompt tokens already consumed / committed
     bool prefill_done = false;
+    bool bootstrap_pending = false;  // full prompt was cached; sample first token
     bool suspended = false;
     int generated_in_prompt = 0;
 

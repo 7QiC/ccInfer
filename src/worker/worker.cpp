@@ -381,7 +381,6 @@ void Worker::process_batch(PendingBatch pending) {
 
     if (model_) {
         BatchTranslator translator(*backend_, *kv_mgr_, kKVBlockSize);
-        const ScheduledBatch& requested_batch = pending.batch;
 
         auto tr = translator.translate(pending.batch, sequences);
         if (!tr) {
@@ -393,7 +392,6 @@ void Worker::process_batch(PendingBatch pending) {
         sync_capacity();  // reflect allocated blocks before forward.
 
         auto& phys_batch = tr->physical_batch;
-        auto& adjusted_batch = tr->adjusted_batch;
         auto& per_item = tr->per_item;
 
         auto exec_r = ModelRunner::inference<BF16RunnerTraits>(*model_, phys_batch, *backend_,
@@ -411,7 +409,7 @@ void Worker::process_batch(PendingBatch pending) {
         result.items = std::move(*exec_r);
         for (auto& wr : result.items) {
             if (wr.item_index < 0 ||
-                static_cast<std::size_t>(wr.item_index) >= requested_batch.items.size() ||
+                static_cast<std::size_t>(wr.item_index) >= pending.batch.items.size() ||
                 static_cast<std::size_t>(wr.item_index) >= per_item.size()) {
                 translator.rollback(per_item);
                 sync_capacity();
@@ -421,34 +419,34 @@ void Worker::process_batch(PendingBatch pending) {
             }
 
             const auto& requested_item =
-                requested_batch.items[static_cast<std::size_t>(wr.item_index)];
-            const auto& alloc = per_item[static_cast<std::size_t>(wr.item_index)];
-            const auto* requested_prefill = std::get_if<PrefillChunk>(&requested_item);
-            if (alloc.prefix_cache_bootstrap) {
-                if (requested_prefill == nullptr || wr.kind != WorkKind::DecodeOneToken ||
-                    wr.tokens_consumed != 1) {
-                    translator.rollback(per_item);
-                    sync_capacity();
-                    resolve(pending.chan, Result<WorkerBatchResult>(
-                                              std::unexpected(ErrorCode::BatchTranslationFailed)));
-                    return;
-                }
-                wr.kind = WorkKind::PrefillChunk;
-                wr.tokens_consumed = requested_prefill->prompt_span.length;
-            } else if (requested_prefill != nullptr) {
-                if (wr.kind != WorkKind::PrefillChunk ||
-                    wr.tokens_consumed > requested_prefill->prompt_span.length) {
-                    translator.rollback(per_item);
-                    sync_capacity();
-                    resolve(pending.chan, Result<WorkerBatchResult>(
-                                              std::unexpected(ErrorCode::BatchTranslationFailed)));
-                    return;
-                }
-                wr.tokens_consumed = requested_prefill->prompt_span.length;
+                pending.batch.items[static_cast<std::size_t>(wr.item_index)];
+            WorkKind expected_kind = WorkKind::PrefillChunk;
+            int expected_tokens = 0;
+            std::visit(
+                [&](const auto& w) {
+                    using T = std::decay_t<decltype(w)>;
+                    if constexpr (std::is_same_v<T, PrefillChunk>) {
+                        expected_kind = WorkKind::PrefillChunk;
+                        expected_tokens = w.prompt_span.length;
+                    } else if constexpr (std::is_same_v<T, DecodeOneToken>) {
+                        expected_kind = WorkKind::DecodeOneToken;
+                        expected_tokens = 1;
+                    } else {
+                        expected_kind = WorkKind::BootstrapDecode;
+                        expected_tokens = 1;
+                    }
+                },
+                requested_item);
+            if (wr.kind != expected_kind || wr.tokens_consumed != expected_tokens) {
+                translator.rollback(per_item);
+                sync_capacity();
+                resolve(pending.chan, Result<WorkerBatchResult>(
+                                          std::unexpected(ErrorCode::BatchTranslationFailed)));
+                return;
             }
         }
 
-        auto commit_r = translator.commit(adjusted_batch, sequences, per_item);
+        auto commit_r = translator.commit(pending.batch, sequences, per_item);
         if (!commit_r) {
             translator.rollback(per_item);
             sync_capacity();
@@ -457,7 +455,7 @@ void Worker::process_batch(PendingBatch pending) {
         }
 
         // Cache full blocks into prefix cache for prefill items.
-        for (const auto& item : adjusted_batch.items) {
+        for (const auto& item : pending.batch.items) {
             if (std::holds_alternative<PrefillChunk>(item)) {
                 const auto& pc = std::get<PrefillChunk>(item);
                 auto it = sequences.find(pc.seq_id);
@@ -523,8 +521,10 @@ void Worker::process_batch(PendingBatch pending) {
                 if constexpr (std::is_same_v<T, PrefillChunk>) {
                     delta.kv_tokens_committed = w.prompt_span.length;
                     delta.prompt_tokens_committed = w.prompt_span.length;
-                } else {
+                } else if constexpr (std::is_same_v<T, DecodeOneToken>) {
                     delta.kv_tokens_committed = 1;
+                } else {
+                    delta.kv_tokens_committed = 0;
                 }
             },
             item);
@@ -545,11 +545,15 @@ BatchResult Worker::generate_dummy_result(const ScheduledBatch& batch) {
         std::visit(
             [&](const auto& w) {
                 wr.seq_id = w.seq_id;
-                if constexpr (std::is_same_v<std::decay_t<decltype(w)>, PrefillChunk>) {
+                using W = std::decay_t<decltype(w)>;
+                if constexpr (std::is_same_v<W, PrefillChunk>) {
                     wr.kind = WorkKind::PrefillChunk;
                     wr.tokens_consumed = w.prompt_span.length;
-                } else {
+                } else if constexpr (std::is_same_v<W, DecodeOneToken>) {
                     wr.kind = WorkKind::DecodeOneToken;
+                    wr.tokens_consumed = 1;
+                } else {
+                    wr.kind = WorkKind::BootstrapDecode;
                     wr.tokens_consumed = 1;
                 }
             },
