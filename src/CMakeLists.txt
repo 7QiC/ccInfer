@@ -67,6 +67,7 @@ target_link_libraries(ccinfer_model
 )
 
 add_library(ccinfer_engine STATIC
+    config/config.cpp
     executor/single_device_executor.cpp
     worker/worker.cpp
     worker/batch_translator.cpp
@@ -95,10 +96,23 @@ target_link_libraries(ccinfer_engine
 add_library(engine INTERFACE)
 target_link_libraries(engine INTERFACE ccinfer_engine)
 
+add_library(tokenizer STATIC
+    tokenizer/byte_level_bpe_tokenizer.cpp
+)
+
+target_include_directories(tokenizer
+    PUBLIC
+        ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(tokenizer
+    PUBLIC
+        nlohmann_json::nlohmann_json
+)
+
 if(BUILD_SERVER)
     add_library(server STATIC
         http/http_server.cpp
-        tokenizer/byte_level_bpe_tokenizer.cpp
     )
 
     target_include_directories(server
@@ -110,6 +124,8 @@ if(BUILD_SERVER)
     target_link_libraries(server
         PUBLIC
             engine
+            tokenizer
+            nlohmann_json::nlohmann_json
     )
 
     add_executable(ccinfer-server

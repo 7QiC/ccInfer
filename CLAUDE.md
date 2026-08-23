@@ -5,7 +5,7 @@ High-performance C++23 LLM inference framework targeting CUDA GPUs, with PagedAt
 ## Build
 
 ```bash
-cmake -S . -B build -DCMAKE_CUDA_ARCHITECTURES=89
+cmake -S . -B build -DBUILD_SERVER=ON -DCMAKE_CUDA_ARCHITECTURES=89
 make -C build -j$(nproc)
 ctest --test-dir build
 ```

@@ -12,7 +12,7 @@ Contributor guide for ccInfer, a high-performance C++23 LLM inference framework 
 
 ```bash
 conda activate llm-infer
-cmake -S . -B build -DCMAKE_CUDA_ARCHITECTURES=89
+cmake -S . -B build -DBUILD_SERVER=ON -DCMAKE_CUDA_ARCHITECTURES=89
 make -C build -j$(nproc)
 ctest --test-dir build
 ```
@@ -30,7 +30,7 @@ C++23 with the `ccinfer` namespace. `.clang-format` enforces Google base style: 
 
 ## Testing Guidelines
 
-Tests use GTest, one test file per module, named `test_<module>.cpp`. Unit tests should run without a GPU; integration tests may require a GPU and/or a local Qwen3-0.6B model. Run everything with `ctest --test-dir build`, or a single suite with `ctest --test-dir build -R test_scheduler`. Never weaken assertions or relax tolerances to make a failing test pass — fix the root cause.
+Tests use GTest, one test file per module, named `test_<module>.cpp`. Unit tests should run without a GPU; integration tests may require a GPU and/or a local Qwen3-0.6B model. Run everything with `ctest --test-dir build`, or the scheduler suite with `ctest --test-dir build -R SchedulerTest`. Never weaken assertions or relax tolerances to make a failing test pass — fix the root cause.
 
 ## Commit & Pull Request Guidelines
 
