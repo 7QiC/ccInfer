@@ -27,6 +27,7 @@ public:
 
     Result<void> insert(uint64_t hash, int32_t block_id);
 
+    // Test-only primitive; production eviction uses remove_by_block.
     void remove(uint64_t hash);
     void remove_by_block(int32_t block_id);
 
