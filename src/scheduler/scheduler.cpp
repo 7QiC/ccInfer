@@ -14,6 +14,7 @@
 #include <variant>
 
 #include "base/runtime_config.h"
+#include "spdlog/spdlog.h"
 
 namespace ccinfer {
 
@@ -300,7 +301,9 @@ asio::awaitable<void> Scheduler::drain_pending() {
 
             if (result) {
                 auto r = co_await executor_.release_sequence(result->seq_id);
-                if (!r) { /* TODO: log release failure */
+                if (!r) {
+                    spdlog::warn("release_sequence failed seq={} err={}", result->seq_id,
+                                 static_cast<int>(r.error()));
                 }
             }
 
@@ -314,7 +317,9 @@ asio::awaitable<void> Scheduler::drain_pending() {
 
             if (result) {
                 auto r = co_await executor_.release_sequence(result->seq_id);
-                if (!r) { /* TODO: log release failure */
+                if (!r) {
+                    spdlog::warn("release_sequence failed seq={} err={}", result->seq_id,
+                                 static_cast<int>(r.error()));
                 }
             }
 
@@ -446,56 +451,45 @@ void Scheduler::build_decode_batch(BatchBuildContext& ctx) {
             continue;
         }
 
+        int expected_ctx = 0;
+        int32_t input_token = 0;
+        bool write_kv = true;
         if (state->bootstrap_pending) {
-            // A bootstrap decode (DecodeOneToken with write_kv=false) only samples
-            // from an already-cached prompt; it writes no KV and allocates no
-            // block, so it does not touch budget.
-            int expected_ctx = static_cast<int>(state->prompt_tokens.size()) +
-                               state->tokens_generated - state->generated_in_prompt;
-            if (expected_ctx >= state->max_context_len) {
+            // Bootstrap decode (write_kv=false) samples from an already-cached
+            // prompt; it writes no KV and allocates no block.
+            expected_ctx = static_cast<int>(state->prompt_tokens.size()) +
+                           state->tokens_generated - state->generated_in_prompt;
+            input_token = state->prompt_tokens.back();
+            write_kv = false;
+        } else {
+            if (state->last_token < 0) {
                 state->finished = true;
-                send_terminal_event(state);
+                send_error_event(state, ErrorCode::BatchTranslationFailed);
                 continue;
             }
-
-            if (ctx.sampling_set) {
-                if (!sampling_compatible(state->sampling, ctx.batch.sampling)) continue;
-            } else {
-                ctx.batch.sampling = state->sampling;
-                ctx.sampling_set = true;
-            }
-
-            ctx.batch.items.push_back(DecodeOneToken{id, state->prompt_tokens.back(),
-                                                      std::optional<int>(expected_ctx), false});
-            ctx.compute_budget -= 1;
-            ctx.included.push_back(id);
-            continue;
-        }
-
-        if (state->last_token < 0) {
-            state->finished = true;
-            send_error_event(state, ErrorCode::BatchTranslationFailed);
-            continue;
-        }
-
-        int expected_ctx = static_cast<int>(state->prompt_tokens.size()) +
+            expected_ctx = static_cast<int>(state->prompt_tokens.size()) +
                            state->tokens_generated - state->generated_in_prompt - 1;
-
-        if (expected_ctx < 0) {
-            state->finished = true;
-            send_error_event(state, ErrorCode::BatchTranslationFailed);
-            continue;
+            if (expected_ctx < 0) {
+                state->finished = true;
+                send_error_event(state, ErrorCode::BatchTranslationFailed);
+                continue;
+            }
+            input_token = state->last_token;
         }
+
         if (expected_ctx >= state->max_context_len) {
             state->finished = true;
             send_terminal_event(state);
             continue;
         }
 
-        int decode_blocks = (expected_ctx % ctx.block_size == 0) ? 1 : 0;
-        if (decode_blocks > ctx.budget) {
-            budget_blocked_.push_back(id);
-            continue;
+        int decode_blocks = 0;
+        if (write_kv) {
+            decode_blocks = (expected_ctx % ctx.block_size == 0) ? 1 : 0;
+            if (decode_blocks > ctx.budget) {
+                budget_blocked_.push_back(id);
+                continue;
+            }
         }
 
         if (ctx.sampling_set) {
@@ -505,8 +499,8 @@ void Scheduler::build_decode_batch(BatchBuildContext& ctx) {
             ctx.sampling_set = true;
         }
 
-        ctx.batch.items.push_back(
-            DecodeOneToken{id, state->last_token, std::optional<int>(expected_ctx)});
+        ctx.batch.items.push_back(DecodeOneToken{id, input_token,
+                                                 std::optional<int>(expected_ctx), write_kv});
         ctx.budget -= decode_blocks;
         ctx.compute_budget -= 1;
         ctx.included.push_back(id);
@@ -760,7 +754,9 @@ asio::awaitable<void> Scheduler::cleanup_cancelled_or_finished() {
 
     for (SequenceId seq_id : to_release) {
         auto r = co_await executor_.release_sequence(seq_id);
-        if (!r) { /* TODO: log release failure */
+        if (!r) {
+            spdlog::warn("release_sequence failed seq={} err={}", seq_id,
+                         static_cast<int>(r.error()));
         }
 
         auto sit = seq_to_request_id_.find(seq_id);
@@ -857,7 +853,9 @@ asio::awaitable<void> Scheduler::cleanup_all_active(ErrorCode shutdown_err) {
         }
 
         auto r = co_await executor_.release_sequence(seq_id);
-        if (!r) { /* TODO: log */
+        if (!r) {
+            spdlog::warn("release_sequence failed seq={} err={}", seq_id,
+                         static_cast<int>(r.error()));
         }
 
         active_.erase(seq_id);
