@@ -1,7 +1,4 @@
 #include <atomic>
-#include <boost/asio/executor_work_guard.hpp>
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/signal_set.hpp>
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
@@ -11,9 +8,14 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
+
+#include <boost/asio/executor_work_guard.hpp>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/signal_set.hpp>
 
 #include "base/error_code.h"
-#include "base/runtime_config.h"
+#include "config/config.h"
 #include "executor/executor.h"
 #include "http/http_server.h"
 #include "scheduler/scheduler.h"
@@ -32,7 +34,10 @@ bool parse_nonnegative_int(const char* text, int& value) {
 
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0
-              << " --model-path PATH [--port PORT] [--prefill-chunk-size N]\n";
+              << " --model-path PATH [--port PORT] [--device N] [--max-blocks N] "
+                 "[--block-size N] [--max-sequences N] "
+                 "[--max-active-scheduled-sequences N] [--schedule-compute-budget N] "
+                 "[--prefill-chunk-size N] [--max-context-len N]\n";
 }
 
 }  // namespace
@@ -40,6 +45,7 @@ void print_usage(const char* argv0) {
 int main(int argc, char* argv[]) {
     int port = 8080;
     std::string model_path;
+    ccinfer::EngineConfig engine_config;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--port" && i + 1 < argc) {
@@ -49,13 +55,46 @@ int main(int argc, char* argv[]) {
             }
         } else if (arg == "--model-path" && i + 1 < argc) {
             model_path = argv[++i];
+        } else if (arg == "--device" && i + 1 < argc) {
+            if (!parse_nonnegative_int(argv[++i], engine_config.device_id)) {
+                std::cerr << "Invalid device: " << argv[i] << std::endl;
+                return 1;
+            }
+        } else if (arg == "--max-blocks" && i + 1 < argc) {
+            if (!parse_nonnegative_int(argv[++i], engine_config.max_blocks)) {
+                std::cerr << "Invalid max blocks: " << argv[i] << std::endl;
+                return 1;
+            }
+        } else if (arg == "--block-size" && i + 1 < argc) {
+            if (!parse_nonnegative_int(argv[++i], engine_config.block_size)) {
+                std::cerr << "Invalid block size: " << argv[i] << std::endl;
+                return 1;
+            }
+        } else if (arg == "--max-sequences" && i + 1 < argc) {
+            if (!parse_nonnegative_int(argv[++i], engine_config.max_sequences)) {
+                std::cerr << "Invalid max sequences: " << argv[i] << std::endl;
+                return 1;
+            }
+        } else if (arg == "--max-active-scheduled-sequences" && i + 1 < argc) {
+            if (!parse_nonnegative_int(argv[++i], engine_config.max_active_scheduled_sequences)) {
+                std::cerr << "Invalid max active scheduled sequences: " << argv[i] << std::endl;
+                return 1;
+            }
+        } else if (arg == "--schedule-compute-budget" && i + 1 < argc) {
+            if (!parse_nonnegative_int(argv[++i], engine_config.schedule_compute_budget)) {
+                std::cerr << "Invalid schedule compute budget: " << argv[i] << std::endl;
+                return 1;
+            }
         } else if (arg == "--prefill-chunk-size" && i + 1 < argc) {
-            int chunk_size = 0;
-            if (!parse_nonnegative_int(argv[++i], chunk_size)) {
+            if (!parse_nonnegative_int(argv[++i], engine_config.prefill_chunk_size)) {
                 std::cerr << "Invalid prefill chunk size: " << argv[i] << std::endl;
                 return 1;
             }
-            ccinfer::runtime::set_prefill_chunk_size(chunk_size);
+        } else if (arg == "--max-context-len" && i + 1 < argc) {
+            if (!parse_nonnegative_int(argv[++i], engine_config.default_max_context_len)) {
+                std::cerr << "Invalid max context length: " << argv[i] << std::endl;
+                return 1;
+            }
         } else {
             print_usage(argv[0]);
             return 1;
@@ -67,9 +106,17 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     if (model_path.empty()) {
-        std::cerr << "Error: --model-path is required (no dummy tokenizer available)" << std::endl;
+        std::cerr << "Error: --model-path is required" << std::endl;
         return 1;
     }
+
+    auto config_r = ccinfer::Config::load(model_path, engine_config);
+    if (!config_r) {
+        std::cerr << "Configuration load failed: " << ccinfer::error_message(config_r.error())
+                  << std::endl;
+        return 1;
+    }
+    auto config = std::move(*config_r);
 
     // Infrastructure — work guards prevent run() from returning early
     // when there is temporarily no work.
@@ -79,12 +126,12 @@ int main(int argc, char* argv[]) {
     auto scheduler_guard = boost::asio::make_work_guard(scheduler_io);
 
     auto executor = ccinfer::Executor::create(scheduler_io);
-    if (auto r = executor->init(model_path); !r) {
+    if (auto r = executor->init(config); !r) {
         std::cerr << "Executor init failed: " << ccinfer::error_message(r.error()) << std::endl;
         return 1;
     }
 
-    auto tok_r = ccinfer::create_tokenizer(model_path);
+    auto tok_r = ccinfer::create_tokenizer(config.model_path_);
     if (!tok_r) {
         std::cerr << "Tokenizer init failed: " << ccinfer::error_message(tok_r.error())
                   << std::endl;
@@ -93,7 +140,7 @@ int main(int argc, char* argv[]) {
     }
     auto tokenizer = std::move(*tok_r);
 
-    ccinfer::Scheduler scheduler(scheduler_io, *executor);
+    ccinfer::Scheduler scheduler(scheduler_io, *executor, config.engine_);
     scheduler.start();
 
     ccinfer::HttpServer http_server(http_io, static_cast<uint16_t>(port), scheduler, *tokenizer);

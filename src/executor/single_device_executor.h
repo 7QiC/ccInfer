@@ -16,7 +16,7 @@ public:
     explicit SingleDeviceExecutor(boost::asio::io_context& io);
     ~SingleDeviceExecutor() override;
 
-    Result<void> init(const std::string& model_path) override;
+    Result<void> init(const Config& config) override;
     void shutdown() override;
 
     asio::awaitable<Result<CreateSequenceResult>> create_sequence(

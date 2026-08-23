@@ -1,11 +1,12 @@
 #pragma once
 
-#include <boost/asio/any_io_executor.hpp>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include <boost/asio/any_io_executor.hpp>
 
 #include "base/channel.h"
 #include "base/types.h"
@@ -26,7 +27,7 @@ struct SchedulerRequest {
     std::string request_id;
     std::vector<int32_t> prompt_tokens;
     SamplingParams sampling;
-    int max_context_len = 2048;
+    int max_context_len = 0;  // 0 means use EngineConfig::default_max_context_len.
     TokenSink sink;
 };
 

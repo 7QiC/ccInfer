@@ -1,22 +1,23 @@
 #pragma once
 
 #include <atomic>
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/post.hpp>
 #include <condition_variable>
 #include <deque>
 #include <memory>
 #include <mutex>
-#include <string>
 #include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/post.hpp>
+
+#include "backend/backend.h"
 #include "base/channel.h"
 #include "base/result.h"
 #include "base/types.h"
-#include "backend/backend.h"
+#include "config/config.h"
 #include "executor/execution.h"
 
 namespace ccinfer {
@@ -34,7 +35,7 @@ public:
     Worker(const Worker&) = delete;
     Worker& operator=(const Worker&) = delete;
 
-    Result<void> init(const std::string& model_path);
+    Result<void> init(const Config& config);
     void shutdown();
 
     Result<CreateSequenceResult> prepare_sequence_resources(
@@ -57,7 +58,7 @@ private:
     void worker_loop();
     void process_batch(PendingBatch pending);
 
-    Result<void> init_resources(const std::string& model_path);
+    Result<void> init_resources(const Config& config);
     void reset_resources();
 
     using BlockTableIter = std::unordered_map<SequenceId, BlockTable>::iterator;
@@ -71,7 +72,7 @@ private:
         const std::unordered_map<SequenceId, SequenceState>& sequences,
         const std::unordered_map<SequenceId, SequenceSnapshot>& snapshots);
 
-    BatchResult generate_dummy_result(const ScheduledBatch& batch);
+    WorkerBatchResult generate_dummy_batch_result(const ScheduledBatch& batch) const;
 
     template <typename ChanPtr, typename T>
     void resolve(ChanPtr& chan_ptr, Result<T> result);
@@ -98,9 +99,8 @@ private:
     std::atomic<uint64_t> prefix_lookup_misses_{0};
     std::atomic<uint64_t> prefix_evictions_{0};
     std::atomic<uint64_t> prefix_cached_blocks_{0};
-    static constexpr int kMaxSequences = 64;
-
     bool initialized_ = false;
+    EngineConfig engine_config_;
 
     // Device resources protected by resource_mutex_.
     std::unique_ptr<Backend> backend_;

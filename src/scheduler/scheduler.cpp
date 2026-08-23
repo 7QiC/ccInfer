@@ -1,10 +1,5 @@
 #include "scheduler/scheduler.h"
 
-#include <boost/asio/as_tuple.hpp>
-#include <boost/asio/co_spawn.hpp>
-#include <boost/asio/deferred.hpp>
-#include <boost/asio/detached.hpp>
-#include <boost/asio/post.hpp>
 #include <algorithm>
 #include <chrono>
 #include <optional>
@@ -13,7 +8,12 @@
 #include <utility>
 #include <variant>
 
-#include "base/runtime_config.h"
+#include <boost/asio/as_tuple.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/deferred.hpp>
+#include <boost/asio/detached.hpp>
+#include <boost/asio/post.hpp>
+
 #include "facade/log.h"
 
 namespace ccinfer {
@@ -22,12 +22,18 @@ namespace {
 using asio::as_tuple;
 using asio::deferred;
 
-constexpr int kMaxActiveScheduledSeqs = 16;
-constexpr int kScheduleComputeBudget = 4096;
+bool is_prefill_phase(GenerationPhase phase) noexcept {
+    return phase == GenerationPhase::Prefill || phase == GenerationPhase::ReplayPrefill;
+}
+
+bool is_decode_phase(GenerationPhase phase) noexcept {
+    return phase == GenerationPhase::Bootstrap || phase == GenerationPhase::Decode;
+}
+
 }  // namespace
 
-Scheduler::Scheduler(asio::io_context& io, Executor& executor)
-    : io_(io), executor_(executor), idle_timer_(io) {}
+Scheduler::Scheduler(asio::io_context& io, Executor& executor, EngineConfig config)
+    : io_(io), executor_(executor), engine_config_(config), idle_timer_(io) {}
 
 // PRECONDITION: shutdown_async().wait() must have completed before destruction.
 // The detached do_work() coroutine captures `this`; destroying the Scheduler
@@ -104,6 +110,7 @@ void Scheduler::submit_on_scheduler_thread(SchedulerRequest req) {
         return;
     }
 
+    if (req.max_context_len <= 0) req.max_context_len = engine_config_.default_max_context_len;
     pending_or_creating_ids_.insert(req.request_id);
     pending_requests_.push_back(std::move(req));
     wake_on_scheduler_thread();
@@ -112,7 +119,9 @@ void Scheduler::submit_on_scheduler_thread(SchedulerRequest req) {
 void Scheduler::cancel_on_scheduler_thread(const std::string& request_id) {
     auto it = by_request_id_.find(request_id);
     if (it != by_request_id_.end()) {
-        it->second->cancelled = true;
+        if (it->second->status == RequestStatus::Active) {
+            it->second->status = RequestStatus::Cancelled;
+        }
         return;
     }
 
@@ -166,24 +175,27 @@ bool Scheduler::send_token_event(StatePtr& state) {
     GeneratedToken tok;
     tok.token_id = state->last_token;
     tok.has_token = true;
-    tok.finished = state->finished;
+    tok.finished = state->status == RequestStatus::Finished;
     bool sent = send_event(state->sink, std::move(tok));
-    if (!sent) state->cancelled = true;
+    if (!sent) {
+        state->sink_disconnected = true;
+        if (state->status == RequestStatus::Active) state->status = RequestStatus::Cancelled;
+    }
     return sent;
 }
 
 bool Scheduler::send_terminal_event(StatePtr& state) {
-    state->finished = true;
+    state->status = RequestStatus::Finished;
     GeneratedToken tok{.has_token = false, .finished = true};
     bool sent = send_event(state->sink, std::move(tok));
-    if (!sent) state->cancelled = true;
+    if (!sent) state->sink_disconnected = true;
     return sent;
 }
 
 bool Scheduler::send_error_event(StatePtr& state, ErrorCode err) {
-    state->finished = true;
+    state->status = RequestStatus::Failed;
     bool sent = send_event(state->sink, std::unexpected(err));
-    if (!sent) state->cancelled = true;
+    if (!sent) state->sink_disconnected = true;
     return sent;
 }
 
@@ -192,14 +204,14 @@ asio::awaitable<void> Scheduler::do_work() {
         co_await drain_pending();
         if (!running_) break;
 
-        co_await cleanup_cancelled_or_finished();
+        co_await cleanup_terminal_requests();
         if (!running_) break;
 
         auto batch = build_scheduled_batch();
 
         if (batch.items.empty()) {
             auto active_before = active_.size();
-            co_await cleanup_cancelled_or_finished();
+            co_await cleanup_terminal_requests();
             if (!pending_requests_.empty()) continue;
 
             if (!active_order_.empty()) {
@@ -213,8 +225,7 @@ asio::awaitable<void> Scheduler::do_work() {
                 if (!budget_blocked_.empty()) {
                     for (SequenceId id : budget_blocked_) {
                         auto it = active_.find(id);
-                        if (it != active_.end() && it->second && !it->second->finished &&
-                            !it->second->cancelled) {
+                        if (it != active_.end() && is_schedulable_state(it->second)) {
                             co_await suspend_sequence_for_replay(it->second);
                         }
                     }
@@ -245,20 +256,19 @@ asio::awaitable<void> Scheduler::do_work() {
                     if (!seen.insert(seq_id).second) continue;
 
                     auto it = active_.find(seq_id);
-                    if (it != active_.end() && it->second && !it->second->finished &&
-                        !it->second->cancelled) {
+                    if (it != active_.end() && is_schedulable_state(it->second)) {
                         co_await suspend_sequence_for_replay(it->second);
                     }
                 }
             } else {
                 co_await fail_batch(submitted_batch, exec_result.error());
             }
-            co_await cleanup_cancelled_or_finished();
+            co_await cleanup_terminal_requests();
             continue;
         }
 
         co_await apply_and_push(submitted_batch, *exec_result);
-        co_await cleanup_cancelled_or_finished();
+        co_await cleanup_terminal_requests();
     }
 
     fail_all_pending_on_scheduler_thread(ErrorCode::ServerShuttingDown);
@@ -303,7 +313,7 @@ asio::awaitable<void> Scheduler::drain_pending() {
                 auto r = co_await executor_.release_sequence(result->seq_id);
                 if (!r) {
                     ccLog::warn("release_sequence failed seq={} err={}", result->seq_id,
-                                 static_cast<int>(r.error()));
+                                static_cast<int>(r.error()));
                 }
             }
 
@@ -316,10 +326,10 @@ asio::awaitable<void> Scheduler::drain_pending() {
             pending_or_creating_ids_.erase(req.request_id);
 
             if (result) {
-                auto r = co_await executor_.release_sequence(result->seq_id);
+                auto r = co_await executor_.abort_sequence(result->seq_id);
                 if (!r) {
-                    ccLog::warn("release_sequence failed seq={} err={}", result->seq_id,
-                                 static_cast<int>(r.error()));
+                    ccLog::warn("abort_sequence failed seq={} err={}", result->seq_id,
+                                static_cast<int>(r.error()));
                 }
             }
 
@@ -345,8 +355,7 @@ asio::awaitable<void> Scheduler::drain_pending() {
             state->prefill_cursor = result->prompt_processed;
         } else if (result->prompt_processed >= prompt_len) {
             state->prefill_cursor = prompt_len;
-            state->prefill_done = true;
-            state->bootstrap_pending = true;
+            state->phase = GenerationPhase::Bootstrap;
         }
         state->sampling = req.sampling;
         state->max_context_len = req.max_context_len;
@@ -393,7 +402,7 @@ ScheduledBatch Scheduler::build_scheduled_batch() {
     // prefix blocks, not only by consuming currently free blocks. Keep the
     // scheduler's admission budget aligned with allocator behavior.
     ctx.budget = cap.free_blocks + cap.block_cached_idle;
-    ctx.compute_budget = kScheduleComputeBudget;
+    ctx.compute_budget = engine_config_.schedule_compute_budget;
 
     for (const auto& [_, state] : active_) {
         if (is_schedulable_state(state) && has_started_execution(state)) ++ctx.started_active;
@@ -404,7 +413,7 @@ ScheduledBatch Scheduler::build_scheduled_batch() {
             auto it = active_.find(id);
             if (it == active_.end()) continue;
             auto& state = it->second;
-            if (!is_schedulable_state(state) || state->prefill_done) continue;
+            if (!is_schedulable_state(state) || !is_prefill_phase(state->phase)) continue;
             int prompt_len = static_cast<int>(state->prompt_tokens.size());
             int cursor = std::max(state->prefill_cursor, 0);
             if (cursor < prompt_len) return true;
@@ -426,16 +435,16 @@ ScheduledBatch Scheduler::build_scheduled_batch() {
 }
 
 bool Scheduler::is_schedulable_state(const StatePtr& state) noexcept {
-    return state && !state->finished && !state->cancelled;
+    return state && state->status == RequestStatus::Active;
 }
 
 bool Scheduler::has_started_execution(const StatePtr& state) noexcept {
-    return state && (state->suspended || state->prefill_done || state->prefill_cursor > 0);
+    return state && (state->phase != GenerationPhase::Prefill || state->prefill_cursor > 0);
 }
 
 bool Scheduler::sampling_compatible(const SamplingParams& lhs, const SamplingParams& rhs) noexcept {
-    return lhs.temperature == rhs.temperature && lhs.top_p == rhs.top_p &&
-           lhs.top_k == rhs.top_k && lhs.seed == rhs.seed;
+    return lhs.temperature == rhs.temperature && lhs.top_p == rhs.top_p && lhs.top_k == rhs.top_k &&
+           lhs.seed == rhs.seed;
 }
 
 void Scheduler::build_decode_batch(BatchBuildContext& ctx) {
@@ -445,32 +454,30 @@ void Scheduler::build_decode_batch(BatchBuildContext& ctx) {
         if (it == active_.end()) continue;
 
         auto& state = it->second;
-        if (!is_schedulable_state(state) || !state->prefill_done) continue;
+        if (!is_schedulable_state(state) || !is_decode_phase(state->phase)) continue;
         if (state->tokens_generated >= state->sampling.max_tokens) {
-            state->finished = true;
+            state->status = RequestStatus::Finished;
             continue;
         }
 
         int expected_ctx = 0;
         int32_t input_token = 0;
         bool write_kv = true;
-        if (state->bootstrap_pending) {
+        if (state->phase == GenerationPhase::Bootstrap) {
             // Bootstrap decode (write_kv=false) samples from an already-cached
             // prompt; it writes no KV and allocates no block.
-            expected_ctx = static_cast<int>(state->prompt_tokens.size()) +
-                           state->tokens_generated - state->generated_in_prompt;
+            expected_ctx = static_cast<int>(state->prompt_tokens.size()) + state->tokens_generated -
+                           state->generated_in_prompt;
             input_token = state->prompt_tokens.back();
             write_kv = false;
         } else {
             if (state->last_token < 0) {
-                state->finished = true;
                 send_error_event(state, ErrorCode::BatchTranslationFailed);
                 continue;
             }
-            expected_ctx = static_cast<int>(state->prompt_tokens.size()) +
-                           state->tokens_generated - state->generated_in_prompt - 1;
+            expected_ctx = static_cast<int>(state->prompt_tokens.size()) + state->tokens_generated -
+                           state->generated_in_prompt - 1;
             if (expected_ctx < 0) {
-                state->finished = true;
                 send_error_event(state, ErrorCode::BatchTranslationFailed);
                 continue;
             }
@@ -478,7 +485,6 @@ void Scheduler::build_decode_batch(BatchBuildContext& ctx) {
         }
 
         if (expected_ctx >= state->max_context_len) {
-            state->finished = true;
             send_terminal_event(state);
             continue;
         }
@@ -499,8 +505,8 @@ void Scheduler::build_decode_batch(BatchBuildContext& ctx) {
             ctx.sampling_set = true;
         }
 
-        ctx.batch.items.push_back(DecodeOneToken{id, input_token,
-                                                 std::optional<int>(expected_ctx), write_kv});
+        ctx.batch.items.push_back(
+            DecodeOneToken{id, input_token, std::optional<int>(expected_ctx), write_kv});
         ctx.budget -= decode_blocks;
         ctx.compute_budget -= 1;
         ctx.included.push_back(id);
@@ -509,7 +515,7 @@ void Scheduler::build_decode_batch(BatchBuildContext& ctx) {
 
 void Scheduler::build_prefill_batch(BatchBuildContext& ctx) {
     auto ceil_div = [](int a, int b) { return (a + b - 1) / b; };
-    const int configured_chunk_size = runtime::prefill_chunk_size();
+    const int configured_chunk_size = engine_config_.prefill_chunk_size;
 
     for (size_t idx = 0; idx < active_order_.size(); ++idx) {
         SequenceId id = active_order_[idx];
@@ -517,21 +523,24 @@ void Scheduler::build_prefill_batch(BatchBuildContext& ctx) {
         if (it == active_.end()) continue;
 
         auto& state = it->second;
-        if (!is_schedulable_state(state) || state->prefill_done) continue;
+        if (!is_schedulable_state(state) || !is_prefill_phase(state->phase)) continue;
         const bool already_started = has_started_execution(state);
-        if (!already_started && ctx.started_active >= kMaxActiveScheduledSeqs) continue;
+        if (!already_started &&
+            ctx.started_active >= engine_config_.max_active_scheduled_sequences) {
+            continue;
+        }
 
         int prompt_len = static_cast<int>(state->prompt_tokens.size());
         if (state->prefill_cursor < 0) state->prefill_cursor = 0;
         if (state->prefill_cursor > prompt_len) {
-            state->finished = true;
             send_error_event(state, ErrorCode::InvalidArgument);
             continue;
         }
 
         int remaining = prompt_len - state->prefill_cursor;
         if (remaining <= 0) {
-            state->prefill_done = true;
+            state->phase = state->generated_tokens.empty() ? GenerationPhase::Bootstrap
+                                                           : GenerationPhase::Decode;
             continue;
         }
 
@@ -550,8 +559,7 @@ void Scheduler::build_prefill_batch(BatchBuildContext& ctx) {
         int additional = total_blocks - cur_blocks;
         if (additional > ctx.budget) {
             // Shrink chunk to fit in available budget.
-            int max_tokens_fit =
-                (cur_blocks + ctx.budget) * ctx.block_size - state->prefill_cursor;
+            int max_tokens_fit = (cur_blocks + ctx.budget) * ctx.block_size - state->prefill_cursor;
             if (max_tokens_fit <= 0) {
                 budget_blocked_.push_back(id);
                 continue;
@@ -572,12 +580,12 @@ void Scheduler::build_prefill_batch(BatchBuildContext& ctx) {
 
         bool is_final = (state->prefill_cursor + chunk_len >= prompt_len);
         bool needs_sample = is_final;
-        if (state->suspended && !state->generated_tokens.empty()) {
+        if (state->phase == GenerationPhase::ReplayPrefill && !state->generated_tokens.empty()) {
             needs_sample = false;
         }
-        ctx.batch.items.push_back(
-            PrefillChunk{id, TokenSpan{state->prefill_cursor, chunk_len},
-                         std::optional<int>(state->prefill_cursor), needs_sample});
+        ctx.batch.items.push_back(PrefillChunk{id, TokenSpan{state->prefill_cursor, chunk_len},
+                                               std::optional<int>(state->prefill_cursor),
+                                               needs_sample});
         ctx.budget -= additional;
         ctx.compute_budget -= chunk_len;
         if (!already_started) ++ctx.started_active;
@@ -593,7 +601,7 @@ void Scheduler::reorder_after_batch(const std::vector<SequenceId>& included) {
         auto it = active_.find(id);
         if (it == active_.end()) continue;
         auto& state = it->second;
-        if (!state || state->finished || state->cancelled) continue;
+        if (!is_schedulable_state(state)) continue;
         keep.push_back(id);
     }
     for (SequenceId id : included) {
@@ -638,7 +646,7 @@ asio::awaitable<void> Scheduler::apply_and_push(const ScheduledBatch& batch,
         auto it = active_.find(wr.seq_id);
         if (it == active_.end()) continue;
         auto& state = it->second;
-        if (!state || state->cancelled) continue;
+        if (!is_schedulable_state(state)) continue;
 
         bool has_new_token = false;
         bool is_final_chunk = false;
@@ -648,22 +656,26 @@ asio::awaitable<void> Scheduler::apply_and_push(const ScheduledBatch& batch,
             int remaining = prompt_len - state->prefill_cursor;
 
             int expected_chunk_len = 0;
-            std::visit([&](const auto& w) {
-                using T = std::decay_t<decltype(w)>;
-                if constexpr (std::is_same_v<T, PrefillChunk>) expected_chunk_len = w.prompt_span.length;
-            }, original_item);
+            std::visit(
+                [&](const auto& w) {
+                    using T = std::decay_t<decltype(w)>;
+                    if constexpr (std::is_same_v<T, PrefillChunk>)
+                        expected_chunk_len = w.prompt_span.length;
+                },
+                original_item);
 
-            if (remaining <= 0 || wr.tokens_consumed <= 0 ||
-                wr.tokens_consumed > remaining || wr.tokens_consumed != expected_chunk_len) {
+            if (remaining <= 0 || wr.tokens_consumed <= 0 || wr.tokens_consumed > remaining ||
+                wr.tokens_consumed != expected_chunk_len) {
                 send_error_event(state, ErrorCode::BatchTranslationFailed);
                 continue;
             }
 
-            is_final_chunk =
-                (state->prefill_cursor + wr.tokens_consumed >= prompt_len);
+            is_final_chunk = (state->prefill_cursor + wr.tokens_consumed >= prompt_len);
 
+            const bool replay_prefill = state->phase == GenerationPhase::ReplayPrefill;
             state->prefill_cursor += wr.tokens_consumed;
-            state->prefill_done = (state->prefill_cursor >= prompt_len);
+            const bool prefill_complete = state->prefill_cursor >= prompt_len;
+            if (prefill_complete) state->phase = GenerationPhase::Decode;
 
             // Only sample/send token on the final prefill chunk.
             // Intermediate chunks write KV cache but produce no output token.
@@ -673,9 +685,9 @@ asio::awaitable<void> Scheduler::apply_and_push(const ScheduledBatch& batch,
                     continue;
                 }
             } else {
-                const bool replay_done_without_sample =
-                    state->suspended && !state->generated_tokens.empty() &&
-                    wr.sampled_tokens.empty() && !wr.eos;
+                const bool replay_done_without_sample = replay_prefill &&
+                                                        !state->generated_tokens.empty() &&
+                                                        wr.sampled_tokens.empty() && !wr.eos;
                 if (wr.sampled_tokens.empty() && !wr.eos && !replay_done_without_sample) {
                     send_error_event(state, ErrorCode::BatchTranslationFailed);
                     continue;
@@ -686,15 +698,14 @@ asio::awaitable<void> Scheduler::apply_and_push(const ScheduledBatch& batch,
                     state->generated_tokens.push_back(wr.sampled_tokens[0]);
                     has_new_token = true;
                 }
-                if (state->suspended) state->suspended = false;
+                state->phase = GenerationPhase::Decode;
             }
         } else {
             // DecodeOneToken represents one decode step; bootstrap decode simply
             // uses write_kv=false.
-            state->bootstrap_pending = false;
-            if (!state->prefill_done) {
+            state->phase = GenerationPhase::Decode;
+            if (state->prefill_cursor < static_cast<int>(state->prompt_tokens.size())) {
                 state->prefill_cursor = static_cast<int>(state->prompt_tokens.size());
-                state->prefill_done = true;
             }
 
             if (wr.tokens_consumed != 1) {
@@ -717,13 +728,14 @@ asio::awaitable<void> Scheduler::apply_and_push(const ScheduledBatch& batch,
 
         // eos only valid for decode items and final prefill chunks.
         if (wr.eos && (wr.kind == WorkKind::DecodeOneToken || is_final_chunk))
-            state->finished = true;
-        if (state->sampling.max_tokens <= 0) state->finished = true;
-        if (state->tokens_generated >= state->sampling.max_tokens) state->finished = true;
+            state->status = RequestStatus::Finished;
+        if (state->sampling.max_tokens <= 0) state->status = RequestStatus::Finished;
+        if (state->tokens_generated >= state->sampling.max_tokens)
+            state->status = RequestStatus::Finished;
 
         if (has_new_token) {
             send_token_event(state);
-        } else if (state->finished) {
+        } else if (state->status == RequestStatus::Finished) {
             send_terminal_event(state);
         }
     }
@@ -738,25 +750,30 @@ void Scheduler::filter_active_order() {
         if (it == active_.end()) continue;
         auto& state = it->second;
         if (!state) continue;
-        if (state->finished || state->cancelled) continue;
+        if (!is_schedulable_state(state)) continue;
         new_order.push_back(id);
     }
     active_order_ = std::move(new_order);
 }
 
-asio::awaitable<void> Scheduler::cleanup_cancelled_or_finished() {
+asio::awaitable<void> Scheduler::cleanup_terminal_requests() {
     std::vector<SequenceId> to_release;
     for (const auto& [seq_id, state] : active_) {
-        if (state && (state->cancelled || state->finished)) {
+        if (state && !is_schedulable_state(state)) {
             to_release.push_back(seq_id);
         }
     }
 
     for (SequenceId seq_id : to_release) {
-        auto r = co_await executor_.release_sequence(seq_id);
+        auto it = active_.find(seq_id);
+        const bool cancelled =
+            it != active_.end() && it->second &&
+            (it->second->status == RequestStatus::Cancelled || it->second->sink_disconnected);
+        auto r = cancelled ? co_await executor_.abort_sequence(seq_id)
+                           : co_await executor_.release_sequence(seq_id);
         if (!r) {
-            ccLog::warn("release_sequence failed seq={} err={}", seq_id,
-                         static_cast<int>(r.error()));
+            ccLog::warn("sequence cleanup failed seq={} err={}", seq_id,
+                        static_cast<int>(r.error()));
         }
 
         auto sit = seq_to_request_id_.find(seq_id);
@@ -790,7 +807,7 @@ asio::awaitable<void> Scheduler::fail_batch(const ScheduledBatch& batch, ErrorCo
 }
 
 asio::awaitable<void> Scheduler::suspend_sequence_for_replay(StatePtr& state) {
-    if (!state || state->finished || state->cancelled) co_return;
+    if (!is_schedulable_state(state)) co_return;
 
     std::vector<int32_t> replay_prompt = state->initial_prompt_tokens;
     int generated_in_prompt = 0;
@@ -800,8 +817,8 @@ asio::awaitable<void> Scheduler::suspend_sequence_for_replay(StatePtr& state) {
                              state->generated_tokens.end() - 1);
     }
 
-    auto r = co_await executor_.suspend_sequence(state->seq_id, replay_prompt,
-                                                 state->max_context_len);
+    auto r =
+        co_await executor_.suspend_sequence(state->seq_id, replay_prompt, state->max_context_len);
     if (!r) {
         send_error_event(state, r.error());
         co_return;
@@ -810,17 +827,15 @@ asio::awaitable<void> Scheduler::suspend_sequence_for_replay(StatePtr& state) {
     state->prompt_tokens = std::move(replay_prompt);
     state->generated_in_prompt = generated_in_prompt;
     state->prefill_cursor = 0;
-    state->prefill_done = false;
-    state->suspended = true;
+    state->phase = GenerationPhase::ReplayPrefill;
 
     const int prompt_len = static_cast<int>(state->prompt_tokens.size());
     if (r->prompt_processed > 0 && r->prompt_processed < prompt_len) {
         state->prefill_cursor = r->prompt_processed;
     } else if (r->prompt_processed >= prompt_len) {
         state->prefill_cursor = prompt_len;
-        state->prefill_done = true;
-        state->suspended = false;
-        state->bootstrap_pending = state->generated_tokens.empty();
+        state->phase =
+            state->generated_tokens.empty() ? GenerationPhase::Bootstrap : GenerationPhase::Decode;
     }
 
     co_return;
@@ -848,14 +863,17 @@ asio::awaitable<void> Scheduler::cleanup_all_active(ErrorCode shutdown_err) {
         if (it == active_.end()) continue;
 
         auto& state = it->second;
-        if (state && !state->finished && !state->cancelled) {
+        if (state && is_schedulable_state(state)) {
             send_error_event(state, shutdown_err);
         }
 
-        auto r = co_await executor_.release_sequence(seq_id);
+        const bool cancelled =
+            state && (state->status == RequestStatus::Cancelled || state->sink_disconnected);
+        auto r = cancelled ? co_await executor_.abort_sequence(seq_id)
+                           : co_await executor_.release_sequence(seq_id);
         if (!r) {
-            ccLog::warn("release_sequence failed seq={} err={}", seq_id,
-                         static_cast<int>(r.error()));
+            ccLog::warn("sequence cleanup failed seq={} err={}", seq_id,
+                        static_cast<int>(r.error()));
         }
 
         active_.erase(seq_id);

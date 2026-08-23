@@ -20,7 +20,7 @@ struct SequenceState {
     int kv_written = 0;        // tokens already written into KV cache
     int prompt_processed = 0;  // tokens already consumed from prompt
     BlockTable block_table;
-    bool aborted = false;
+    SequenceStatus status = SequenceStatus::Active;
 };
 
 // PhysicalBatch — GPU-ready data for ModelRunner::inference.

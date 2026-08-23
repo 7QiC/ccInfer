@@ -1,9 +1,6 @@
 #pragma once
 
 #include <atomic>
-#include <boost/asio/awaitable.hpp>
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/steady_timer.hpp>
 #include <cstdint>
 #include <deque>
 #include <future>
@@ -14,12 +11,19 @@
 #include <unordered_set>
 #include <vector>
 
+#include <boost/asio/awaitable.hpp>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/steady_timer.hpp>
+
 #include "base/request.h"
+#include "config/config.h"
 #include "executor/executor.h"
 
 namespace ccinfer {
 
 namespace asio = boost::asio;
+
+enum class GenerationPhase : uint8_t { Prefill, ReplayPrefill, Bootstrap, Decode };
 
 // Scheduler-owned request state — only accessed on scheduler_io thread.
 struct SchedulerRequestState {
@@ -28,18 +32,15 @@ struct SchedulerRequestState {
 
     std::vector<int32_t> initial_prompt_tokens;
     std::vector<int32_t> prompt_tokens;
+    RequestStatus status = RequestStatus::Active;
+    bool sink_disconnected = false;
+    GenerationPhase phase = GenerationPhase::Prefill;
     int prefill_cursor = 0;  // number of prompt tokens already consumed / committed
-    bool prefill_done = false;
-    bool bootstrap_pending = false;  // full prompt was cached; sample first token
-    bool suspended = false;
     int generated_in_prompt = 0;
 
     int32_t last_token = -1;   // next decode input; sampled but not yet in KV cache
     int tokens_generated = 0;  // output tokens already sent to client
     std::vector<int32_t> generated_tokens;
-    bool finished = false;
-    bool cancelled = false;
-
     SamplingParams sampling;
     int max_context_len = 2048;
 
@@ -55,7 +56,7 @@ struct SchedulerRequestState {
 
 class Scheduler {
 public:
-    Scheduler(asio::io_context& io, Executor& executor);
+    Scheduler(asio::io_context& io, Executor& executor, EngineConfig config = {});
     ~Scheduler();
 
     Scheduler(const Scheduler&) = delete;
@@ -104,7 +105,7 @@ private:
     asio::awaitable<void> drain_pending();
     ScheduledBatch build_scheduled_batch();
     asio::awaitable<void> apply_and_push(const ScheduledBatch& batch, const BatchResult& result);
-    asio::awaitable<void> cleanup_cancelled_or_finished();
+    asio::awaitable<void> cleanup_terminal_requests();
     asio::awaitable<void> fail_batch(const ScheduledBatch& batch, ErrorCode err);
     asio::awaitable<void> suspend_sequence_for_replay(StatePtr& state);
     void fail_all_pending_on_scheduler_thread(ErrorCode err);
@@ -121,6 +122,7 @@ private:
 
     asio::io_context& io_;
     Executor& executor_;
+    EngineConfig engine_config_;
     asio::steady_timer idle_timer_;
 
     // Only accessed on scheduler_io thread — no mutex needed.

@@ -1,11 +1,11 @@
 #pragma once
 
-#include <boost/asio/awaitable.hpp>
-#include <boost/asio/io_context.hpp>
 #include <cstdint>
 #include <memory>
-#include <string>
 #include <vector>
+
+#include <boost/asio/awaitable.hpp>
+#include <boost/asio/io_context.hpp>
 
 #include "base/result.h"
 #include "base/types.h"
@@ -14,11 +14,13 @@ namespace ccinfer {
 
 namespace asio = boost::asio;
 
+struct Config;
+
 class Executor {
 public:
     virtual ~Executor() = default;
 
-    virtual Result<void> init(const std::string& model_path) = 0;
+    virtual Result<void> init(const Config& config) = 0;
     virtual void shutdown() = 0;
 
     virtual asio::awaitable<Result<CreateSequenceResult>> create_sequence(

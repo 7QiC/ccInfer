@@ -4,27 +4,25 @@
 #include <unordered_map>
 #include <vector>
 
+#include "backend/backend.h"
 #include "base/result.h"
 #include "base/types.h"
 #include "cache/block.h"
-#include "backend/backend.h"
 #include "executor/execution.h"
 
 namespace ccinfer {
 
 class KVCacheManager;
 
-// Translates a ScheduledBatch (WorkItems with CPU metadata) into a
-// PhysicalBatch (GPU-ready buffers).  Allocates KV-cache blocks via
-// KVCacheManager and computes per-token slot mappings.
+// Prepares a scheduled batch for one physical execution step. Allocates
+// KV-cache blocks via KVCacheManager, builds GPU-ready buffers, and records the
+// logical state changes that become visible only after successful execution.
 //
-// Transactional semantics:
-//   translate()  — allocate blocks, build PhysicalBatch, record pending changes
-//   commit()     — update SequenceState (kv_written, prompt_processed, block_table)
-//   rollback()   — release newly allocated blocks, SequenceState unchanged
 class BatchTranslator {
 public:
     BatchTranslator(Backend& backend, KVCacheManager& kv_mgr, int block_size);
+
+    enum class ExecutionPlanStatus : uint8_t { Prepared, Committed, RolledBack };
 
     // Per-item allocation metadata.  One entry per WorkItem, in batch order.
     struct PerItemAlloc {
@@ -34,31 +32,52 @@ public:
         int prompt_tokens_to_commit = 0;
     };
 
-    struct TranslateResult {
+    class BatchExecutionPlan {
+    public:
+        BatchExecutionPlan(const BatchExecutionPlan&) = delete;
+        BatchExecutionPlan& operator=(const BatchExecutionPlan&) = delete;
+        BatchExecutionPlan(BatchExecutionPlan&& other) noexcept;
+        BatchExecutionPlan& operator=(BatchExecutionPlan&& other) noexcept;
+        ~BatchExecutionPlan();
+
         PhysicalBatch physical_batch;
-        std::vector<PerItemAlloc> per_item;
+
+        // Makes the logical SequenceState changes visible after a successful
+        // model execution. A plan that is not committed rolls back its newly
+        // allocated KV blocks on destruction.
+        Result<void> commit();
+
+        // Explicitly abandons the plan. Safe to call more than once.
+        void rollback() noexcept;
+
+        ExecutionPlanStatus status() const noexcept { return status_; }
+
+    private:
+        friend class BatchTranslator;
+
+        BatchExecutionPlan(BatchTranslator* translator, ScheduledBatch batch,
+                           std::unordered_map<SequenceId, SequenceState>* sequences,
+                           PhysicalBatch physical_batch, std::vector<PerItemAlloc> per_item);
+
+        BatchTranslator* translator_ = nullptr;
+        ScheduledBatch batch_;
+        std::unordered_map<SequenceId, SequenceState>* sequences_ = nullptr;
+        std::vector<PerItemAlloc> per_item_;
+        ExecutionPlanStatus status_ = ExecutionPlanStatus::Prepared;
     };
 
-    // Build a GPU-ready PhysicalBatch from the scheduled batch and current
-    // SequenceState.  Allocates additional KV blocks as needed.  The batch is
-    // treated as authoritative: PrefillChunk spans must already exclude cached
-    // prefix tokens, and fully-cached prompts must arrive as DecodeOneToken
-    // with write_kv=false.
-    Result<TranslateResult> translate(
-        const ScheduledBatch& batch,
-        const std::unordered_map<SequenceId, SequenceState>& sequences);
-
-    // Persist changes to SequenceState after a successful forward pass.
-    // Returns InvalidArgument if per_item size does not match batch items
-    // or a referenced sequence is not found.
-    Result<void> commit(const ScheduledBatch& batch,
-                        std::unordered_map<SequenceId, SequenceState>& sequences,
-                        const std::vector<PerItemAlloc>& per_item) const;
-
-    // Release blocks allocated by translate() after a failed forward pass.
-    void rollback(const std::vector<PerItemAlloc>& per_item) const;
+    // Build a BatchExecutionPlan from the scheduled batch and current
+    // SequenceState. The plan owns the transaction and is committed only after
+    // the caller's physical execution succeeds.
+    Result<BatchExecutionPlan> prepare(const ScheduledBatch& batch,
+                                       std::unordered_map<SequenceId, SequenceState>& sequences);
 
 private:
+    Result<void> commit_plan(const ScheduledBatch& batch,
+                             std::unordered_map<SequenceId, SequenceState>& sequences,
+                             const std::vector<PerItemAlloc>& per_item) const;
+    void rollback_allocations(const std::vector<PerItemAlloc>& per_item) const noexcept;
+
     Backend& backend_;
     KVCacheManager& kv_mgr_;
     int block_size_;

@@ -1,13 +1,14 @@
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <limits>
-#include <nlohmann/json.hpp>
 #include <string>
 
-#include "facade/ops.h"
+#include <nlohmann/json.hpp>
 
 #include "base/result.h"
+#include "facade/ops.h"
 
 namespace ccinfer {
 
@@ -94,6 +95,9 @@ struct ModelConfig {
             return std::unexpected(ErrorCode::ModelConfigInvalid);
         }
 
+        if (cfg.d_model_ % cfg.n_q_heads_ != 0) {
+            return std::unexpected(ErrorCode::ModelConfigInvalid);
+        }
         int default_head_dim = cfg.d_model_ / cfg.n_q_heads_;
         cfg.n_kv_heads_ = cfg.n_q_heads_;
         if (j.contains("num_key_value_heads")) {
@@ -144,13 +148,17 @@ struct ModelConfig {
                 return std::unexpected(ErrorCode::ModelUnsupportedDType);
         }
 
-        if (cfg.rope_theta_ <= 0.0f || cfg.rms_norm_eps_ <= 0.0f) {
+        if (!std::isfinite(cfg.rope_theta_) || !std::isfinite(cfg.rms_norm_eps_) ||
+            cfg.rope_theta_ <= 0.0f || cfg.rms_norm_eps_ <= 0.0f) {
             return std::unexpected(ErrorCode::ModelConfigInvalid);
         }
         if (cfg.n_kv_heads_ <= 0 || cfg.max_seq_len_ <= 0 || cfg.head_dim_ <= 0) {
             return std::unexpected(ErrorCode::ModelConfigInvalid);
         }
-        if (cfg.n_q_heads_ % cfg.n_kv_heads_ != 0) {
+        if (cfg.n_kv_heads_ > cfg.n_q_heads_ || cfg.n_q_heads_ % cfg.n_kv_heads_ != 0) {
+            return std::unexpected(ErrorCode::ModelConfigInvalid);
+        }
+        if (static_cast<int64_t>(cfg.n_q_heads_) * cfg.head_dim_ != cfg.d_model_) {
             return std::unexpected(ErrorCode::ModelConfigInvalid);
         }
 

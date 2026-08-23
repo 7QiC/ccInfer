@@ -26,6 +26,15 @@ struct SuspendSequenceResult {
 enum class ForwardMode : uint8_t { Prefill, Decode, Mixed };
 enum class WorkKind : uint8_t { PrefillChunk, DecodeOneToken };
 
+// Lifecycle of a request that has been admitted into Scheduler::active_.
+// Pending and creating requests are represented by Scheduler's pending queues
+// because they do not have an executor sequence yet.
+enum class RequestStatus : uint8_t { Active, Finished, Cancelled, Failed };
+
+// Lifecycle of an executor-owned logical sequence. The map entry itself is the
+// allocated state; release removes the entry and abort leaves a tombstone.
+enum class SequenceStatus : uint8_t { Active, Suspended, Aborted };
+
 struct TokenSpan {
     int start = 0;
     int length = 0;
@@ -87,7 +96,7 @@ struct SequenceSnapshot {
     int max_context_len = 0;
     int kv_written = 0;
     int prompt_processed = 0;
-    bool aborted = false;
+    SequenceStatus status = SequenceStatus::Active;
 };
 
 // Worker -> Executor logical progress delta.  Physical block-table mutations

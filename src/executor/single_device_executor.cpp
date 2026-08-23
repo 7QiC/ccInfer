@@ -1,11 +1,12 @@
 #include "executor/single_device_executor.h"
 
-#include <boost/asio/as_tuple.hpp>
-#include <boost/asio/deferred.hpp>
-#include <boost/asio/this_coro.hpp>
 #include <unordered_set>
 #include <utility>
 #include <variant>
+
+#include <boost/asio/as_tuple.hpp>
+#include <boost/asio/deferred.hpp>
+#include <boost/asio/this_coro.hpp>
 
 #include "base/asio_error.h"
 #include "base/channel.h"
@@ -23,9 +24,7 @@ SingleDeviceExecutor::SingleDeviceExecutor(boost::asio::io_context& io)
 
 SingleDeviceExecutor::~SingleDeviceExecutor() { shutdown(); }
 
-Result<void> SingleDeviceExecutor::init(const std::string& model_path) {
-    return worker_->init(model_path);
-}
+Result<void> SingleDeviceExecutor::init(const Config& config) { return worker_->init(config); }
 
 void SingleDeviceExecutor::shutdown() { worker_->shutdown(); }
 
@@ -51,6 +50,9 @@ asio::awaitable<Result<SuspendSequenceResult>> SingleDeviceExecutor::suspend_seq
     SequenceId seq_id, std::vector<int32_t> prompt_tokens, int max_context_len) {
     auto it = sequences_.find(seq_id);
     if (it == sequences_.end()) co_return std::unexpected(ErrorCode::InvalidArgument);
+    if (it->second.status == SequenceStatus::Aborted) {
+        co_return std::unexpected(ErrorCode::InvalidArgument);
+    }
 
     auto result = worker_->reset_sequence_resources(seq_id, prompt_tokens, max_context_len);
     if (!result) co_return std::unexpected(result.error());
@@ -60,7 +62,7 @@ asio::awaitable<Result<SuspendSequenceResult>> SingleDeviceExecutor::suspend_seq
     state.max_context_len = max_context_len;
     state.kv_written = result->prompt_processed;
     state.prompt_processed = result->prompt_processed;
-    state.aborted = false;
+    state.status = SequenceStatus::Suspended;
     co_return result;
 }
 
@@ -78,9 +80,11 @@ asio::awaitable<Result<void>> SingleDeviceExecutor::abort_sequence(SequenceId se
     auto it = sequences_.find(seq_id);
     if (it == sequences_.end()) co_return Result<void>{};
 
+    // Abort is terminal for this executor-side sequence. Keep the tombstone so
+    // an already queued batch cannot apply deltas after the abort.
+    it->second.status = SequenceStatus::Aborted;
     auto result = worker_->release_sequence_resources(seq_id);
     if (!result) co_return std::unexpected(result.error());
-    sequences_.erase(it);
     co_return result;
 }
 
@@ -96,6 +100,9 @@ asio::awaitable<Result<BatchResult>> SingleDeviceExecutor::execute_batch(Schedul
 
         auto it = sequences_.find(seq_id);
         if (it == sequences_.end()) co_return std::unexpected(ErrorCode::InvalidArgument);
+        if (it->second.status == SequenceStatus::Aborted) {
+            co_return std::unexpected(ErrorCode::InvalidArgument);
+        }
         snapshots.push_back(it->second);
     }
 
@@ -105,6 +112,13 @@ asio::awaitable<Result<BatchResult>> SingleDeviceExecutor::execute_batch(Schedul
     auto [ec, result] = co_await chan->async_receive(as_tuple(deferred));
     if (ec) co_return std::unexpected(to_error_code(ec));
     if (!result) co_return std::unexpected(result.error());
+
+    for (const auto& delta : result->deltas) {
+        auto it = sequences_.find(delta.seq_id);
+        if (it == sequences_.end() || it->second.status == SequenceStatus::Aborted) {
+            co_return std::unexpected(ErrorCode::InvalidArgument);
+        }
+    }
 
     for (const auto& delta : result->deltas) {
         auto it = sequences_.find(delta.seq_id);
@@ -120,6 +134,7 @@ asio::awaitable<Result<BatchResult>> SingleDeviceExecutor::execute_batch(Schedul
             state.prompt_processed > state.kv_written) {
             co_return std::unexpected(ErrorCode::InternalError);
         }
+        state.status = SequenceStatus::Active;
     }
 
     co_return std::move(result->batch);

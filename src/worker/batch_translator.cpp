@@ -5,6 +5,7 @@
 #include <limits>
 #include <type_traits>
 #include <unordered_set>
+#include <utility>
 #include <variant>
 
 #include "base/error_code.h"
@@ -45,12 +46,61 @@ bool check_seq_invariant(const SequenceState& seq, int block_size, int max_block
 BatchTranslator::BatchTranslator(Backend& backend, KVCacheManager& kv_mgr, int block_size)
     : backend_(backend), kv_mgr_(kv_mgr), block_size_(block_size) {}
 
-// Calling convention: if translate succeeds but the caller subsequently fails
-// (forward or commit), the caller must invoke rollback(per_item) to release
-// any KV blocks that were allocated.
+BatchTranslator::BatchExecutionPlan::BatchExecutionPlan(
+    BatchTranslator* translator, ScheduledBatch batch,
+    std::unordered_map<SequenceId, SequenceState>* sequences, PhysicalBatch physical_batch,
+    std::vector<PerItemAlloc> per_item)
+    : physical_batch(std::move(physical_batch)),
+      translator_(translator),
+      batch_(std::move(batch)),
+      sequences_(sequences),
+      per_item_(std::move(per_item)) {}
 
-Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
-    const ScheduledBatch& batch, const std::unordered_map<SequenceId, SequenceState>& sequences) {
+BatchTranslator::BatchExecutionPlan::BatchExecutionPlan(BatchExecutionPlan&& other) noexcept
+    : physical_batch(std::move(other.physical_batch)),
+      translator_(std::exchange(other.translator_, nullptr)),
+      batch_(std::move(other.batch_)),
+      sequences_(std::exchange(other.sequences_, nullptr)),
+      per_item_(std::move(other.per_item_)),
+      status_(std::exchange(other.status_, ExecutionPlanStatus::RolledBack)) {}
+
+BatchTranslator::BatchExecutionPlan& BatchTranslator::BatchExecutionPlan::operator=(
+    BatchExecutionPlan&& other) noexcept {
+    if (this == &other) return *this;
+
+    rollback();
+    physical_batch = std::move(other.physical_batch);
+    translator_ = std::exchange(other.translator_, nullptr);
+    batch_ = std::move(other.batch_);
+    sequences_ = std::exchange(other.sequences_, nullptr);
+    per_item_ = std::move(other.per_item_);
+    status_ = std::exchange(other.status_, ExecutionPlanStatus::RolledBack);
+    return *this;
+}
+
+BatchTranslator::BatchExecutionPlan::~BatchExecutionPlan() { rollback(); }
+
+Result<void> BatchTranslator::BatchExecutionPlan::commit() {
+    if (status_ != ExecutionPlanStatus::Prepared) {
+        return std::unexpected(ErrorCode::InvalidArgument);
+    }
+    if (translator_ == nullptr || sequences_ == nullptr) {
+        return std::unexpected(ErrorCode::InternalError);
+    }
+
+    auto result = translator_->commit_plan(batch_, *sequences_, per_item_);
+    if (result) status_ = ExecutionPlanStatus::Committed;
+    return result;
+}
+
+void BatchTranslator::BatchExecutionPlan::rollback() noexcept {
+    if (status_ != ExecutionPlanStatus::Prepared) return;
+    if (translator_ != nullptr) translator_->rollback_allocations(per_item_);
+    status_ = ExecutionPlanStatus::RolledBack;
+}
+
+Result<BatchTranslator::BatchExecutionPlan> BatchTranslator::prepare(
+    const ScheduledBatch& batch, std::unordered_map<SequenceId, SequenceState>& sequences) {
     if (block_size_ <= 0) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
@@ -65,8 +115,8 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
     const int num_items = static_cast<int>(batch.items.size());
     std::vector<PerItemAlloc> per_item(static_cast<std::size_t>(num_items));
 
-    auto fail = [&](ErrorCode ec) -> Result<TranslateResult> {
-        rollback(per_item);
+    auto fail = [&](ErrorCode ec) -> Result<BatchExecutionPlan> {
+        rollback_allocations(per_item);
         return std::unexpected(ec);
     };
 
@@ -96,7 +146,8 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
         }
 
         const auto& seq = it->second;
-        if (seq.aborted || !check_seq_invariant(seq, block_size_, max_blk)) {
+        if (seq.status == SequenceStatus::Aborted ||
+            !check_seq_invariant(seq, block_size_, max_blk)) {
             return fail(ErrorCode::InvalidArgument);
         }
 
@@ -164,7 +215,7 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
         }
 
         const bool is_bootstrap = std::holds_alternative<DecodeOneToken>(item) &&
-                                       !std::get<DecodeOneToken>(item).write_kv;
+                                  !std::get<DecodeOneToken>(item).write_kv;
         const int64_t total_after =
             static_cast<int64_t>(seq.kv_written) + (is_bootstrap ? 0 : new_tokens);
         if (total_after > static_cast<int64_t>(seq.max_context_len)) {
@@ -236,9 +287,8 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
         const auto& seq = sequences.at(seq_id);
 
         const bool is_bootstrap = std::holds_alternative<DecodeOneToken>(item) &&
-                                       !std::get<DecodeOneToken>(item).write_kv;
-        const int new_tokens =
-            is_bootstrap ? 1 : static_cast<int>(per_item[i].slot_mapping.size());
+                                  !std::get<DecodeOneToken>(item).write_kv;
+        const int new_tokens = is_bootstrap ? 1 : static_cast<int>(per_item[i].slot_mapping.size());
         item_token_counts[static_cast<std::size_t>(i)] = new_tokens;
 
         std::visit(
@@ -298,9 +348,9 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
     }
 
     // Phase 3: allocate device buffers and upload.
-    TranslateResult result;
+    PhysicalBatch physical_batch;
 
-    auto& pb = result.physical_batch;
+    auto& pb = physical_batch;
     pb.item_token_counts = std::move(item_token_counts);
     pb.sample_flags.resize(B_sz);
     for (std::size_t i = 0; i < B_sz; ++i) {
@@ -380,13 +430,13 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
     auto sync_r = backend_.synchronize();
     if (!sync_r) return fail(sync_r.error());
 
-    result.per_item = std::move(per_item);
-    return result;
+    return BatchExecutionPlan(this, batch, &sequences, std::move(physical_batch),
+                              std::move(per_item));
 }
 
-Result<void> BatchTranslator::commit(const ScheduledBatch& batch,
-                                     std::unordered_map<SequenceId, SequenceState>& sequences,
-                                     const std::vector<PerItemAlloc>& per_item) const {
+Result<void> BatchTranslator::commit_plan(const ScheduledBatch& batch,
+                                          std::unordered_map<SequenceId, SequenceState>& sequences,
+                                          const std::vector<PerItemAlloc>& per_item) const {
     if (per_item.size() != batch.items.size()) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
@@ -441,7 +491,8 @@ Result<void> BatchTranslator::commit(const ScheduledBatch& batch,
         }
 
         auto& seq = it->second;
-        if (seq.aborted || !check_seq_invariant(seq, block_size_, max_blk)) {
+        if (seq.status == SequenceStatus::Aborted ||
+            !check_seq_invariant(seq, block_size_, max_blk)) {
             return std::unexpected(ErrorCode::InvalidArgument);
         }
 
@@ -489,13 +540,14 @@ Result<void> BatchTranslator::commit(const ScheduledBatch& batch,
     return {};
 }
 
-void BatchTranslator::rollback(const std::vector<PerItemAlloc>& per_item) const {
+void BatchTranslator::rollback_allocations(
+    const std::vector<PerItemAlloc>& per_item) const noexcept {
     for (const auto& alloc : per_item) {
         if (alloc.new_blocks.size() > 0) {
             auto r = kv_mgr_.release_blocks(alloc.new_blocks);
             if (!r) {
                 ccLog::error("rollback: release_blocks failed for {} new blocks",
-                              alloc.new_blocks.size());
+                             alloc.new_blocks.size());
             }
         }
     }

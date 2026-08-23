@@ -1,7 +1,6 @@
 #include "worker/worker.h"
 
 #include <algorithm>
-#include <fstream>
 #include <limits>
 #include <mutex>
 #include <stdexcept>
@@ -10,18 +9,16 @@
 #include <variant>
 
 #include <cuda_bf16.h>
-#include <nlohmann/json.hpp>
 
 #include "backend/backend.h"
 #include "base/error_code.h"
 #include "cache/kv_cache_manager.h"
 #include "cache/kv_cache_storage.h"
 #include "core/traits.h"
-#include "model/config.h"
+#include "facade/log.h"
 #include "model/loader.h"
 #include "model/model_runner.h"
 #include "model/registry.h"
-#include "facade/log.h"
 #include "worker/batch_translator.h"
 
 namespace ccinfer {
@@ -30,12 +27,12 @@ Worker::Worker(asio::io_context& io) : io_(io) {}
 
 Worker::~Worker() { shutdown(); }
 
-Result<void> Worker::init(const std::string& model_path) {
+Result<void> Worker::init(const Config& config) {
     if (running_.load() || worker_thread_.joinable()) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
 
-    auto r = init_resources(model_path);
+    auto r = init_resources(config);
     if (!r) {
         reset_resources();
         return r;
@@ -68,13 +65,13 @@ Result<CreateSequenceResult> Worker::prepare_sequence_resources(
         return std::unexpected(ErrorCode::InvalidArgument);
     }
     if (static_cast<int64_t>(max_context_len) >
-        static_cast<int64_t>(max_blocks_.load()) * kKVBlockSize) {
+        static_cast<int64_t>(max_blocks_.load()) * engine_config_.block_size) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
     for (auto tok : prompt_tokens) {
         if (tok < 0) return std::unexpected(ErrorCode::InvalidArgument);
     }
-    if (active_sequences_.load() >= kMaxSequences) {
+    if (active_sequences_.load() >= engine_config_.max_sequences) {
         return std::unexpected(ErrorCode::MaxSequencesReached);
     }
     if (block_tables_.count(seq_id) > 0) {
@@ -111,7 +108,7 @@ Result<SuspendSequenceResult> Worker::reset_sequence_resources(
         prompt_tokens.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
         static_cast<int64_t>(max_context_len) < static_cast<int64_t>(prompt_tokens.size()) ||
         static_cast<int64_t>(max_context_len) >
-            static_cast<int64_t>(max_blocks_.load()) * kKVBlockSize) {
+            static_cast<int64_t>(max_blocks_.load()) * engine_config_.block_size) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
     for (auto tok : prompt_tokens) {
@@ -164,17 +161,11 @@ void Worker::enqueue_execute_batch(ScheduledBatch batch, std::vector<SequenceSna
 }
 
 Capacity Worker::capacity() const {
-    return Capacity{kMaxSequences,
-                          active_sequences_.load(),
-                          free_blocks_.load(),
-                          max_blocks_.load(),
-                          block_size_.load(),
-                          block_active_.load(),
-                          block_cached_idle_.load(),
-                          prefix_lookup_hits_.load(),
-                          prefix_lookup_misses_.load(),
-                          prefix_evictions_.load(),
-                          prefix_cached_blocks_.load()};
+    return Capacity{
+        engine_config_.max_sequences, active_sequences_.load(),    free_blocks_.load(),
+        max_blocks_.load(),           block_size_.load(),          block_active_.load(),
+        block_cached_idle_.load(),    prefix_lookup_hits_.load(),  prefix_lookup_misses_.load(),
+        prefix_evictions_.load(),     prefix_cached_blocks_.load()};
 }
 
 void Worker::worker_loop() {
@@ -220,10 +211,14 @@ void Worker::sync_capacity() {
     prefix_cached_blocks_.store(static_cast<uint64_t>(s.prefix.cached_blocks));
 }
 
-Result<void> Worker::init_resources(const std::string& model_path) {
+Result<void> Worker::init_resources(const Config& config) {
     std::lock_guard lock(resource_mutex_);
     try {
-        auto b = Backend::create(0);
+        auto config_r = config.engine_.validate();
+        if (!config_r) return std::unexpected(config_r.error());
+        engine_config_ = config.engine_;
+
+        auto b = Backend::create(engine_config_.device_id);
         if (!b) {
             return std::unexpected(b.error());
         }
@@ -236,49 +231,39 @@ Result<void> Worker::init_resources(const std::string& model_path) {
         int num_kv_heads = 0;
         int head_dim = 0;
 
-        if (!model_path.empty()) {
-            std::ifstream cfg_file(model_path + "/config.json");
-            if (!cfg_file.is_open()) {
-                return std::unexpected(ErrorCode::ModelLoadFailed);
-            }
-            auto cfg_j = nlohmann::json::parse(cfg_file, nullptr, false);
-            if (cfg_j.is_discarded()) {
-                return std::unexpected(ErrorCode::ModelConfigInvalid);
-            }
-            auto cfg_r = ModelConfig::from_json(cfg_j);
-            if (!cfg_r) {
-                return std::unexpected(cfg_r.error());
-            }
-            num_layers = cfg_r->n_layers_;
-            num_kv_heads = cfg_r->n_kv_heads_;
-            head_dim = cfg_r->head_dim_;
+        if (!config.model_path_.empty()) {
+            num_layers = config.model_.n_layers_;
+            num_kv_heads = config.model_.n_kv_heads_;
+            head_dim = config.model_.head_dim_;
 
-            auto loader_r = WeightLoader::create(model_path + "/model.safetensors");
+            auto loader_r = WeightLoader::create(config.model_path_ + "/model.safetensors");
             if (!loader_r) {
                 return std::unexpected(loader_r.error());
             }
 
-            auto model_r = ModelRegistry::instance().create(*cfg_r, *loader_r, *backend_);
+            auto model_r = ModelRegistry::instance().create(config.model_, *loader_r, *backend_);
             if (!model_r) {
                 return std::unexpected(model_r.error());
             }
             model_ = std::move(*model_r);
         } else {
-            num_layers = 32;
-            num_kv_heads = 8;
-            head_dim = 128;
+            num_layers = engine_config_.dummy_num_layers;
+            num_kv_heads = engine_config_.dummy_num_kv_heads;
+            head_dim = engine_config_.dummy_head_dim;
         }
 
-        max_blocks_.store(1024);
+        max_blocks_.store(engine_config_.max_blocks);
 
-        auto kvs_r = KVCacheStorage::create(*backend_, num_layers, max_blocks_.load(), kKVBlockSize,
-                                            num_kv_heads, head_dim, ccop::DType::kBFloat16);
+        auto kvs_r = KVCacheStorage::create(*backend_, num_layers, max_blocks_.load(),
+                                            engine_config_.block_size, num_kv_heads, head_dim,
+                                            ccop::DType::kBFloat16);
         if (!kvs_r) {
             return std::unexpected(kvs_r.error());
         }
 
         kv_mgr_ = std::make_unique<KVCacheManager>();
-        auto kmgr_r = kv_mgr_->init(std::move(*kvs_r), max_blocks_.load(), kKVBlockSize);
+        auto kmgr_r =
+            kv_mgr_->init(std::move(*kvs_r), max_blocks_.load(), engine_config_.block_size);
         if (!kmgr_r) {
             return std::unexpected(kmgr_r.error());
         }
@@ -335,7 +320,7 @@ std::unordered_map<SequenceId, SequenceState> Worker::build_sequence_states(
         state.kv_written = snapshot.kv_written;
         state.prompt_processed = snapshot.prompt_processed;
         state.block_table = block_tables_.at(seq_id);
-        state.aborted = snapshot.aborted;
+        state.status = snapshot.status;
         sequences.emplace(seq_id, std::move(state));
     }
     return sequences;
@@ -412,25 +397,25 @@ void Worker::process_batch(PendingBatch pending) {
     auto sequences = build_sequence_states(snapshots);
 
     if (model_) {
-        BatchTranslator translator(*backend_, *kv_mgr_, kKVBlockSize);
+        BatchTranslator translator(*backend_, *kv_mgr_, engine_config_.block_size);
 
-        auto tr = translator.translate(pending.batch, sequences);
-        if (!tr) {
+        auto plan_r = translator.prepare(pending.batch, sequences);
+        if (!plan_r) {
             sync_capacity();  // translate may have evicted LRU blocks.
-            resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(tr.error())));
+            resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(plan_r.error())));
             return;
         }
+        auto plan = std::move(*plan_r);
 
         sync_capacity();  // reflect allocated blocks before forward.
 
-        auto& phys_batch = tr->physical_batch;
-        auto& per_item = tr->per_item;
+        auto& phys_batch = plan.physical_batch;
 
         auto exec_r = ModelRunner::inference<BF16RunnerTraits>(*model_, phys_batch, *backend_,
                                                                *kv_mgr_, pending.batch.sampling);
 
         if (!exec_r) {
-            translator.rollback(per_item);
+            plan.rollback();
             sync_capacity();
             resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(exec_r.error())));
             return;
@@ -441,9 +426,8 @@ void Worker::process_batch(PendingBatch pending) {
         result.items = std::move(*exec_r);
         for (auto& wr : result.items) {
             if (wr.item_index < 0 ||
-                static_cast<std::size_t>(wr.item_index) >= pending.batch.items.size() ||
-                static_cast<std::size_t>(wr.item_index) >= per_item.size()) {
-                translator.rollback(per_item);
+                static_cast<std::size_t>(wr.item_index) >= pending.batch.items.size()) {
+                plan.rollback();
                 sync_capacity();
                 resolve(pending.chan, Result<WorkerBatchResult>(
                                           std::unexpected(ErrorCode::BatchTranslationFailed)));
@@ -467,7 +451,7 @@ void Worker::process_batch(PendingBatch pending) {
                 },
                 requested_item);
             if (wr.kind != expected_kind || wr.tokens_consumed != expected_tokens) {
-                translator.rollback(per_item);
+                plan.rollback();
                 sync_capacity();
                 resolve(pending.chan, Result<WorkerBatchResult>(
                                           std::unexpected(ErrorCode::BatchTranslationFailed)));
@@ -475,9 +459,9 @@ void Worker::process_batch(PendingBatch pending) {
             }
         }
 
-        auto commit_r = translator.commit(pending.batch, sequences, per_item);
+        auto commit_r = plan.commit();
         if (!commit_r) {
-            translator.rollback(per_item);
+            plan.rollback();
             sync_capacity();
             resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(commit_r.error())));
             return;
@@ -495,7 +479,7 @@ void Worker::process_batch(PendingBatch pending) {
                                                            /*namespace_salt=*/0);
                     if (!cf_r) {
                         ccLog::error("cache_full_blocks failed seq={} err={}", seq.seq_id,
-                                      static_cast<int>(cf_r.error()));
+                                     static_cast<int>(cf_r.error()));
                     }
                 }
             }
@@ -505,8 +489,7 @@ void Worker::process_batch(PendingBatch pending) {
 
         auto deltas_r = build_deltas(sequences, snapshots);
         if (!deltas_r) {
-            resolve(pending.chan,
-                    Result<WorkerBatchResult>(std::unexpected(deltas_r.error())));
+            resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(deltas_r.error())));
             return;
         }
         auto deltas = std::move(*deltas_r);
@@ -518,34 +501,15 @@ void Worker::process_batch(PendingBatch pending) {
         return;
     }
 
-    // Dummy mode (no model loaded).
-    // Dummy mode has no physical KV writes, but still returns logical deltas so
-    // Executor-owned sequence progress remains consistent for control-path tests.
-    BatchResult result = generate_dummy_result(pending.batch);
-    WorkerBatchResult worker_result;
-    worker_result.batch = std::move(result);
-    for (const auto& item : pending.batch.items) {
-        SequenceDelta delta;
-        std::visit(
-            [&](const auto& w) {
-                delta.seq_id = w.seq_id;
-                using T = std::decay_t<decltype(w)>;
-                if constexpr (std::is_same_v<T, PrefillChunk>) {
-                    delta.kv_tokens_committed = w.prompt_span.length;
-                    delta.prompt_tokens_committed = w.prompt_span.length;
-                } else if constexpr (std::is_same_v<T, DecodeOneToken>) {
-                    delta.kv_tokens_committed = w.write_kv ? 1 : 0;
-                }
-            },
-            item);
-        worker_result.deltas.push_back(delta);
-    }
+    // Dummy mode (no model loaded) keeps the same batch-result and logical
+    // progress contract as the real path for control-path tests.
+    auto worker_result = generate_dummy_batch_result(pending.batch);
     resolve(pending.chan, Result<WorkerBatchResult>(std::move(worker_result)));
 }
 
-BatchResult Worker::generate_dummy_result(const ScheduledBatch& batch) {
-    BatchResult result;
-    result.batch_id = batch.batch_id;
+WorkerBatchResult Worker::generate_dummy_batch_result(const ScheduledBatch& batch) const {
+    WorkerBatchResult worker_result;
+    worker_result.batch.batch_id = batch.batch_id;
 
     for (std::size_t i = 0; i < batch.items.size(); ++i) {
         WorkItemResult wr;
@@ -566,10 +530,25 @@ BatchResult Worker::generate_dummy_result(const ScheduledBatch& batch) {
             },
             batch.items[i]);
 
-        result.items.push_back(std::move(wr));
+        worker_result.batch.items.push_back(std::move(wr));
+
+        SequenceDelta delta;
+        std::visit(
+            [&](const auto& w) {
+                delta.seq_id = w.seq_id;
+                using T = std::decay_t<decltype(w)>;
+                if constexpr (std::is_same_v<T, PrefillChunk>) {
+                    delta.kv_tokens_committed = w.prompt_span.length;
+                    delta.prompt_tokens_committed = w.prompt_span.length;
+                } else {
+                    delta.kv_tokens_committed = w.write_kv ? 1 : 0;
+                }
+            },
+            batch.items[i]);
+        worker_result.deltas.push_back(delta);
     }
 
-    return result;
+    return worker_result;
 }
 
 }  // namespace ccinfer
