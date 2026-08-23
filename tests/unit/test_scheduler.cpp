@@ -1,9 +1,5 @@
 #include <gtest/gtest.h>
 
-#include <unistd.h>
-
-#include <string>
-
 #define private public
 #include "scheduler/scheduler.h"
 #undef private
@@ -13,45 +9,56 @@
 namespace ccinfer {
 namespace {
 
+class FakeExecutor final : public Executor {
+public:
+    Result<void> init(const std::string&) override { return {}; }
+    void shutdown() override {}
+
+    asio::awaitable<Result<CreateSequenceResult>> create_sequence(
+        std::vector<int32_t>, int) override {
+        co_return CreateSequenceResult{next_id_++, 0};
+    }
+
+    asio::awaitable<Result<SuspendSequenceResult>> suspend_sequence(
+        SequenceId, std::vector<int32_t>, int) override {
+        co_return SuspendSequenceResult{0};
+    }
+
+    asio::awaitable<Result<void>> release_sequence(SequenceId) override {
+        co_return Result<void>{};
+    }
+
+    asio::awaitable<Result<void>> abort_sequence(SequenceId) override {
+        co_return Result<void>{};
+    }
+
+    asio::awaitable<Result<BatchResult>> execute_batch(ScheduledBatch batch) override {
+        BatchResult result;
+        result.batch_id = batch.batch_id;
+        co_return result;
+    }
+
+    Capacity capacity() const override { return cap_; }
+
+private:
+    uint64_t next_id_{1};
+    Capacity cap_{64, 0, 1024, 1024, 16, 0, 0, 0, 0, 0, 0};
+};
+
 class SchedulerTest : public ::testing::Test {
 protected:
-    static void SetUpTestSuite() {
-        auto path = std::getenv("CCINFER_TEST_MODEL_PATH")
-                        ? std::getenv("CCINFER_TEST_MODEL_PATH")
-                        : "../models/qwen3-0.6B";
-        std::string mp(path);
-        if (access((mp + "/model.safetensors").c_str(), F_OK) != 0 ||
-            access((mp + "/config.json").c_str(), F_OK) != 0) {
-            suite_skip_ = true;
-            return;
-        }
-        executor_ = Executor::create(io_);
-        if (auto r = executor_->init(path); !r) {
-            suite_skip_ = true;
-            executor_.reset();
-            return;
-        }
-    }
-
-    static void TearDownTestSuite() { executor_.reset(); }
-
-    void SetUp() override {
-        if (suite_skip_) GTEST_SKIP() << "Executor init failed (check CCINFER_TEST_MODEL_PATH)";
-        scheduler_ = std::make_unique<Scheduler>(io_, *executor_);
-    }
+    void SetUp() override { scheduler_ = std::make_unique<Scheduler>(io_, executor_); }
 
     void TearDown() override { scheduler_.reset(); }
 
     static boost::asio::io_context io_;
-    static std::unique_ptr<Executor> executor_;
-    static bool suite_skip_;
+    static FakeExecutor executor_;
 
     std::unique_ptr<Scheduler> scheduler_;
 };
 
 boost::asio::io_context SchedulerTest::io_{};
-std::unique_ptr<Executor> SchedulerTest::executor_;
-bool SchedulerTest::suite_skip_ = false;
+FakeExecutor SchedulerTest::executor_;
 
 TEST_F(SchedulerTest, EmptyBatchWhenNoActiveSequences) {
     auto batch = scheduler_->build_scheduled_batch();
