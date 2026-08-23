@@ -8,7 +8,7 @@
 #include "backend/backend.h"
 #include "cache/kv_cache_manager.h"
 #include "cache/kv_cache_storage.h"
-#include "ops/ops.h"
+#include "facade/ops.h"
 
 namespace ccinfer {
 namespace {
@@ -30,7 +30,7 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
 
     // 1. Init storage and manager.
     auto sr = KVCacheStorage::create(backend, kNumLayers, kMaxBlocks, block_size, nkv, hd,
-                                     ops::DType::kBFloat16);
+                                     ccop::DType::kBFloat16);
     ASSERT_TRUE(sr.has_value());
 
     KVCacheManager mgr;
@@ -111,17 +111,17 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
     cudaMemcpyAsync(d_bt, h_block_table.data(), 1 * kMaxBlocks * sizeof(int32_t),
                     cudaMemcpyHostToDevice, stream);
 
-    constexpr ops::Device kCuda0{ops::DeviceType::kCUDA, 0};
-    ops::Tensor q(d_q, ops::DType::kBFloat16, kCuda0, {kNumTokens, nq, hd});
+    constexpr ccop::Device kCuda0{ccop::DeviceType::kCUDA, 0};
+    ccop::Tensor q(d_q, ccop::DType::kBFloat16, kCuda0, {kNumTokens, nq, hd});
     auto k_cache = mgr.k_cache_blocks(0);
     auto v_cache = mgr.v_cache_blocks(0);
-    ops::Tensor block_table(d_bt, ops::DType::kInt32, kCuda0, {1, kMaxBlocks});
-    ops::Tensor query_start_loc(d_qsl, ops::DType::kInt32, kCuda0, {2});
-    ops::Tensor context_lens(d_ctx, ops::DType::kInt32, kCuda0, {1});
-    ops::Tensor out(d_output, ops::DType::kBFloat16, kCuda0, {kNumTokens, nq, hd});
+    ccop::Tensor block_table(d_bt, ccop::DType::kInt32, kCuda0, {1, kMaxBlocks});
+    ccop::Tensor query_start_loc(d_qsl, ccop::DType::kInt32, kCuda0, {2});
+    ccop::Tensor context_lens(d_ctx, ccop::DType::kInt32, kCuda0, {1});
+    ccop::Tensor out(d_output, ccop::DType::kBFloat16, kCuda0, {kNumTokens, nq, hd});
     const float scale = 1.0f / std::sqrt(static_cast<float>(hd));
     ASSERT_TRUE(
-        ops::map_result(ops::prefill_attention(q, k_cache, v_cache, block_table, query_start_loc,
+        map_result(ccop::prefill_attention(q, k_cache, v_cache, block_table, query_start_loc,
                                                context_lens, &out, scale, {stream}))
             .has_value());
     cudaStreamSynchronize(stream);

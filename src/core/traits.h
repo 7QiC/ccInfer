@@ -3,14 +3,14 @@
 #include <string_view>
 #include <type_traits>
 
-#include "ops/ops.h"
+#include "facade/ops.h"
 
 namespace ccinfer {
 
 // DType profile: compile-time dtype configuration for a model run.
 //
 // dtype tags come from ccop (single source of truth). CUDA native types are
-// obtained via ops::native_t<Tag> after including <ccop/cuda/dtype_cuda.h>
+// obtained via ccop::native_t<Tag> after including <ccop/cuda/dtype_cuda.h>
 // inside CUDA translation units.
 
 template <typename WeightTagT, typename KVTagT, typename ActivationTagT, typename AccumTagT,
@@ -22,31 +22,31 @@ struct DTypeProfile {
     using AccumTag = AccumTagT;
     using LogitsTag = LogitsTagT;
 
-    static constexpr ops::DType weight_dtype = ops::dtype_v<WeightTag>;
-    static constexpr ops::DType kv_dtype = ops::dtype_v<KVTag>;
-    static constexpr ops::DType activation_dtype = ops::dtype_v<ActivationTag>;
-    static constexpr ops::DType accum_dtype = ops::dtype_v<AccumTag>;
-    static constexpr ops::DType logits_dtype = ops::dtype_v<LogitsTag>;
+    static constexpr ccop::DType weight_dtype = ccop::dtype_v<WeightTag>;
+    static constexpr ccop::DType kv_dtype = ccop::dtype_v<KVTag>;
+    static constexpr ccop::DType activation_dtype = ccop::dtype_v<ActivationTag>;
+    static constexpr ccop::DType accum_dtype = ccop::dtype_v<AccumTag>;
+    static constexpr ccop::DType logits_dtype = ccop::dtype_v<LogitsTag>;
 };
 
 // Concrete dtype profiles.
 using BF16DTypeProfile =
-    DTypeProfile<ops::BFloat16Tag,  // weights
-                 ops::BFloat16Tag,  // KV cache
-                 ops::BFloat16Tag,  // activations
-                 ops::Float32Tag,   // accumulation
-                 ops::Float32Tag>;  // logits
+    DTypeProfile<ccop::BFloat16Tag,  // weights
+                 ccop::BFloat16Tag,  // KV cache
+                 ccop::BFloat16Tag,  // activations
+                 ccop::Float32Tag,   // accumulation
+                 ccop::Float32Tag>;  // logits
 
-using FP16DTypeProfile = DTypeProfile<ops::Float16Tag, ops::Float16Tag, ops::Float16Tag,
-                                      ops::Float32Tag, ops::Float32Tag>;
+using FP16DTypeProfile = DTypeProfile<ccop::Float16Tag, ccop::Float16Tag, ccop::Float16Tag,
+                                      ccop::Float32Tag, ccop::Float32Tag>;
 
 using FP16WeightBF16KVDTypeProfile =
-    DTypeProfile<ops::Float16Tag, ops::BFloat16Tag, ops::Float16Tag, ops::Float32Tag,
-                 ops::Float32Tag>;
+    DTypeProfile<ccop::Float16Tag, ccop::BFloat16Tag, ccop::Float16Tag, ccop::Float32Tag,
+                 ccop::Float32Tag>;
 
 using Int8WeightBF16KVDTypeProfile =
-    DTypeProfile<ops::Int8Tag, ops::BFloat16Tag, ops::BFloat16Tag, ops::Float32Tag,
-                 ops::Float32Tag>;
+    DTypeProfile<ccop::Int8Tag, ccop::BFloat16Tag, ccop::BFloat16Tag, ccop::Float32Tag,
+                 ccop::Float32Tag>;
 
 // Quantization policy tags.
 
@@ -91,10 +91,10 @@ using Int8WeightBF16KVRunnerTraits =
 
 template <typename Traits>
 inline constexpr bool runner_traits_valid_v =
-    Traits::Profile::weight_dtype != ops::DType::kUnknown &&
-    Traits::Profile::kv_dtype != ops::DType::kUnknown &&
-    Traits::Profile::activation_dtype != ops::DType::kUnknown &&
-    Traits::Profile::accum_dtype != ops::DType::kUnknown &&
-    Traits::Profile::logits_dtype != ops::DType::kUnknown;
+    Traits::Profile::weight_dtype != ccop::DType::kUnknown &&
+    Traits::Profile::kv_dtype != ccop::DType::kUnknown &&
+    Traits::Profile::activation_dtype != ccop::DType::kUnknown &&
+    Traits::Profile::accum_dtype != ccop::DType::kUnknown &&
+    Traits::Profile::logits_dtype != ccop::DType::kUnknown;
 
 }  // namespace ccinfer

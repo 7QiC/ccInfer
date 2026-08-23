@@ -5,7 +5,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
-#include "ops/ops.h"
+#include "facade/ops.h"
 
 #include "base/result.h"
 
@@ -28,7 +28,7 @@ struct ModelConfig {
     float rope_theta_ = 10000.0f;
     float rms_norm_eps_ = 1e-6f;
 
-    ops::DType weight_dtype_ = ops::DType::kFloat16;
+    ccop::DType weight_dtype_ = ccop::DType::kFloat16;
 
     const char* arch_name() const noexcept {
         switch (arch_) {
@@ -135,11 +135,11 @@ struct ModelConfig {
         if (j.contains("torch_dtype") && j["torch_dtype"].is_string()) {
             const auto& dt = j["torch_dtype"].get<std::string>();
             if (dt == "bfloat16")
-                cfg.weight_dtype_ = ops::DType::kBFloat16;
+                cfg.weight_dtype_ = ccop::DType::kBFloat16;
             else if (dt == "float16")
-                cfg.weight_dtype_ = ops::DType::kFloat16;
+                cfg.weight_dtype_ = ccop::DType::kFloat16;
             else if (dt == "float32")
-                cfg.weight_dtype_ = ops::DType::kFloat32;
+                cfg.weight_dtype_ = ccop::DType::kFloat32;
             else
                 return std::unexpected(ErrorCode::ModelUnsupportedDType);
         }

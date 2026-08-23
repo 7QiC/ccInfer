@@ -19,7 +19,7 @@
 namespace ccinfer {
 
 struct TensorInfo {
-    ops::DType dtype_ = ops::DType::kBFloat16;
+    ccop::DType dtype_ = ccop::DType::kBFloat16;
     std::vector<int64_t> shape_;
     uint64_t offset_ = 0;
     uint64_t size_bytes_ = 0;
@@ -30,17 +30,17 @@ struct SafetensorDType;
 
 template <>
 struct SafetensorDType<__nv_bfloat16> {
-    static constexpr ops::DType value = ops::DType::kBFloat16;
+    static constexpr ccop::DType value = ccop::DType::kBFloat16;
 };
 
 template <>
 struct SafetensorDType<float> {
-    static constexpr ops::DType value = ops::DType::kFloat32;
+    static constexpr ccop::DType value = ccop::DType::kFloat32;
 };
 
 template <>
 struct SafetensorDType<__half> {
-    static constexpr ops::DType value = ops::DType::kFloat16;
+    static constexpr ccop::DType value = ccop::DType::kFloat16;
 };
 
 class WeightLoader {

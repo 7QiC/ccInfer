@@ -17,7 +17,7 @@ namespace {
 // this class is an internal detail of Backend.
 class CudaBuffer final : public Buffer {
 public:
-    static Result<std::shared_ptr<CudaBuffer>> create(std::size_t bytes, ops::Device device) {
+    static Result<std::shared_ptr<CudaBuffer>> create(std::size_t bytes, ccop::Device device) {
         if (bytes == 0) return std::unexpected(ErrorCode::InvalidArgument);
         void* ptr = nullptr;
         auto r = cuda_check(cudaMalloc(&ptr, bytes));
@@ -32,15 +32,15 @@ public:
     void* data() noexcept override { return ptr_; }
     const void* data() const noexcept override { return ptr_; }
     std::size_t bytes() const noexcept override { return bytes_; }
-    ops::Device device() const noexcept override { return device_; }
+    ccop::Device device() const noexcept override { return device_; }
 
 private:
-    CudaBuffer(std::size_t bytes, void* ptr, ops::Device device)
+    CudaBuffer(std::size_t bytes, void* ptr, ccop::Device device)
         : bytes_(bytes), ptr_(ptr), device_(device) {}
 
     void* ptr_ = nullptr;
     std::size_t bytes_ = 0;
-    ops::Device device_{};
+    ccop::Device device_{};
 };
 
 }  // namespace
@@ -80,7 +80,7 @@ Backend& Backend::operator=(Backend&&) noexcept = default;
 
 Result<std::shared_ptr<Buffer>> Backend::allocate_buffer(std::size_t bytes) {
     if (bytes == 0) return std::unexpected(ErrorCode::InvalidArgument);
-    auto buf = CudaBuffer::create(bytes, ops::Device{ops::DeviceType::kCUDA, impl_->device_id_});
+    auto buf = CudaBuffer::create(bytes, ccop::Device{ccop::DeviceType::kCUDA, impl_->device_id_});
     if (!buf) return std::unexpected(buf.error());
     return std::move(*buf);
 }
@@ -111,7 +111,7 @@ void* Backend::stream() const noexcept { return impl_->stream_; }
 
 Result<void> Backend::synchronize() { return cuda_check(cudaStreamSynchronize(impl_->stream_)); }
 
-ops::ExecutionContext Backend::context() const noexcept {
+ccop::ExecutionContext Backend::context() const noexcept {
     return {impl_->stream_, impl_->cublas_handle_};
 }
 

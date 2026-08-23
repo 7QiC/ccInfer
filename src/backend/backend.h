@@ -5,7 +5,7 @@
 
 #include "backend/buffer.h"
 #include "base/result.h"
-#include "ops/ops.h"
+#include "facade/ops.h"
 
 namespace ccinfer {
 
@@ -13,7 +13,7 @@ namespace ccinfer {
 //
 // The backend only owns execution resources (stream + cublas handle) and
 // memory transfer/allocation. All operators live in ccop and are invoked
-// through ops::Tensor views.
+// through ccop::Tensor views.
 class Backend final {
 public:
     static Result<std::unique_ptr<Backend>> create(int device_id);
@@ -30,7 +30,7 @@ public:
     Result<void> memcpy_d2d(void* dst, const void* src, std::size_t count);
     [[nodiscard]] void* stream() const noexcept;
     Result<void> synchronize();
-    [[nodiscard]] ops::ExecutionContext context() const noexcept;
+    [[nodiscard]] ccop::ExecutionContext context() const noexcept;
 
 private:
     struct Impl;

@@ -9,7 +9,7 @@
 #include "cache/cache_stats.h"
 #include "cache/kv_cache_storage.h"
 #include "cache/prefix_cache.h"
-#include "spdlog/spdlog.h"
+#include "facade/log.h"
 
 namespace ccinfer {
 
@@ -208,7 +208,7 @@ Result<void> KVCacheManager::cache_full_blocks(const BlockTable& table,
 
         block.set_flag(BlockFlags::kCached);
         block.block_hash = hashes[i];
-        spdlog::info("prefix insert block={} hash={:x}", block_id, hashes[i]);
+        ccLog::info("prefix insert block={} hash={:x}", block_id, hashes[i]);
     }
     return {};
 }
@@ -253,7 +253,7 @@ bool KVCacheManager::evict_one() {
 
     auto& block = lru_list_.front();
     if (!block.is_cached_idle()) {
-        spdlog::warn("evict_one: block {} not cached_idle, flags={} ref={}", block.block_id,
+        ccLog::warn("evict_one: block {} not cached_idle, flags={} ref={}", block.block_id,
                      block.flags, block.ref_count);
         return false;
     }
@@ -268,7 +268,7 @@ bool KVCacheManager::evict_one() {
     block.block_hash = 0;
     free_list_.push_back(block);
 
-    spdlog::info("lru evict block={}", block.block_id);
+    ccLog::info("lru evict block={}", block.block_id);
     return true;
 }
 
@@ -276,14 +276,14 @@ void KVCacheManager::rollback_prefix_hits(const BlockTable& table, int count) {
     for (int b = 0; b < count; ++b) {
         auto& blk = metadata_[table[b]];
         if (!blk.is_cached() || blk.ref_count <= 0) {
-            spdlog::error("rollback_prefix_hits: block {} not cached/active, flags={} ref={}",
+            ccLog::error("rollback_prefix_hits: block {} not cached/active, flags={} ref={}",
                           blk.block_id, blk.flags, blk.ref_count);
             continue;
         }
         blk.ref_count--;
         if (blk.ref_count == 0) {
             if (blk.is_in_lru()) {
-                spdlog::error("rollback_prefix_hits: block {} already in LRU", blk.block_id);
+                ccLog::error("rollback_prefix_hits: block {} already in LRU", blk.block_id);
             } else {
                 blk.set_flag(BlockFlags::kInLRU);
                 lru_list_.push_back(blk);

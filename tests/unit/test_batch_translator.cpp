@@ -23,7 +23,7 @@ protected:
 
         auto sr =
             KVCacheStorage::create(*backend_, /*num_layers=*/1, /*max_blocks=*/32, kBlockSize,
-                                   /*num_kv_heads=*/4, /*head_dim=*/64, ops::DType::kBFloat16);
+                                   /*num_kv_heads=*/4, /*head_dim=*/64, ccop::DType::kBFloat16);
         ASSERT_TRUE(sr.has_value());
 
         auto r = kv_mgr_.init(std::move(*sr), 32, kBlockSize);

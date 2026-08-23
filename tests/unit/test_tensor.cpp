@@ -10,11 +10,11 @@ TEST(TensorTest, EmptyAllocatesAndOwnsBuffer) {
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
 
-    auto t_r = Tensor::empty(backend, ops::DType::kFloat32, {2, 3, 4});
+    auto t_r = Tensor::empty(backend, ccop::DType::kFloat32, {2, 3, 4});
     ASSERT_TRUE(t_r.has_value());
     Tensor t = std::move(*t_r);
     EXPECT_TRUE(t.valid());
-    EXPECT_EQ(t.dtype(), ops::DType::kFloat32);
+    EXPECT_EQ(t.dtype(), ccop::DType::kFloat32);
     EXPECT_EQ(t.rank(), 3);
     EXPECT_EQ(t.shape(0), 2);
     EXPECT_EQ(t.shape(1), 3);
@@ -31,7 +31,7 @@ TEST(TensorTest, CopySharesOwnerAndView) {
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
 
-    auto t_r = Tensor::empty(backend, ops::DType::kFloat32, {10});
+    auto t_r = Tensor::empty(backend, ccop::DType::kFloat32, {10});
     ASSERT_TRUE(t_r.has_value());
     Tensor t = std::move(*t_r);
     Tensor copy = t;
@@ -45,7 +45,7 @@ TEST(TensorTest, FlatSharesOwner) {
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
 
-    auto t_r = Tensor::empty(backend, ops::DType::kFloat32, {2, 3, 4});
+    auto t_r = Tensor::empty(backend, ccop::DType::kFloat32, {2, 3, 4});
     ASSERT_TRUE(t_r.has_value());
     Tensor t = std::move(*t_r);
     Tensor flat = t.flat();
@@ -65,7 +65,7 @@ TEST(TensorTest, FlatAndViewKeepOffsetViewDataPointer) {
     auto buffer = std::move(*buffer_r);
     void* offset_data = static_cast<char*>(buffer->data()) + 2 * sizeof(float);
 
-    Tensor t = Tensor::from_buffer(buffer, offset_data, ops::DType::kFloat32, {2, 4});
+    Tensor t = Tensor::from_buffer(buffer, offset_data, ccop::DType::kFloat32, {2, 4});
     Tensor flat = t.flat();
     Tensor viewed = t.view({2, 4});
 
@@ -81,7 +81,7 @@ TEST(TensorTest, SliceAdjustsViewOnly) {
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
 
-    auto t_r = Tensor::empty(backend, ops::DType::kFloat32, {2, 3, 4});
+    auto t_r = Tensor::empty(backend, ccop::DType::kFloat32, {2, 3, 4});
     ASSERT_TRUE(t_r.has_value());
     Tensor t = std::move(*t_r);
     Tensor s = t.slice(0, 1, 2);
@@ -98,7 +98,7 @@ TEST(TensorTest, SelectAdjustsViewOnly) {
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
 
-    auto t_r = Tensor::empty(backend, ops::DType::kFloat32, {2, 3, 4});
+    auto t_r = Tensor::empty(backend, ccop::DType::kFloat32, {2, 3, 4});
     ASSERT_TRUE(t_r.has_value());
     Tensor t = std::move(*t_r);
     Tensor s = t.select(0, 1);

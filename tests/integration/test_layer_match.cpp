@@ -20,7 +20,7 @@
 #include "model/config.h"
 #include "model/loader.h"
 #include "model/rope/rope_cache.h"
-#include "ops/ops.h"
+#include "facade/ops.h"
 #include "tokenizer/byte_level_bpe_tokenizer.h"
 
 using namespace ccinfer;
@@ -123,8 +123,8 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
     const float eps = config_.rms_norm_eps_;
     const int qkv_dim = (nq + 2 * nkv) * hd;
     const int attn_dim = nq * hd;
-    constexpr ops::Device kCuda0{ops::DeviceType::kCUDA, 0};
-    const ops::ExecutionContext ctx{stream_, backend_->context().blas_handle};
+    constexpr ccop::Device kCuda0{ccop::DeviceType::kCUDA, 0};
+    const ccop::ExecutionContext ctx{stream_, backend_->context().blas_handle};
 
     auto embed =
         loader_->load_tensor<__nv_bfloat16>(*backend_, "model.embed_tokens.weight", {V, D});
@@ -151,13 +151,13 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
 
     auto input_embeds_buf =
         alloc_buf(*backend_, static_cast<size_t>(T) * D * sizeof(__nv_bfloat16));
-    Tensor input_embeds(input_embeds_buf, ops::DType::kBFloat16, {T, D});
+    Tensor input_embeds(input_embeds_buf, ccop::DType::kBFloat16, {T, D});
     Tensor embed_tensor = std::move(*embed);
-    Tensor token_ids(token_ids_buf, ops::DType::kInt32, {T});
+    Tensor token_ids(token_ids_buf, ccop::DType::kInt32, {T});
     ASSERT_TRUE(
-        ops::map_result(ops::embed(embed_tensor, token_ids, &input_embeds, ctx)).has_value());
+        map_result(ccop::embed(embed_tensor, token_ids, &input_embeds, ctx)).has_value());
 
-    const size_t bf16_size = ops::dtype_size(ops::DType::kBFloat16);
+    const size_t bf16_size = ccop::dtype_size(ccop::DType::kBFloat16);
     auto hidden_a_buf = alloc_buf(*backend_, static_cast<size_t>(T) * D * bf16_size);
     auto hidden_b_buf = alloc_buf(*backend_, static_cast<size_t>(T) * D * bf16_size);
     auto normed_buf = alloc_buf(*backend_, static_cast<size_t>(T) * D * bf16_size);
@@ -174,7 +174,7 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
     auto kv_mgr = std::make_unique<KVCacheManager>();
     {
         auto storage = KVCacheStorage::create(*backend_, n_layers, max_blocks, kKVBlockSize, nkv,
-                                              hd, ops::DType::kBFloat16);
+                                              hd, ccop::DType::kBFloat16);
         ASSERT_TRUE(storage.has_value());
         ASSERT_TRUE(kv_mgr->init(std::move(*storage), max_blocks, kKVBlockSize));
         auto blocks = kv_mgr->allocate_blocks(max_blocks);
@@ -201,31 +201,31 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
     auto ctx_buf = alloc_buf(*backend_, sizeof(std::int32_t));
     cudaMemcpy(ctx_buf->data(), ctx_host.data(), sizeof(std::int32_t), cudaMemcpyHostToDevice);
 
-    Tensor hidden(hidden_a_buf, ops::DType::kBFloat16, {T, D});
-    Tensor hidden_flat(hidden_a_buf, ops::DType::kBFloat16, {static_cast<std::int64_t>(T) * D});
-    Tensor next_hidden(hidden_b_buf, ops::DType::kBFloat16, {T, D});
-    Tensor next_hidden_flat(hidden_b_buf, ops::DType::kBFloat16,
+    Tensor hidden(hidden_a_buf, ccop::DType::kBFloat16, {T, D});
+    Tensor hidden_flat(hidden_a_buf, ccop::DType::kBFloat16, {static_cast<std::int64_t>(T) * D});
+    Tensor next_hidden(hidden_b_buf, ccop::DType::kBFloat16, {T, D});
+    Tensor next_hidden_flat(hidden_b_buf, ccop::DType::kBFloat16,
                             {static_cast<std::int64_t>(T) * D});
-    Tensor normed(normed_buf, ops::DType::kBFloat16, {T, D});
-    Tensor qkv_out(qkv_out_buf, ops::DType::kBFloat16, {T, qkv_dim});
-    Tensor q(q_buf, ops::DType::kBFloat16, {T, nq, hd});
-    Tensor q_norm_2d(q_buf, ops::DType::kBFloat16, {static_cast<std::int64_t>(T) * nq, hd});
-    Tensor k(k_buf, ops::DType::kBFloat16, {T, nkv, hd});
-    Tensor k_norm_2d(k_buf, ops::DType::kBFloat16, {static_cast<std::int64_t>(T) * nkv, hd});
-    Tensor v(v_buf, ops::DType::kBFloat16, {T, nkv, hd});
-    Tensor attn_out(attn_out_buf, ops::DType::kBFloat16, {T, attn_dim});
-    Tensor attn_out_3d(attn_out_buf, ops::DType::kBFloat16, {T, nq, hd});
-    Tensor gate(gate_buf, ops::DType::kBFloat16, {T, d_ff});
-    Tensor gate_flat(gate_buf, ops::DType::kBFloat16, {static_cast<std::int64_t>(T) * d_ff});
-    Tensor up(up_buf, ops::DType::kBFloat16, {T, d_ff});
-    Tensor up_flat(up_buf, ops::DType::kBFloat16, {static_cast<std::int64_t>(T) * d_ff});
-    Tensor ffn_act(ffn_act_buf, ops::DType::kBFloat16, {T, d_ff});
-    Tensor ffn_act_flat(ffn_act_buf, ops::DType::kBFloat16, {static_cast<std::int64_t>(T) * d_ff});
-    Tensor positions(pos_buf, ops::DType::kInt32, {T});
-    Tensor slot_mapping(slot_mapping_buf, ops::DType::kInt32, {T});
-    Tensor block_table(block_table_buf, ops::DType::kInt32, {1, max_blocks});
-    Tensor query_start_loc(qsl_buf, ops::DType::kInt32, {2});
-    Tensor context_lens(ctx_buf, ops::DType::kInt32, {1});
+    Tensor normed(normed_buf, ccop::DType::kBFloat16, {T, D});
+    Tensor qkv_out(qkv_out_buf, ccop::DType::kBFloat16, {T, qkv_dim});
+    Tensor q(q_buf, ccop::DType::kBFloat16, {T, nq, hd});
+    Tensor q_norm_2d(q_buf, ccop::DType::kBFloat16, {static_cast<std::int64_t>(T) * nq, hd});
+    Tensor k(k_buf, ccop::DType::kBFloat16, {T, nkv, hd});
+    Tensor k_norm_2d(k_buf, ccop::DType::kBFloat16, {static_cast<std::int64_t>(T) * nkv, hd});
+    Tensor v(v_buf, ccop::DType::kBFloat16, {T, nkv, hd});
+    Tensor attn_out(attn_out_buf, ccop::DType::kBFloat16, {T, attn_dim});
+    Tensor attn_out_3d(attn_out_buf, ccop::DType::kBFloat16, {T, nq, hd});
+    Tensor gate(gate_buf, ccop::DType::kBFloat16, {T, d_ff});
+    Tensor gate_flat(gate_buf, ccop::DType::kBFloat16, {static_cast<std::int64_t>(T) * d_ff});
+    Tensor up(up_buf, ccop::DType::kBFloat16, {T, d_ff});
+    Tensor up_flat(up_buf, ccop::DType::kBFloat16, {static_cast<std::int64_t>(T) * d_ff});
+    Tensor ffn_act(ffn_act_buf, ccop::DType::kBFloat16, {T, d_ff});
+    Tensor ffn_act_flat(ffn_act_buf, ccop::DType::kBFloat16, {static_cast<std::int64_t>(T) * d_ff});
+    Tensor positions(pos_buf, ccop::DType::kInt32, {T});
+    Tensor slot_mapping(slot_mapping_buf, ccop::DType::kInt32, {T});
+    Tensor block_table(block_table_buf, ccop::DType::kInt32, {1, max_blocks});
+    Tensor query_start_loc(qsl_buf, ccop::DType::kInt32, {2});
+    Tensor context_lens(ctx_buf, ccop::DType::kInt32, {1});
 
     auto sync =
         cudaMemcpyAsync(hidden.data(), input_embeds.data(), static_cast<size_t>(T) * D * bf16_size,
@@ -278,7 +278,7 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
                    kv_elems * sizeof(__nv_bfloat16), cudaMemcpyDeviceToDevice);
         cudaMemcpy(static_cast<__nv_bfloat16*>(qkv_merged_buf->data()) + q_elems + kv_elems,
                    v_w->data(), kv_elems * sizeof(__nv_bfloat16), cudaMemcpyDeviceToDevice);
-        Tensor qkv_weight(qkv_merged_buf, ops::DType::kBFloat16, {qkv_dim, D});
+        Tensor qkv_weight(qkv_merged_buf, ccop::DType::kBFloat16, {qkv_dim, D});
 
         std::shared_ptr<Buffer> q_norm_buf, k_norm_buf;
         auto qn =
@@ -289,14 +289,14 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
         if (kn) k_norm_buf = kn->buffer();
 
         ASSERT_TRUE(
-            ops::map_result(ops::rms_norm(&normed, hidden, *rms_attn, eps, ctx)).has_value());
+            map_result(ccop::rms_norm(&normed, hidden, *rms_attn, eps, ctx)).has_value());
         if (is_first_layer)
             dump_bf16_to_f32(out_dir, "l0_attn_norm.bin", normed, static_cast<size_t>(T) * D);
 
         ASSERT_TRUE(
-            ops::map_result(ops::gemm(&qkv_out, normed, qkv_weight, false, true, 1.0f, 0.0f, ctx))
+            map_result(ccop::gemm(&qkv_out, normed, qkv_weight, false, true, 1.0f, 0.0f, ctx))
                 .has_value());
-        ASSERT_TRUE(ops::map_result(ops::split_qkv(qkv_out, &q, &k, &v, ctx)).has_value());
+        ASSERT_TRUE(map_result(ccop::split_qkv(qkv_out, &q, &k, &v, ctx)).has_value());
         if (is_first_layer) {
             dump_bf16_to_f32(out_dir, "l0_q.bin", q, static_cast<size_t>(T) * nq * hd);
             dump_bf16_to_f32(out_dir, "l0_k.bin", k, static_cast<size_t>(T) * nkv * hd);
@@ -305,15 +305,15 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
 
         if (q_norm_buf) {
             ASSERT_TRUE(
-                ops::map_result(ops::rms_norm(&q_norm_2d, q_norm_2d,
-                                              Tensor(q_norm_buf, ops::DType::kBFloat16, {hd}), eps,
+                map_result(ccop::rms_norm(&q_norm_2d, q_norm_2d,
+                                              Tensor(q_norm_buf, ccop::DType::kBFloat16, {hd}), eps,
                                               ctx))
                     .has_value());
         }
         if (k_norm_buf) {
             ASSERT_TRUE(
-                ops::map_result(ops::rms_norm(&k_norm_2d, k_norm_2d,
-                                              Tensor(k_norm_buf, ops::DType::kBFloat16, {hd}), eps,
+                map_result(ccop::rms_norm(&k_norm_2d, k_norm_2d,
+                                              Tensor(k_norm_buf, ccop::DType::kBFloat16, {hd}), eps,
                                               ctx))
                     .has_value());
         }
@@ -322,66 +322,66 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
             dump_bf16_to_f32(out_dir, "l0_k_normed.bin", k, static_cast<size_t>(T) * nkv * hd);
         }
 
-        ASSERT_TRUE(ops::map_result(ops::rope(&q, &k, positions, rope_cache.tensor(), hd, ctx))
+        ASSERT_TRUE(map_result(ccop::rope(&q, &k, positions, rope_cache.tensor(), hd, ctx))
                         .has_value());
 
         {
             auto k_cache = kv_mgr->k_cache(l);
             auto v_cache = kv_mgr->v_cache(l);
             ASSERT_TRUE(
-                ops::map_result(ops::write_kv_cache(k, v, &k_cache, &v_cache, slot_mapping, ctx))
+                map_result(ccop::write_kv_cache(k, v, &k_cache, &v_cache, slot_mapping, ctx))
                     .has_value());
         }
         {
             auto k_blocks = kv_mgr->k_cache_blocks(l);
             auto v_blocks = kv_mgr->v_cache_blocks(l);
-            ASSERT_TRUE(ops::map_result(ops::prefill_attention(q, k_blocks, v_blocks, block_table,
+            ASSERT_TRUE(map_result(ccop::prefill_attention(q, k_blocks, v_blocks, block_table,
                                                                query_start_loc, context_lens,
                                                                &attn_out_3d, attn_scale, ctx))
                             .has_value());
         }
 
         ASSERT_TRUE(
-            ops::map_result(ops::gemm(&next_hidden, attn_out, *o_w, false, true, 1.0f, 0.0f, ctx))
+            map_result(ccop::gemm(&next_hidden, attn_out, *o_w, false, true, 1.0f, 0.0f, ctx))
                 .has_value());
         if (is_first_layer)
             dump_bf16_to_f32(out_dir, "l0_o_proj.bin", next_hidden, static_cast<size_t>(T) * D);
 
         ASSERT_TRUE(
-            ops::map_result(ops::element_add(&next_hidden_flat, hidden_flat, ctx)).has_value());
+            map_result(ccop::element_add(&next_hidden_flat, hidden_flat, ctx)).has_value());
         std::swap(hidden, next_hidden);
         std::swap(hidden_flat, next_hidden_flat);
         if (is_first_layer)
             dump_bf16_to_f32(out_dir, "l0_attn_residual.bin", hidden, static_cast<size_t>(T) * D);
 
         ASSERT_TRUE(
-            ops::map_result(ops::rms_norm(&normed, hidden, *rms_ffn, eps, ctx)).has_value());
+            map_result(ccop::rms_norm(&normed, hidden, *rms_ffn, eps, ctx)).has_value());
         if (is_first_layer)
             dump_bf16_to_f32(out_dir, "l0_ffn_norm.bin", normed, static_cast<size_t>(T) * D);
 
-        ASSERT_TRUE(ops::map_result(ops::gemm(&gate, normed, *gate_w, false, true, 1.0f, 0.0f, ctx))
+        ASSERT_TRUE(map_result(ccop::gemm(&gate, normed, *gate_w, false, true, 1.0f, 0.0f, ctx))
                         .has_value());
         if (is_first_layer)
             dump_bf16_to_f32(out_dir, "l0_gate.bin", gate, static_cast<size_t>(T) * d_ff);
 
-        ASSERT_TRUE(ops::map_result(ops::gemm(&up, normed, *up_w, false, true, 1.0f, 0.0f, ctx))
+        ASSERT_TRUE(map_result(ccop::gemm(&up, normed, *up_w, false, true, 1.0f, 0.0f, ctx))
                         .has_value());
         if (is_first_layer)
             dump_bf16_to_f32(out_dir, "l0_up.bin", up, static_cast<size_t>(T) * d_ff);
 
         ASSERT_TRUE(
-            ops::map_result(ops::silu_mul(&ffn_act_flat, gate_flat, up_flat, ctx)).has_value());
+            map_result(ccop::silu_mul(&ffn_act_flat, gate_flat, up_flat, ctx)).has_value());
         if (is_first_layer)
             dump_bf16_to_f32(out_dir, "l0_silu_mul.bin", ffn_act, static_cast<size_t>(T) * d_ff);
 
         ASSERT_TRUE(
-            ops::map_result(ops::gemm(&next_hidden, ffn_act, *down_w, false, true, 1.0f, 0.0f, ctx))
+            map_result(ccop::gemm(&next_hidden, ffn_act, *down_w, false, true, 1.0f, 0.0f, ctx))
                 .has_value());
         if (is_first_layer)
             dump_bf16_to_f32(out_dir, "l0_down.bin", next_hidden, static_cast<size_t>(T) * D);
 
         ASSERT_TRUE(
-            ops::map_result(ops::element_add(&next_hidden_flat, hidden_flat, ctx)).has_value());
+            map_result(ccop::element_add(&next_hidden_flat, hidden_flat, ctx)).has_value());
         std::swap(hidden, next_hidden);
         std::swap(hidden_flat, next_hidden_flat);
 
@@ -395,7 +395,7 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
                  static_cast<size_t>(T) * D);
     }
 
-    ASSERT_TRUE(ops::map_result(ops::rms_norm(&normed, hidden, *rms_final, eps, ctx)).has_value());
+    ASSERT_TRUE(map_result(ccop::rms_norm(&normed, hidden, *rms_final, eps, ctx)).has_value());
     cudaDeviceSynchronize();
     cudaMemcpy(host_bf16.data(), normed.data(), static_cast<size_t>(T) * D * sizeof(__nv_bfloat16),
                cudaMemcpyDeviceToHost);

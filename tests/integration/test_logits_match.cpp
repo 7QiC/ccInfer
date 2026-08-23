@@ -80,7 +80,7 @@ ForwardFixture prepare_single_prefill(Backend& backend, const ModelConfig& confi
 
     auto storage =
         KVCacheStorage::create(backend, config.n_layers_, max_blocks, kKVBlockSize,
-                               config.n_kv_heads_, config.head_dim_, ops::DType::kBFloat16);
+                               config.n_kv_heads_, config.head_dim_, ccop::DType::kBFloat16);
     if (!storage) {
         fprintf(stderr, "prepare_single_prefill: KVCacheStorage::create failed\n");
         fixture.kv_mgr.reset();
@@ -156,22 +156,22 @@ std::vector<float> run_prefill_logits(Backend& backend, const ModelConfig& confi
     auto output_logits = alloc_buf(backend, static_cast<size_t>(T) * V * sizeof(float));
 
     ForwardInput fwd_in{};
-    fwd_in.token_ids = Tensor(fixture.token_ids, ops::DType::kInt32, {T});
+    fwd_in.token_ids = Tensor(fixture.token_ids, ccop::DType::kInt32, {T});
     fwd_in.num_tokens_ = T;
-    fwd_in.positions = Tensor(fixture.positions, ops::DType::kInt32, {T});
+    fwd_in.positions = Tensor(fixture.positions, ccop::DType::kInt32, {T});
     fwd_in.max_position_id_ = T - 1;
     fwd_in.mode_ = ForwardMode::Prefill;
     fwd_in.kv_mgr_ = fixture.kv_mgr.get();
-    fwd_in.slot_mapping = Tensor(fixture.slot_mapping, ops::DType::kInt32, {T});
+    fwd_in.slot_mapping = Tensor(fixture.slot_mapping, ccop::DType::kInt32, {T});
     fwd_in.block_table =
-        Tensor(fixture.block_table, ops::DType::kInt32, {1, fixture.max_blocks_per_req});
-    fwd_in.query_start_loc = Tensor(fixture.query_start_loc, ops::DType::kInt32, {2});
-    fwd_in.context_lens = Tensor(fixture.context_lens, ops::DType::kInt32, {1});
+        Tensor(fixture.block_table, ccop::DType::kInt32, {1, fixture.max_blocks_per_req});
+    fwd_in.query_start_loc = Tensor(fixture.query_start_loc, ccop::DType::kInt32, {2});
+    fwd_in.context_lens = Tensor(fixture.context_lens, ccop::DType::kInt32, {1});
     fwd_in.batch_size_ = 1;
     fwd_in.max_blocks_per_req_ = fixture.max_blocks_per_req;
 
     ForwardOutput fwd_out{};
-    fwd_out.logits = Tensor(output_logits, ops::DType::kFloat32, {T, V});
+    fwd_out.logits = Tensor(output_logits, ccop::DType::kFloat32, {T, V});
 
     auto fwd_result = (*model)->forward(fwd_in, fwd_out, backend);
     if (!fwd_result) {
@@ -216,7 +216,7 @@ GenFixture prepare_generation(Backend& backend, const ModelConfig& config,
 
     auto storage =
         KVCacheStorage::create(backend, config.n_layers_, total_blocks, kKVBlockSize,
-                               config.n_kv_heads_, config.head_dim_, ops::DType::kBFloat16);
+                               config.n_kv_heads_, config.head_dim_, ccop::DType::kBFloat16);
     if (!storage) {
         f.kv_mgr.reset();
         return f;
@@ -269,21 +269,21 @@ std::vector<float> run_decode_step(Backend& backend, const ModelConfig& config,
     auto logits_buf = alloc_buf(backend, static_cast<size_t>(V) * sizeof(float));
 
     ForwardInput fwd_in{};
-    fwd_in.token_ids = Tensor(f.token_ids, ops::DType::kInt32, {1});
+    fwd_in.token_ids = Tensor(f.token_ids, ccop::DType::kInt32, {1});
     fwd_in.num_tokens_ = 1;
-    fwd_in.positions = Tensor(f.positions, ops::DType::kInt32, {1});
+    fwd_in.positions = Tensor(f.positions, ccop::DType::kInt32, {1});
     fwd_in.max_position_id_ = pos;
     fwd_in.mode_ = ForwardMode::Decode;
     fwd_in.kv_mgr_ = f.kv_mgr.get();
-    fwd_in.slot_mapping = Tensor(f.slot_mapping, ops::DType::kInt32, {1});
-    fwd_in.block_table = Tensor(f.block_table, ops::DType::kInt32, {1, f.max_blocks_per_req});
-    fwd_in.query_start_loc = Tensor(f.query_start_loc, ops::DType::kInt32, {2});
-    fwd_in.context_lens = Tensor(f.context_lens, ops::DType::kInt32, {1});
+    fwd_in.slot_mapping = Tensor(f.slot_mapping, ccop::DType::kInt32, {1});
+    fwd_in.block_table = Tensor(f.block_table, ccop::DType::kInt32, {1, f.max_blocks_per_req});
+    fwd_in.query_start_loc = Tensor(f.query_start_loc, ccop::DType::kInt32, {2});
+    fwd_in.context_lens = Tensor(f.context_lens, ccop::DType::kInt32, {1});
     fwd_in.batch_size_ = 1;
     fwd_in.max_blocks_per_req_ = f.max_blocks_per_req;
 
     ForwardOutput fwd_out{};
-    fwd_out.logits = Tensor(logits_buf, ops::DType::kFloat32, {1, V});
+    fwd_out.logits = Tensor(logits_buf, ccop::DType::kFloat32, {1, V});
 
     if (!model->forward(fwd_in, fwd_out, backend)) {
         fprintf(stderr, "run_decode_step: forward failed at pos=%d\n", pos);
@@ -362,21 +362,21 @@ std::vector<int32_t> run_greedy_generation(Backend& backend, const ModelConfig& 
         cudaMemcpy(pf_ctx->data(), ctx.data(), sizeof(int32_t), cudaMemcpyHostToDevice);
 
         ForwardInput fwd_in{};
-        fwd_in.token_ids = Tensor(pf_token_ids, ops::DType::kInt32, {prompt_len});
+        fwd_in.token_ids = Tensor(pf_token_ids, ccop::DType::kInt32, {prompt_len});
         fwd_in.num_tokens_ = prompt_len;
-        fwd_in.positions = Tensor(pf_pos, ops::DType::kInt32, {prompt_len});
+        fwd_in.positions = Tensor(pf_pos, ccop::DType::kInt32, {prompt_len});
         fwd_in.max_position_id_ = prompt_len - 1;
         fwd_in.mode_ = ForwardMode::Prefill;
         fwd_in.kv_mgr_ = f.kv_mgr.get();
-        fwd_in.slot_mapping = Tensor(pf_slot, ops::DType::kInt32, {prompt_len});
-        fwd_in.block_table = Tensor(f.block_table, ops::DType::kInt32, {1, f.max_blocks_per_req});
-        fwd_in.query_start_loc = Tensor(pf_qsl, ops::DType::kInt32, {2});
-        fwd_in.context_lens = Tensor(pf_ctx, ops::DType::kInt32, {1});
+        fwd_in.slot_mapping = Tensor(pf_slot, ccop::DType::kInt32, {prompt_len});
+        fwd_in.block_table = Tensor(f.block_table, ccop::DType::kInt32, {1, f.max_blocks_per_req});
+        fwd_in.query_start_loc = Tensor(pf_qsl, ccop::DType::kInt32, {2});
+        fwd_in.context_lens = Tensor(pf_ctx, ccop::DType::kInt32, {1});
         fwd_in.batch_size_ = 1;
         fwd_in.max_blocks_per_req_ = f.max_blocks_per_req;
 
         ForwardOutput fwd_out{};
-        fwd_out.logits = Tensor(prefill_logits_buf, ops::DType::kFloat32, {prompt_len, V});
+        fwd_out.logits = Tensor(prefill_logits_buf, ccop::DType::kFloat32, {prompt_len, V});
 
         if (!(*model)->forward(fwd_in, fwd_out, backend)) {
             fprintf(stderr, "run_greedy_generation: prefill failed\n");

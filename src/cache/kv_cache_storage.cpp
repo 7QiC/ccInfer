@@ -63,7 +63,7 @@ Tensor KVCacheStorage::v_block_tensor(int layer) {
 Result<std::unique_ptr<KVCacheStorage>> KVCacheStorage::create(Backend& backend, int num_layers,
                                                                int max_blocks, int block_size,
                                                                int num_kv_heads, int head_dim,
-                                                               ops::DType dtype) {
+                                                               ccop::DType dtype) {
     auto storage = std::make_unique<KVCacheStorage>();
     auto r =
         storage->init(backend, num_layers, max_blocks, block_size, num_kv_heads, head_dim, dtype);
@@ -72,12 +72,12 @@ Result<std::unique_ptr<KVCacheStorage>> KVCacheStorage::create(Backend& backend,
 }
 
 Result<void> KVCacheStorage::init(Backend& backend, int num_layers, int max_blocks, int block_size,
-                                  int num_kv_heads, int head_dim, ops::DType dtype) {
+                                  int num_kv_heads, int head_dim, ccop::DType dtype) {
     if (num_layers <= 0 || max_blocks <= 0 || block_size <= 0 || num_kv_heads <= 0 ||
-        head_dim <= 0 || dtype == ops::DType::kUnknown) {
+        head_dim <= 0 || dtype == ccop::DType::kUnknown) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
-    const std::size_t elem_size = ops::dtype_size(dtype);
+    const std::size_t elem_size = ccop::dtype_size(dtype);
     if (elem_size == 0) {
         return std::unexpected(ErrorCode::Unsupported);
     }

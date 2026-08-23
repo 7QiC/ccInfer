@@ -21,7 +21,7 @@
 #include "model/loader.h"
 #include "model/model_runner.h"
 #include "model/registry.h"
-#include "spdlog/spdlog.h"
+#include "facade/log.h"
 #include "worker/batch_translator.h"
 
 namespace ccinfer {
@@ -272,7 +272,7 @@ Result<void> Worker::init_resources(const std::string& model_path) {
         max_blocks_.store(1024);
 
         auto kvs_r = KVCacheStorage::create(*backend_, num_layers, max_blocks_.load(), kKVBlockSize,
-                                            num_kv_heads, head_dim, ops::DType::kBFloat16);
+                                            num_kv_heads, head_dim, ccop::DType::kBFloat16);
         if (!kvs_r) {
             return std::unexpected(kvs_r.error());
         }
@@ -494,7 +494,7 @@ void Worker::process_batch(PendingBatch pending) {
                                                            seq.kv_written,
                                                            /*namespace_salt=*/0);
                     if (!cf_r) {
-                        spdlog::error("cache_full_blocks failed seq={} err={}", seq.seq_id,
+                        ccLog::error("cache_full_blocks failed seq={} err={}", seq.seq_id,
                                       static_cast<int>(cf_r.error()));
                     }
                 }

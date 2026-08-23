@@ -16,10 +16,10 @@ namespace ccinfer {
 
 namespace {
 
-Result<ops::DType> parse_dtype(const std::string& dt) {
-    if (dt == "BF16") return ops::DType::kBFloat16;
-    if (dt == "F16") return ops::DType::kFloat16;
-    if (dt == "F32") return ops::DType::kFloat32;
+Result<ccop::DType> parse_dtype(const std::string& dt) {
+    if (dt == "BF16") return ccop::DType::kBFloat16;
+    if (dt == "F16") return ccop::DType::kFloat16;
+    if (dt == "F32") return ccop::DType::kFloat32;
     return std::unexpected(ErrorCode::ModelLoadFailed);
 }
 

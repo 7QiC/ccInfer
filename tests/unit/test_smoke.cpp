@@ -37,7 +37,7 @@ TEST(SmokeTest, TensorSmoke) {
     auto backend_r = Backend::create(0);
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
-    auto t_r = Tensor::empty(backend, ops::DType::kFloat32, {2, 3});
+    auto t_r = Tensor::empty(backend, ccop::DType::kFloat32, {2, 3});
     ASSERT_TRUE(t_r.has_value());
     Tensor t = std::move(*t_r);
     EXPECT_EQ(t.rank(), 2);

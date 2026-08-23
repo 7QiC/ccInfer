@@ -23,5 +23,5 @@ TEST(RopeCacheTest, ClassAndTensorView) {
     EXPECT_EQ(view.shape(0), 16);
     EXPECT_EQ(view.shape(1), 16);
     EXPECT_EQ(view.shape(2), 2);
-    EXPECT_EQ(view.dtype(), ops::DType::kFloat32);
+    EXPECT_EQ(view.dtype(), ccop::DType::kFloat32);
 }

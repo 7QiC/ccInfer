@@ -21,7 +21,7 @@ TEST(KVCacheStorageTest, LayerOffsetsAreCorrect) {
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
     auto s_r = KVCacheStorage::create(backend, kNumLayers, kMaxBlocks, kKVBlockSize, kNvKVHeads,
-                                      kHeadDim, ops::DType::kBFloat16);
+                                      kHeadDim, ccop::DType::kBFloat16);
     ASSERT_TRUE(s_r.has_value());
     auto& storage = **s_r;
 
@@ -53,7 +53,7 @@ TEST(KVCacheStorageTest, LayersAreIndependent) {
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
     auto s_r = KVCacheStorage::create(backend, kNumLayers, kMaxBlocks, kKVBlockSize, kNvKVHeads,
-                                      kHeadDim, ops::DType::kBFloat16);
+                                      kHeadDim, ccop::DType::kBFloat16);
     ASSERT_TRUE(s_r.has_value());
     auto& storage = **s_r;
 
@@ -118,7 +118,7 @@ TEST(KVCacheStorageTest, ZeroInitialized) {
     ASSERT_TRUE(backend_r.has_value());
     auto& backend = **backend_r;
     auto s_r = KVCacheStorage::create(backend, kNumLayers, kMaxBlocks, kKVBlockSize, kNvKVHeads,
-                                      kHeadDim, ops::DType::kBFloat16);
+                                      kHeadDim, ccop::DType::kBFloat16);
     ASSERT_TRUE(s_r.has_value());
     auto& storage = **s_r;
 

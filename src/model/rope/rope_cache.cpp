@@ -65,7 +65,7 @@ Result<RopeCache> RopeCache::create(int max_position, int rotary_dim, float rope
 }
 
 Tensor RopeCache::tensor() const {
-    return Tensor(cache_, ops::DType::kFloat32,
+    return Tensor(cache_, ccop::DType::kFloat32,
                   {static_cast<std::int64_t>(max_position_),
                    static_cast<std::int64_t>(half_rotary_dim()), 2});
 }

@@ -24,7 +24,7 @@ public:
     static Result<std::unique_ptr<KVCacheStorage>> create(Backend& backend, int num_layers,
                                                           int max_blocks, int block_size,
                                                           int num_kv_heads, int head_dim,
-                                                          ops::DType dtype);
+                                                          ccop::DType dtype);
 
     // Slot-major 3D view of one layer: [max_slots, num_kv_heads, head_dim].
     Tensor k_layer_tensor(int layer);
@@ -41,17 +41,17 @@ public:
     int max_slots() const { return max_slots_; }
     int64_t layer_stride() const { return layer_stride_; }
     std::size_t elem_size() const { return elem_size_; }
-    ops::DType dtype() const { return dtype_; }
+    ccop::DType dtype() const { return dtype_; }
 
 private:
     Result<void> init(Backend& backend, int num_layers, int max_blocks, int block_size,
-                      int num_kv_heads, int head_dim, ops::DType dtype);
+                      int num_kv_heads, int head_dim, ccop::DType dtype);
 
     std::shared_ptr<Buffer> k_data_;
     std::shared_ptr<Buffer> v_data_;
     int64_t layer_stride_ = 0;
     std::size_t elem_size_ = 0;
-    ops::DType dtype_ = ops::DType::kUnknown;
+    ccop::DType dtype_ = ccop::DType::kUnknown;
     int max_slots_ = 0;
     int max_blocks_ = 0;
     int block_size_ = 0;

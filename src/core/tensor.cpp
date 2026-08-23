@@ -20,10 +20,10 @@ bool data_in_buffer(const Buffer* buffer, const void* data, std::size_t bytes) n
            static_cast<std::size_t>(ptr - base) <= buffer->bytes() - bytes;
 }
 
-Result<std::size_t> checked_nbytes(ops::DType dtype, std::initializer_list<std::int64_t> shape) {
-    const std::size_t elem_size = ops::dtype_size(dtype);
+Result<std::size_t> checked_nbytes(ccop::DType dtype, std::initializer_list<std::int64_t> shape) {
+    const std::size_t elem_size = ccop::dtype_size(dtype);
     if (elem_size == 0) return std::unexpected(ErrorCode::Unsupported);
-    if (shape.size() == 0 || shape.size() > static_cast<std::size_t>(ops::kTensorMaxRank)) {
+    if (shape.size() == 0 || shape.size() > static_cast<std::size_t>(ccop::kTensorMaxRank)) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
     constexpr std::size_t kMax = std::numeric_limits<std::size_t>::max();
@@ -42,13 +42,13 @@ Result<std::size_t> checked_nbytes(ops::DType dtype, std::initializer_list<std::
 
 }  // namespace
 
-Tensor::Tensor(std::shared_ptr<Buffer> buffer, ops::DType dtype,
+Tensor::Tensor(std::shared_ptr<Buffer> buffer, ccop::DType dtype,
                std::initializer_list<std::int64_t> shape)
-    : ops::Tensor(buffer->data(), dtype, buffer->device(), shape), buffer_(std::move(buffer)) {
+    : ccop::Tensor(buffer->data(), dtype, buffer->device(), shape), buffer_(std::move(buffer)) {
     assert(nbytes() <= buffer_->bytes());
 }
 
-Result<Tensor> Tensor::empty(Backend& backend, ops::DType dtype,
+Result<Tensor> Tensor::empty(Backend& backend, ccop::DType dtype,
                              std::initializer_list<std::int64_t> shape) {
     auto bytes = checked_nbytes(dtype, shape);
     if (!bytes) return std::unexpected(bytes.error());
@@ -57,7 +57,7 @@ Result<Tensor> Tensor::empty(Backend& backend, ops::DType dtype,
     return Tensor(std::move(*buffer), dtype, shape);
 }
 
-Result<Tensor> Tensor::from_host(Backend& backend, const void* src, ops::DType dtype,
+Result<Tensor> Tensor::from_host(Backend& backend, const void* src, ccop::DType dtype,
                                  std::initializer_list<std::int64_t> shape) {
     if (src == nullptr) return std::unexpected(ErrorCode::InvalidArgument);
     auto tensor = empty(backend, dtype, shape);
@@ -67,20 +67,20 @@ Result<Tensor> Tensor::from_host(Backend& backend, const void* src, ops::DType d
     return tensor;
 }
 
-Tensor Tensor::from_buffer(std::shared_ptr<Buffer> buffer, void* data, ops::DType dtype,
+Tensor Tensor::from_buffer(std::shared_ptr<Buffer> buffer, void* data, ccop::DType dtype,
                            std::initializer_list<std::int64_t> shape) {
     Tensor tensor;
-    static_cast<ops::Tensor&>(tensor) = ops::Tensor(data, dtype, buffer->device(), shape);
+    static_cast<ccop::Tensor&>(tensor) = ccop::Tensor(data, dtype, buffer->device(), shape);
     tensor.buffer_ = std::move(buffer);
     assert(data_in_buffer(tensor.buffer_.get(), data, tensor.nbytes()));
     return tensor;
 }
 
-Tensor Tensor::from_buffer(std::shared_ptr<Buffer> buffer, void* data, ops::DType dtype,
+Tensor Tensor::from_buffer(std::shared_ptr<Buffer> buffer, void* data, ccop::DType dtype,
                            std::span<const std::int64_t> shape) {
-    assert(shape.size() <= static_cast<std::size_t>(ops::kTensorMaxRank));
-    std::array<std::int64_t, ops::kTensorMaxRank> shape_arr{};
-    std::array<std::int64_t, ops::kTensorMaxRank> stride{};
+    assert(shape.size() <= static_cast<std::size_t>(ccop::kTensorMaxRank));
+    std::array<std::int64_t, ccop::kTensorMaxRank> shape_arr{};
+    std::array<std::int64_t, ccop::kTensorMaxRank> stride{};
     std::copy(shape.begin(), shape.end(), shape_arr.begin());
     std::int64_t st = 1;
     for (int d = static_cast<int>(shape.size()) - 1; d >= 0; --d) {
@@ -88,7 +88,7 @@ Tensor Tensor::from_buffer(std::shared_ptr<Buffer> buffer, void* data, ops::DTyp
         st *= shape_arr[static_cast<std::size_t>(d)];
     }
     Tensor tensor;
-    static_cast<ops::Tensor&>(tensor) = ops::Tensor(data, dtype, buffer->device(), shape_arr,
+    static_cast<ccop::Tensor&>(tensor) = ccop::Tensor(data, dtype, buffer->device(), shape_arr,
                                                     stride, static_cast<int>(shape.size()));
     tensor.buffer_ = std::move(buffer);
     assert(data_in_buffer(tensor.buffer_.get(), data, tensor.nbytes()));
@@ -97,7 +97,7 @@ Tensor Tensor::from_buffer(std::shared_ptr<Buffer> buffer, void* data, ops::DTyp
 
 Tensor Tensor::view(std::initializer_list<std::int64_t> shape) const {
     assert(buffer_ && "Tensor has no owner");
-    const ops::Tensor view(const_cast<void*>(data()), dtype(), device(), shape);
+    const ccop::Tensor view(const_cast<void*>(data()), dtype(), device(), shape);
     assert(view.numel() == numel() && "view shape must preserve numel");
     assert(view.nbytes() <= buffer_->bytes());
     return with_view(view);
@@ -106,11 +106,11 @@ Tensor Tensor::view(std::initializer_list<std::int64_t> shape) const {
 Tensor Tensor::flat() const { return view({numel()}); }
 
 Tensor Tensor::slice(int dim, std::int64_t start, std::int64_t end) const {
-    return with_view(ops::Tensor::slice(dim, start, end));
+    return with_view(ccop::Tensor::slice(dim, start, end));
 }
 
 Tensor Tensor::select(int dim, std::int64_t index) const {
-    return with_view(ops::Tensor::select(dim, index));
+    return with_view(ccop::Tensor::select(dim, index));
 }
 
 }  // namespace ccinfer

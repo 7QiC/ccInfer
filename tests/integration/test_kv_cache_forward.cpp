@@ -10,7 +10,7 @@
 #include "cache/block.h"
 #include "cache/kv_cache_manager.h"
 #include "cache/kv_cache_storage.h"
-#include "ops/ops.h"
+#include "facade/ops.h"
 
 namespace ccinfer {
 namespace {
@@ -30,7 +30,7 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     ASSERT_TRUE(backend_r.has_value());
     auto &backend = **backend_r;
     auto r_storage = KVCacheStorage::create(backend, kNumLayers, kMaxBlocks, block_size, nkv, hd,
-                                            ops::DType::kBFloat16);
+                                            ccop::DType::kBFloat16);
     ASSERT_TRUE(r_storage.has_value());
 
     KVCacheManager mgr;
@@ -86,14 +86,14 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
                cudaMemcpyHostToDevice);
 
     {
-        constexpr ops::Device kCuda0{ops::DeviceType::kCUDA, 0};
-        ops::Tensor k_new(d_k_new, ops::DType::kBFloat16, kCuda0, {kNumTokens, nkv, hd});
-        ops::Tensor v_new(d_v_new, ops::DType::kBFloat16, kCuda0, {kNumTokens, nkv, hd});
-        ops::Tensor slot(d_slot_mapping, ops::DType::kInt32, kCuda0, {kNumTokens});
+        constexpr ccop::Device kCuda0{ccop::DeviceType::kCUDA, 0};
+        ccop::Tensor k_new(d_k_new, ccop::DType::kBFloat16, kCuda0, {kNumTokens, nkv, hd});
+        ccop::Tensor v_new(d_v_new, ccop::DType::kBFloat16, kCuda0, {kNumTokens, nkv, hd});
+        ccop::Tensor slot(d_slot_mapping, ccop::DType::kInt32, kCuda0, {kNumTokens});
         auto k_cache = mgr.k_cache(0);
         auto v_cache = mgr.v_cache(0);
         ASSERT_TRUE(
-            ops::map_result(ops::write_kv_cache(k_new, v_new, &k_cache, &v_cache, slot, {stream}))
+            map_result(ccop::write_kv_cache(k_new, v_new, &k_cache, &v_cache, slot, {stream}))
                 .has_value());
     }
 
@@ -113,26 +113,26 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
                     cudaMemcpyHostToDevice, stream);
 
     {
-        constexpr ops::Device kCuda0{ops::DeviceType::kCUDA, 0};
-        ops::Tensor q(d_q, ops::DType::kBFloat16, kCuda0, {kNumTokens, nq, hd});
+        constexpr ccop::Device kCuda0{ccop::DeviceType::kCUDA, 0};
+        ccop::Tensor q(d_q, ccop::DType::kBFloat16, kCuda0, {kNumTokens, nq, hd});
         auto k_cache = mgr.k_cache_blocks(0);
         auto v_cache = mgr.v_cache_blocks(0);
-        ops::Tensor block_table(d_block_table, ops::DType::kInt32, kCuda0, {1, num_blocks});
-        ops::Tensor query_start_loc(d_query_start_loc, ops::DType::kInt32, kCuda0, {2});
-        ops::Tensor context_lens(d_context_lens, ops::DType::kInt32, kCuda0, {1});
-        ops::Tensor out_prefill(d_out_prefill, ops::DType::kBFloat16, kCuda0, {kNumTokens, nq, hd});
+        ccop::Tensor block_table(d_block_table, ccop::DType::kInt32, kCuda0, {1, num_blocks});
+        ccop::Tensor query_start_loc(d_query_start_loc, ccop::DType::kInt32, kCuda0, {2});
+        ccop::Tensor context_lens(d_context_lens, ccop::DType::kInt32, kCuda0, {1});
+        ccop::Tensor out_prefill(d_out_prefill, ccop::DType::kBFloat16, kCuda0, {kNumTokens, nq, hd});
         const float scale = 1.0f / std::sqrt(static_cast<float>(hd));
-        ASSERT_TRUE(ops::map_result(ops::prefill_attention(q, k_cache, v_cache, block_table,
+        ASSERT_TRUE(map_result(ccop::prefill_attention(q, k_cache, v_cache, block_table,
                                                            query_start_loc, context_lens,
                                                            &out_prefill, scale, {stream}))
                         .has_value());
 
         // Reference: naive_attention on dense K/V.
-        ops::Tensor k_new(d_k_new, ops::DType::kBFloat16, kCuda0, {kNumTokens, nkv, hd});
-        ops::Tensor v_new(d_v_new, ops::DType::kBFloat16, kCuda0, {kNumTokens, nkv, hd});
-        ops::Tensor out_ref(d_out_ref, ops::DType::kBFloat16, kCuda0, {kNumTokens, nq, hd});
+        ccop::Tensor k_new(d_k_new, ccop::DType::kBFloat16, kCuda0, {kNumTokens, nkv, hd});
+        ccop::Tensor v_new(d_v_new, ccop::DType::kBFloat16, kCuda0, {kNumTokens, nkv, hd});
+        ccop::Tensor out_ref(d_out_ref, ccop::DType::kBFloat16, kCuda0, {kNumTokens, nq, hd});
         ASSERT_TRUE(
-            ops::map_result(ops::naive_attention(q, k_new, v_new, &out_ref, scale, {stream}))
+            map_result(ccop::naive_attention(q, k_new, v_new, &out_ref, scale, {stream}))
                 .has_value());
 
         cudaStreamSynchronize(stream);
@@ -184,18 +184,18 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
         cudaMemcpyAsync(d_dec_context_lens, h_dec_context_lens.data(),
                         kDecodeBatch * sizeof(int32_t), cudaMemcpyHostToDevice, stream);
 
-        constexpr ops::Device kCuda0{ops::DeviceType::kCUDA, 0};
-        ops::Tensor decode_q(d_decode_q, ops::DType::kBFloat16, kCuda0, {kDecodeBatch, nq, hd});
+        constexpr ccop::Device kCuda0{ccop::DeviceType::kCUDA, 0};
+        ccop::Tensor decode_q(d_decode_q, ccop::DType::kBFloat16, kCuda0, {kDecodeBatch, nq, hd});
         auto k_cache = mgr.k_cache_blocks(0);
         auto v_cache = mgr.v_cache_blocks(0);
-        ops::Tensor dec_block_table(d_dec_block_table, ops::DType::kInt32, kCuda0,
+        ccop::Tensor dec_block_table(d_dec_block_table, ccop::DType::kInt32, kCuda0,
                                     {kDecodeBatch, num_blocks});
-        ops::Tensor dec_context_lens(d_dec_context_lens, ops::DType::kInt32, kCuda0,
+        ccop::Tensor dec_context_lens(d_dec_context_lens, ccop::DType::kInt32, kCuda0,
                                      {kDecodeBatch});
-        ops::Tensor decode_out(d_decode_out, ops::DType::kBFloat16, kCuda0, {kDecodeBatch, nq, hd});
+        ccop::Tensor decode_out(d_decode_out, ccop::DType::kBFloat16, kCuda0, {kDecodeBatch, nq, hd});
         const float scale = 1.0f / std::sqrt(static_cast<float>(hd));
         ASSERT_TRUE(
-            ops::map_result(ops::decode_attention(decode_q, k_cache, v_cache, dec_block_table,
+            map_result(ccop::decode_attention(decode_q, k_cache, v_cache, dec_block_table,
                                                   dec_context_lens, &decode_out, scale, {stream}))
                 .has_value());
         cudaStreamSynchronize(stream);

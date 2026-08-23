@@ -38,7 +38,7 @@ Result<void> merge_qkv(Tensor& qkv, const Tensor& q, const Tensor& k, const Tens
 
     auto sync_r = backend.synchronize();
     if (!sync_r) return sync_r;
-    qkv = Tensor(std::move(qkv_buffer), ops::DType::kBFloat16, {qkv_dim, d_model});
+    qkv = Tensor(std::move(qkv_buffer), ccop::DType::kBFloat16, {qkv_dim, d_model});
     return {};
 }
 
@@ -46,7 +46,7 @@ Result<void> merge_qkv(Tensor& qkv, const Tensor& q, const Tensor& k, const Tens
 
 Result<Qwen3Weights> Qwen3Weights::load(Backend& backend, const ModelConfig& config,
                                         const WeightLoader& loader) {
-    if (config.weight_dtype_ != ops::DType::kBFloat16) {
+    if (config.weight_dtype_ != ccop::DType::kBFloat16) {
         return std::unexpected(ErrorCode::ModelUnsupportedDType);
     }
 

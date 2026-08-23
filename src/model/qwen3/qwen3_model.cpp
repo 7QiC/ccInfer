@@ -77,7 +77,7 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
     const std::int64_t d_ff64 = d_ff;
 
     auto alloc_tensor = [&](std::initializer_list<std::int64_t> shape) -> Result<Tensor> {
-        return Tensor::empty(backend, ops::DType::kBFloat16, shape);
+        return Tensor::empty(backend, ccop::DType::kBFloat16, shape);
     };
 
     auto hidden_r = alloc_tensor({T, D});
@@ -132,10 +132,10 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
     Tensor ffn_act = std::move(*ffn_act_r);
     Tensor ffn_act_flat = ffn_act.flat();
 
-    const ops::ExecutionContext ctx = backend.context();
+    const ccop::ExecutionContext ctx = backend.context();
 
     if (input.token_ids.valid()) {
-        auto r = ops::map_result(ops::embed(weights_.embed, input.token_ids, &hidden, ctx));
+        auto r = map_result(ccop::embed(weights_.embed, input.token_ids, &hidden, ctx));
         if (!r) return std::unexpected(r.error());
     } else {
         auto r = backend.memcpy_d2d(hidden.data(), input.input_embeds.data(), hidden.nbytes());
@@ -148,33 +148,33 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
         const auto& lw = weights_.layers_[static_cast<std::size_t>(l)];
 
         {
-            auto r = ops::map_result(ops::rms_norm(&normed, hidden, lw.rms_attn, eps, ctx));
+            auto r = map_result(ccop::rms_norm(&normed, hidden, lw.rms_attn, eps, ctx));
             if (!r) return std::unexpected(r.error());
         }
 
         {
             auto r =
-                ops::map_result(ops::gemm(&qkv_out, normed, lw.qkv, false, true, 1.0f, 0.0f, ctx));
+                map_result(ccop::gemm(&qkv_out, normed, lw.qkv, false, true, 1.0f, 0.0f, ctx));
             if (!r) return std::unexpected(r.error());
         }
 
         {
-            auto r = ops::map_result(ops::split_qkv(qkv_out, &q, &k, &v, ctx));
+            auto r = map_result(ccop::split_qkv(qkv_out, &q, &k, &v, ctx));
             if (!r) return std::unexpected(r.error());
         }
 
         if (lw.q_norm.valid()) {
-            auto r = ops::map_result(ops::rms_norm(&q_norm_2d, q_norm_2d, lw.q_norm, eps, ctx));
+            auto r = map_result(ccop::rms_norm(&q_norm_2d, q_norm_2d, lw.q_norm, eps, ctx));
             if (!r) return std::unexpected(r.error());
         }
         if (lw.k_norm.valid()) {
-            auto r = ops::map_result(ops::rms_norm(&k_norm_2d, k_norm_2d, lw.k_norm, eps, ctx));
+            auto r = map_result(ccop::rms_norm(&k_norm_2d, k_norm_2d, lw.k_norm, eps, ctx));
             if (!r) return std::unexpected(r.error());
         }
 
         {
             auto r =
-                ops::map_result(ops::rope(&q, &k, input.positions, rope_cache_.tensor(), hd, ctx));
+                map_result(ccop::rope(&q, &k, input.positions, rope_cache_.tensor(), hd, ctx));
             if (!r) return std::unexpected(r.error());
         }
 
@@ -183,8 +183,8 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
             // write_kv=false uses -1 slots, so the operator skips them.
             auto k_cache = input.kv_mgr_->k_cache(l);
             auto v_cache = input.kv_mgr_->v_cache(l);
-            auto r = ops::map_result(
-                ops::write_kv_cache(k, v, &k_cache, &v_cache, input.slot_mapping, ctx));
+            auto r = map_result(
+                ccop::write_kv_cache(k, v, &k_cache, &v_cache, input.slot_mapping, ctx));
             if (!r) return std::unexpected(r.error());
         }
 
@@ -192,12 +192,12 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
             auto k_blocks = input.kv_mgr_->k_cache_blocks(l);
             auto v_blocks = input.kv_mgr_->v_cache_blocks(l);
             if (input.mode_ == ForwardMode::Decode) {
-                auto r = ops::map_result(
-                    ops::decode_attention(q, k_blocks, v_blocks, input.block_table,
+                auto r = map_result(
+                    ccop::decode_attention(q, k_blocks, v_blocks, input.block_table,
                                           input.context_lens, &attn_out_3d, attn_scale, ctx));
                 if (!r) return std::unexpected(r.error());
             } else {
-                auto r = ops::map_result(ops::prefill_attention(
+                auto r = map_result(ccop::prefill_attention(
                     q, k_blocks, v_blocks, input.block_table, input.query_start_loc,
                     input.context_lens, &attn_out_3d, attn_scale, ctx));
                 if (!r) return std::unexpected(r.error());
@@ -205,47 +205,47 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
         }
 
         {
-            auto r = ops::map_result(
-                ops::gemm(&next_hidden, attn_out, lw.o, false, true, 1.0f, 0.0f, ctx));
+            auto r = map_result(
+                ccop::gemm(&next_hidden, attn_out, lw.o, false, true, 1.0f, 0.0f, ctx));
             if (!r) return std::unexpected(r.error());
         }
 
         {
-            auto r = ops::map_result(ops::element_add(&next_hidden_flat, hidden_flat, ctx));
+            auto r = map_result(ccop::element_add(&next_hidden_flat, hidden_flat, ctx));
             if (!r) return std::unexpected(r.error());
         }
         std::swap(hidden, next_hidden);
         std::swap(hidden_flat, next_hidden_flat);
 
         {
-            auto r = ops::map_result(ops::rms_norm(&normed, hidden, lw.rms_ffn, eps, ctx));
+            auto r = map_result(ccop::rms_norm(&normed, hidden, lw.rms_ffn, eps, ctx));
             if (!r) return std::unexpected(r.error());
         }
 
         {
             auto r =
-                ops::map_result(ops::gemm(&gate, normed, lw.gate, false, true, 1.0f, 0.0f, ctx));
+                map_result(ccop::gemm(&gate, normed, lw.gate, false, true, 1.0f, 0.0f, ctx));
             if (!r) return std::unexpected(r.error());
         }
 
         {
-            auto r = ops::map_result(ops::gemm(&up, normed, lw.up, false, true, 1.0f, 0.0f, ctx));
+            auto r = map_result(ccop::gemm(&up, normed, lw.up, false, true, 1.0f, 0.0f, ctx));
             if (!r) return std::unexpected(r.error());
         }
 
         {
-            auto r = ops::map_result(ops::silu_mul(&ffn_act_flat, gate_flat, up_flat, ctx));
+            auto r = map_result(ccop::silu_mul(&ffn_act_flat, gate_flat, up_flat, ctx));
             if (!r) return std::unexpected(r.error());
         }
 
         {
-            auto r = ops::map_result(
-                ops::gemm(&next_hidden, ffn_act, lw.down, false, true, 1.0f, 0.0f, ctx));
+            auto r = map_result(
+                ccop::gemm(&next_hidden, ffn_act, lw.down, false, true, 1.0f, 0.0f, ctx));
             if (!r) return std::unexpected(r.error());
         }
 
         {
-            auto r = ops::map_result(ops::element_add(&next_hidden_flat, hidden_flat, ctx));
+            auto r = map_result(ccop::element_add(&next_hidden_flat, hidden_flat, ctx));
             if (!r) return std::unexpected(r.error());
         }
         std::swap(hidden, next_hidden);
@@ -253,13 +253,13 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
     }
 
     {
-        auto r = ops::map_result(ops::rms_norm(&normed, hidden, weights_.rms_final, eps, ctx));
+        auto r = map_result(ccop::rms_norm(&normed, hidden, weights_.rms_final, eps, ctx));
         if (!r) return std::unexpected(r.error());
     }
 
     {
-        auto r = ops::map_result(
-            ops::gemm(&output.logits, normed, weights_.lm_head, false, true, 1.0f, 0.0f, ctx));
+        auto r = map_result(
+            ccop::gemm(&output.logits, normed, weights_.lm_head, false, true, 1.0f, 0.0f, ctx));
         if (!r) return std::unexpected(r.error());
     }
 

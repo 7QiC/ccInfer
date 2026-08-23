@@ -27,7 +27,7 @@ Activate the Python environment by default and execute tasks in this environment
 - `src/cache/`  — Paged KV cache and prefix cache
 - `src/executor/`, `src/worker/`, `src/scheduler/`  — Execution pipeline
 - `src/model/`  — Model config, loader, registry, Qwen3, rope cache
-- `src/ops/`  — Operator library facade (ccop)
+- `src/facade/`  — Unified third-party facade (`ops.h` for ccop, `log.h` for logging)
 - `src/http/`  — HTTP/SSE server
 - `src/tokenizer/`  — Tokenizer
 - `tests/unit/`  — Unit tests (GTest)

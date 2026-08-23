@@ -9,7 +9,7 @@
 
 #include "base/error_code.h"
 #include "cache/kv_cache_manager.h"
-#include "spdlog/spdlog.h"
+#include "facade/log.h"
 
 namespace ccinfer {
 
@@ -346,34 +346,34 @@ Result<BatchTranslator::TranslateResult> BatchTranslator::translate(
     const std::int64_t B64 = static_cast<std::int64_t>(batch_size);
     const std::int64_t MBPR64 = static_cast<std::int64_t>(max_blocks_per_req);
 
-    auto token_ids = Tensor::from_host(backend_, token_ids_host.data(), ops::DType::kInt32, {T64});
+    auto token_ids = Tensor::from_host(backend_, token_ids_host.data(), ccop::DType::kInt32, {T64});
     if (!token_ids) return fail(token_ids.error());
     pb.token_ids = std::move(*token_ids);
-    auto positions = Tensor::from_host(backend_, positions_host.data(), ops::DType::kInt32, {T64});
+    auto positions = Tensor::from_host(backend_, positions_host.data(), ccop::DType::kInt32, {T64});
     if (!positions) return fail(positions.error());
     pb.positions = std::move(*positions);
     auto slot_mapping =
-        Tensor::from_host(backend_, slot_mapping_host.data(), ops::DType::kInt32, {T64});
+        Tensor::from_host(backend_, slot_mapping_host.data(), ccop::DType::kInt32, {T64});
     if (!slot_mapping) return fail(slot_mapping.error());
     pb.slot_mapping = std::move(*slot_mapping);
 
     if (B_sz * MBPR_sz > kMax / sizeof(int32_t)) return fail(ErrorCode::InvalidArgument);
     auto block_table =
-        Tensor::from_host(backend_, block_table_host.data(), ops::DType::kInt32, {B64, MBPR64});
+        Tensor::from_host(backend_, block_table_host.data(), ccop::DType::kInt32, {B64, MBPR64});
     if (!block_table) return fail(block_table.error());
     pb.block_table = std::move(*block_table);
 
     if (B_sz + 1 > kMax / sizeof(int32_t)) return fail(ErrorCode::InvalidArgument);
     auto query_start_loc_dev =
-        Tensor::from_host(backend_, query_start_loc.data(), ops::DType::kInt32, {B64 + 1});
+        Tensor::from_host(backend_, query_start_loc.data(), ccop::DType::kInt32, {B64 + 1});
     if (!query_start_loc_dev) return fail(query_start_loc_dev.error());
     pb.query_start_loc = std::move(*query_start_loc_dev);
     auto context_lens_dev =
-        Tensor::from_host(backend_, context_lens.data(), ops::DType::kInt32, {B64});
+        Tensor::from_host(backend_, context_lens.data(), ccop::DType::kInt32, {B64});
     if (!context_lens_dev) return fail(context_lens_dev.error());
     pb.context_lens = std::move(*context_lens_dev);
     auto logits_indices_dev =
-        Tensor::from_host(backend_, logits_indices.data(), ops::DType::kInt32, {B64});
+        Tensor::from_host(backend_, logits_indices.data(), ccop::DType::kInt32, {B64});
     if (!logits_indices_dev) return fail(logits_indices_dev.error());
     pb.logits_indices = std::move(*logits_indices_dev);
 
@@ -494,7 +494,7 @@ void BatchTranslator::rollback(const std::vector<PerItemAlloc>& per_item) const 
         if (alloc.new_blocks.size() > 0) {
             auto r = kv_mgr_.release_blocks(alloc.new_blocks);
             if (!r) {
-                spdlog::error("rollback: release_blocks failed for {} new blocks",
+                ccLog::error("rollback: release_blocks failed for {} new blocks",
                               alloc.new_blocks.size());
             }
         }

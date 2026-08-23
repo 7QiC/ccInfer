@@ -14,7 +14,7 @@
 #include <variant>
 
 #include "base/runtime_config.h"
-#include "spdlog/spdlog.h"
+#include "facade/log.h"
 
 namespace ccinfer {
 
@@ -302,7 +302,7 @@ asio::awaitable<void> Scheduler::drain_pending() {
             if (result) {
                 auto r = co_await executor_.release_sequence(result->seq_id);
                 if (!r) {
-                    spdlog::warn("release_sequence failed seq={} err={}", result->seq_id,
+                    ccLog::warn("release_sequence failed seq={} err={}", result->seq_id,
                                  static_cast<int>(r.error()));
                 }
             }
@@ -318,7 +318,7 @@ asio::awaitable<void> Scheduler::drain_pending() {
             if (result) {
                 auto r = co_await executor_.release_sequence(result->seq_id);
                 if (!r) {
-                    spdlog::warn("release_sequence failed seq={} err={}", result->seq_id,
+                    ccLog::warn("release_sequence failed seq={} err={}", result->seq_id,
                                  static_cast<int>(r.error()));
                 }
             }
@@ -755,7 +755,7 @@ asio::awaitable<void> Scheduler::cleanup_cancelled_or_finished() {
     for (SequenceId seq_id : to_release) {
         auto r = co_await executor_.release_sequence(seq_id);
         if (!r) {
-            spdlog::warn("release_sequence failed seq={} err={}", seq_id,
+            ccLog::warn("release_sequence failed seq={} err={}", seq_id,
                          static_cast<int>(r.error()));
         }
 
@@ -854,7 +854,7 @@ asio::awaitable<void> Scheduler::cleanup_all_active(ErrorCode shutdown_err) {
 
         auto r = co_await executor_.release_sequence(seq_id);
         if (!r) {
-            spdlog::warn("release_sequence failed seq={} err={}", seq_id,
+            ccLog::warn("release_sequence failed seq={} err={}", seq_id,
                          static_cast<int>(r.error()));
         }
 

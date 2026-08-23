@@ -1,8 +1,8 @@
 #pragma once
 
-// Operator library facade — the ONLY place the framework names the operator
-// library (currently ccop). Framework code includes "ops/ops.h" and uses
-// ccinfer::ops symbols.
+// Third-party facade — the ONLY place the framework names the operator
+// library (currently ccop). Framework code includes "facade/ops.h" and uses
+// ccop:: symbols.
 //
 // Swapping the operator library means changing the includes and the namespace
 // alias below (plus the submodule pointer / CMake link in src/CMakeLists.txt).
@@ -31,60 +31,61 @@
 
 #include "base/error_code.h"
 #include "base/result.h"
+#include "facade/log.h"
 
-namespace ccinfer::ops {
+namespace ccinfer {
 
 // 换算子库时：替换上面的 include，并把下面这行改成新库的命名空间。
-using namespace ::ccop;
+namespace ccop = ::ccop;
 
 // Facade self-check: the replacement operator library must provide these core
 // symbols; a failure here names the missing type directly.
 static_assert(requires {
-    typename ops::DType;
-    typename ops::Device;
-    typename ops::ExecutionContext;
-    typename ops::Tensor;
-    ops::decode_attention;
-    ops::element_add;
-    ops::embed;
-    ops::gemm;
-    ops::greedy_sample;
-    ops::naive_attention;
-    ops::prefill_attention;
-    ops::reduce_sum_rows;
-    ops::rms_norm;
-    ops::rope;
-    ops::silu_mul;
-    ops::softmax;
-    ops::split_qkv;
-    ops::write_kv_cache;
+    typename ccop::DType;
+    typename ccop::Device;
+    typename ccop::ExecutionContext;
+    typename ccop::Tensor;
+    ccop::decode_attention;
+    ccop::element_add;
+    ccop::embed;
+    ccop::gemm;
+    ccop::greedy_sample;
+    ccop::naive_attention;
+    ccop::prefill_attention;
+    ccop::reduce_sum_rows;
+    ccop::rms_norm;
+    ccop::rope;
+    ccop::silu_mul;
+    ccop::softmax;
+    ccop::split_qkv;
+    ccop::write_kv_cache;
 });
-static_assert(sizeof(ops::Device) == 8, "ops::Device must stay an 8-byte value type");
+static_assert(sizeof(ccop::Device) == 8, "ccop::Device must stay an 8-byte value type");
 
 // Map the operator library's backend-independent ErrorCode to ccinfer's
 // ErrorCode. Framework call sites consume ccop Result through this facade so
 // swapping the operator library only requires updating this mapping.
-inline ccinfer::ErrorCode map_error(::ccop::ErrorCode code) noexcept {
+inline ErrorCode map_error(::ccop::ErrorCode code) noexcept {
     switch (code) {
         case ::ccop::ErrorCode::kOk:
-            return ccinfer::ErrorCode::Ok;
+            return ErrorCode::Ok;
         case ::ccop::ErrorCode::kInvalidArgument:
-            return ccinfer::ErrorCode::InvalidArgument;
+            return ErrorCode::InvalidArgument;
         case ::ccop::ErrorCode::kUnsupported:
-            return ccinfer::ErrorCode::Unsupported;
+            return ErrorCode::Unsupported;
         case ::ccop::ErrorCode::kOutOfMemory:
-            return ccinfer::ErrorCode::CudaOutOfMemory;
+            return ErrorCode::CudaOutOfMemory;
         case ::ccop::ErrorCode::kRuntimeError:
-            return ccinfer::ErrorCode::CudaRuntimeError;
+            return ErrorCode::CudaRuntimeError;
     }
-    return ccinfer::ErrorCode::InternalError;
+    return ErrorCode::InternalError;
 }
 
-inline ccinfer::Result<void> map_result(::ccop::Result<void> result) noexcept {
+inline Result<void> map_result(::ccop::Result<void> result) noexcept {
     if (!result) {
         return std::unexpected(map_error(result.error()));
     }
     return {};
 }
 
-}  // namespace ccinfer::ops
+}  // namespace ccinfer

@@ -41,11 +41,11 @@ TEST(BufferTest, TensorViewBorrowsData) {
     ASSERT_TRUE(buf_r.has_value());
     auto buf = std::move(*buf_r);
 
-    const Tensor view(buf, ops::DType::kFloat32, {2, 3, 4});
+    const Tensor view(buf, ccop::DType::kFloat32, {2, 3, 4});
     ASSERT_TRUE(view.valid());
     EXPECT_EQ(view.data(), buf->data());
     EXPECT_EQ(view.device(), buf->device());
-    EXPECT_EQ(view.dtype(), ops::DType::kFloat32);
+    EXPECT_EQ(view.dtype(), ccop::DType::kFloat32);
     EXPECT_EQ(view.rank(), 3);
     EXPECT_EQ(view.shape(0), 2);
     EXPECT_EQ(view.shape(1), 3);

@@ -27,10 +27,10 @@ public:
         static_assert(runner_traits_valid_v<Traits>, "RunnerTraits has unknown dtype tags");
 
         // Only BF16 weights / activations / KV + FP32 logits.
-        if constexpr (!std::is_same_v<typename Traits::WeightTag, ops::BFloat16Tag> ||
-                      !std::is_same_v<typename Traits::KVTag, ops::BFloat16Tag> ||
-                      !std::is_same_v<typename Traits::ActivationTag, ops::BFloat16Tag> ||
-                      !std::is_same_v<typename Traits::LogitsTag, ops::Float32Tag>) {
+        if constexpr (!std::is_same_v<typename Traits::WeightTag, ccop::BFloat16Tag> ||
+                      !std::is_same_v<typename Traits::KVTag, ccop::BFloat16Tag> ||
+                      !std::is_same_v<typename Traits::ActivationTag, ccop::BFloat16Tag> ||
+                      !std::is_same_v<typename Traits::LogitsTag, ccop::Float32Tag>) {
             (void)Traits{};
             return std::unexpected(ErrorCode::Unsupported);
         }
@@ -141,9 +141,9 @@ public:
         if (V_size > kMax / T_size) return std::unexpected(ErrorCode::InvalidArgument);
         const std::size_t logits_elems = T_size * V_size;
         if (logits_elems > kMax / sizeof(float)) return std::unexpected(ErrorCode::InvalidArgument);
-        auto logits_r = Tensor::empty(backend, ops::DType::kFloat32, {T, V});
+        auto logits_r = Tensor::empty(backend, ccop::DType::kFloat32, {T, V});
         if (!logits_r) return std::unexpected(logits_r.error());
-        auto tokens_r = Tensor::empty(backend, ops::DType::kInt32, {B});
+        auto tokens_r = Tensor::empty(backend, ccop::DType::kInt32, {B});
         if (!tokens_r) return std::unexpected(tokens_r.error());
 
         ForwardOutput output;
@@ -152,7 +152,7 @@ public:
         auto fwd_r = model.forward(input, output, backend);
         if (!fwd_r) return std::unexpected(fwd_r.error());
 
-        auto s_r = ops::map_result(ops::greedy_sample(output.logits, batch.logits_indices,
+        auto s_r = map_result(ccop::greedy_sample(output.logits, batch.logits_indices,
                                                       &output.tokens_out, backend.context()));
         if (!s_r) return std::unexpected(s_r.error());
 
