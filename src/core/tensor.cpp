@@ -13,6 +13,13 @@ namespace ccinfer {
 
 namespace {
 
+bool data_in_buffer(const Buffer* buffer, const void* data, std::size_t bytes) noexcept {
+    const auto* base = static_cast<const char*>(buffer->data());
+    const auto* ptr = static_cast<const char*>(data);
+    return ptr >= base && bytes <= buffer->bytes() &&
+           static_cast<std::size_t>(ptr - base) <= buffer->bytes() - bytes;
+}
+
 Result<std::size_t> checked_nbytes(ops::DType dtype, std::initializer_list<std::int64_t> shape) {
     const std::size_t elem_size = ops::dtype_size(dtype);
     if (elem_size == 0) return std::unexpected(ErrorCode::Unsupported);
@@ -65,7 +72,7 @@ Tensor Tensor::from_buffer(std::shared_ptr<Buffer> buffer, void* data, ops::DTyp
     Tensor tensor;
     static_cast<ops::Tensor&>(tensor) = ops::Tensor(data, dtype, buffer->device(), shape);
     tensor.buffer_ = std::move(buffer);
-    assert(tensor.nbytes() <= tensor.buffer_->bytes());
+    assert(data_in_buffer(tensor.buffer_.get(), data, tensor.nbytes()));
     return tensor;
 }
 
@@ -84,13 +91,14 @@ Tensor Tensor::from_buffer(std::shared_ptr<Buffer> buffer, void* data, ops::DTyp
     static_cast<ops::Tensor&>(tensor) = ops::Tensor(data, dtype, buffer->device(), shape_arr,
                                                     stride, static_cast<int>(shape.size()));
     tensor.buffer_ = std::move(buffer);
-    assert(tensor.nbytes() <= tensor.buffer_->bytes());
+    assert(data_in_buffer(tensor.buffer_.get(), data, tensor.nbytes()));
     return tensor;
 }
 
 Tensor Tensor::view(std::initializer_list<std::int64_t> shape) const {
     assert(buffer_ && "Tensor has no owner");
     const ops::Tensor view(const_cast<void*>(data()), dtype(), device(), shape);
+    assert(view.numel() == numel() && "view shape must preserve numel");
     assert(view.nbytes() <= buffer_->bytes());
     return with_view(view);
 }
