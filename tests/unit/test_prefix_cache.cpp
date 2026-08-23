@@ -96,14 +96,6 @@ TEST(PrefixCacheTest, InsertSameHashDifferentBlockCollision) {
     EXPECT_EQ(r.error(), ErrorCode::KVBlockHashCollision);
 }
 
-TEST(PrefixCacheTest, RemoveByHash) {
-    PrefixCache cache;
-    cache.insert(0xABCD, 5);
-    cache.remove(0xABCD);
-    EXPECT_FALSE(cache.lookup(0xABCD).has_value());
-    EXPECT_EQ(cache.size(), 0);
-}
-
 TEST(PrefixCacheTest, RemoveByBlock) {
     PrefixCache cache;
     cache.insert(0xABCD, 5);

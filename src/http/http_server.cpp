@@ -1,6 +1,18 @@
 #include "http/http_server.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstdlib>
+#include <iostream>
+#include <istream>
+#include <limits>
+#include <optional>
+#include <string_view>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
 #include <boost/asio/as_tuple.hpp>
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/co_spawn.hpp>
@@ -10,18 +22,7 @@
 #include <boost/asio/read_until.hpp>
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/write.hpp>
-#include <cctype>
-#include <cmath>
-#include <cstdlib>
-#include <iostream>
-#include <istream>
-#include <limits>
 #include <nlohmann/json.hpp>
-#include <optional>
-#include <string_view>
-#include <type_traits>
-#include <utility>
-#include <vector>
 
 #include "base/request.h"
 #include "scheduler/scheduler.h"
@@ -257,8 +258,10 @@ asio::awaitable<std::string> HttpServer::read_line(asio::ip::tcp::socket& socket
     while (true) {
         if (buf.size() > 0) {
             std::vector<char> avail(buf.size());
-            const std::size_t avail_n = buf.sgetn(avail.data(), static_cast<std::streamsize>(avail.size()));
-            auto it = std::find(avail.begin(), avail.begin() + static_cast<std::ptrdiff_t>(avail_n), '\n');
+            const std::size_t avail_n =
+                buf.sgetn(avail.data(), static_cast<std::streamsize>(avail.size()));
+            auto it = std::find(avail.begin(), avail.begin() + static_cast<std::ptrdiff_t>(avail_n),
+                                '\n');
             if (it != avail.begin() + static_cast<std::ptrdiff_t>(avail_n)) {
                 std::size_t len = static_cast<std::size_t>(it - avail.begin());
                 if (len > 0 && avail[len - 1] == '\r') --len;
@@ -489,84 +492,73 @@ JsonFieldState safe_json_get(const nlohmann::json& j, const char* key, T& out) {
     return JsonFieldState::Invalid;
 }
 
+struct ParsedChatRequest {
+    std::vector<int32_t> prompt_tokens;
+    SamplingParams sampling;
+    int max_context_len = 0;
+};
+
+Result<ParsedChatRequest> parse_chat_request(const std::string& body, Tokenizer& tokenizer) {
+    nlohmann::json req_json = nlohmann::json::parse(body.empty() ? "{}" : body, nullptr, false);
+    if (req_json.is_discarded() || !req_json.is_object()) {
+        return std::unexpected(ErrorCode::InvalidArgument);
+    }
+
+    ParsedChatRequest parsed;
+    if (req_json.contains("messages")) {
+        if (!req_json["messages"].is_array()) {
+            return std::unexpected(ErrorCode::InvalidArgument);
+        }
+        for (const auto& msg : req_json["messages"]) {
+            if (!msg.is_object() || !msg.contains("content") || !msg["content"].is_string()) {
+                return std::unexpected(ErrorCode::InvalidArgument);
+            }
+            auto encoded = tokenizer.encode(msg["content"].get<std::string>());
+            if (!encoded) return std::unexpected(ErrorCode::InternalError);
+            parsed.prompt_tokens.insert(parsed.prompt_tokens.end(), encoded->begin(),
+                                        encoded->end());
+        }
+    }
+    // Keep the minimal control-path prompt for the dummy worker and empty-message API case.
+    if (parsed.prompt_tokens.empty()) parsed.prompt_tokens = {1, 2, 3};
+
+    auto read_optional = [&](const char* key, auto& target) -> bool {
+        return safe_json_get(req_json, key, target) != JsonFieldState::Invalid;
+    };
+    if (!read_optional("max_tokens", parsed.sampling.max_tokens) ||
+        !read_optional("temperature", parsed.sampling.temperature) ||
+        !read_optional("top_p", parsed.sampling.top_p) ||
+        !read_optional("top_k", parsed.sampling.top_k)) {
+        return std::unexpected(ErrorCode::InvalidArgument);
+    }
+    if (parsed.sampling.max_tokens < 0 || parsed.sampling.temperature < 0.0f ||
+        parsed.sampling.top_p <= 0.0f || parsed.sampling.top_p > 1.0f ||
+        parsed.sampling.top_k < 0) {
+        return std::unexpected(ErrorCode::InvalidArgument);
+    }
+
+    auto max_context_state = safe_json_get(req_json, "max_context_len", parsed.max_context_len);
+    if (max_context_state == JsonFieldState::Invalid ||
+        (max_context_state == JsonFieldState::Valid && parsed.max_context_len <= 0)) {
+        return std::unexpected(ErrorCode::InvalidArgument);
+    }
+
+    return parsed;
+}
+
 }  // namespace
 
 asio::awaitable<void> HttpServer::handle_chat(asio::ip::tcp::socket& socket, std::string body,
                                               const std::shared_ptr<ActiveConn>& conn) {
-    nlohmann::json req_json = nlohmann::json::parse(body.empty() ? "{}" : body, nullptr, false);
-    if (req_json.is_discarded()) {
-        co_await write_response(socket, kBadRequest);
-        co_return;
-    }
-
-    std::vector<int32_t> prompt_tokens;
-    bool tokenizer_failed = false;
-    if (req_json.contains("messages") && req_json["messages"].is_array()) {
-        for (const auto& msg : req_json["messages"]) {
-            if (msg.contains("content") && msg["content"].is_string()) {
-                std::string content = msg["content"].get<std::string>();
-                auto encoded = tokenizer_.encode(content);
-                if (encoded) {
-                    for (auto t : *encoded) prompt_tokens.push_back(t);
-                } else {
-                    tokenizer_failed = true;
-                    break;
-                }
-            }
-        }
-    }
-    if (tokenizer_failed) {
-        // Tokenizer errors map to 500.
-        co_await write_response(socket, kInternalError);
-        co_return;
-    }
-    // Demo fallback when no messages are provided.
-    if (prompt_tokens.empty()) prompt_tokens = {1, 2, 3};
-
-    SamplingParams sampling;
-    {
-        auto s = safe_json_get(req_json, "max_tokens", sampling.max_tokens);
-        if (s == JsonFieldState::Invalid) {
-            co_await write_response(socket, kBadRequest);
-            co_return;
-        }
-    }
-    {
-        auto s = safe_json_get(req_json, "temperature", sampling.temperature);
-        if (s == JsonFieldState::Invalid) {
-            co_await write_response(socket, kBadRequest);
-            co_return;
-        }
-    }
-    {
-        auto s = safe_json_get(req_json, "top_p", sampling.top_p);
-        if (s == JsonFieldState::Invalid) {
-            co_await write_response(socket, kBadRequest);
-            co_return;
-        }
-    }
-    {
-        auto s = safe_json_get(req_json, "top_k", sampling.top_k);
-        if (s == JsonFieldState::Invalid) {
-            co_await write_response(socket, kBadRequest);
-            co_return;
-        }
-    }
-
-    if (sampling.max_tokens < 0 || sampling.temperature < 0.0f || sampling.top_p <= 0.0f ||
-        sampling.top_p > 1.0f || sampling.top_k < 0) {
-        co_await write_response(socket, kBadRequest);
+    auto parsed = parse_chat_request(body, tokenizer_);
+    if (!parsed) {
+        co_await write_response(
+            socket, parsed.error() == ErrorCode::InternalError ? kInternalError : kBadRequest);
         co_return;
     }
 
     SchedulerRequest sreq;
-    {
-        auto s = safe_json_get(req_json, "max_context_len", sreq.max_context_len);
-        if (s == JsonFieldState::Invalid || sreq.max_context_len <= 0) {
-            co_await write_response(socket, kBadRequest);
-            co_return;
-        }
-    }
+    sreq.max_context_len = parsed->max_context_len;
 
     // Build HTTP-side state — request_id and channel owned by this coroutine.
     auto executor = co_await asio::this_coro::executor;
@@ -580,13 +572,11 @@ asio::awaitable<void> HttpServer::handle_chat(asio::ip::tcp::socket& socket, std
     }
 
     sreq.request_id = request_id;
-    sreq.prompt_tokens = std::move(prompt_tokens);
-    sreq.sampling = sampling;
+    sreq.prompt_tokens = std::move(parsed->prompt_tokens);
+    sreq.sampling = parsed->sampling;
     sreq.sink.executor = executor;
     sreq.sink.channel = channel;
-    sreq.sink.on_send_failed = [&sched = scheduler_, request_id]() {
-        sched.cancel(request_id);
-    };
+    sreq.sink.on_send_failed = [&sched = scheduler_, request_id]() { sched.cancel(request_id); };
 
     scheduler_.submit(std::move(sreq));
 

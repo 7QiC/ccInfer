@@ -82,21 +82,30 @@ TEST_F(KVCacheManagerTest, Exhaustion) {
     EXPECT_EQ(r.error(), ErrorCode::KVBlockExhausted);
 }
 
-TEST_F(KVCacheManagerTest, PrepareBlocksNoPrefixHit) {
+TEST_F(KVCacheManagerTest, LookupAndAllocateNoPrefixHit) {
     std::vector<int32_t> tokens(32, 1);  // 2 blocks
-    auto pr = mgr_.prepare_blocks(tokens);
+    auto pr = mgr_.lookup_prefix_cache(tokens);
     ASSERT_TRUE(pr.has_value());
+    auto alloc = mgr_.allocate_blocks(2 - pr->block_table.size());
+    ASSERT_TRUE(alloc.has_value());
+    for (int b = 0; b < alloc->size(); ++b) pr->block_table.push_back((*alloc)[b]);
     EXPECT_EQ(pr->block_table.size(), 2);
     EXPECT_EQ(pr->prefix_hit_blocks, 0);
     EXPECT_EQ(pr->block_table.shared_count(), 0);
     EXPECT_EQ(mgr_.num_free_blocks(), 62);
 }
 
-TEST_F(KVCacheManagerTest, PrepareBlocksWithPrefixHit) {
+TEST_F(KVCacheManagerTest, LookupAndAllocateWithPrefixHit) {
     // Request 1: 32 tokens, 2 blocks.
     std::vector<int32_t> tokens(32, 1);
-    auto pr1 = mgr_.prepare_blocks(tokens);
+    auto pr1 = mgr_.lookup_prefix_cache(tokens);
     ASSERT_TRUE(pr1.has_value());
+    int remaining1 = 2 - pr1->block_table.size();
+    if (remaining1 > 0) {
+        auto alloc1 = mgr_.allocate_blocks(remaining1);
+        ASSERT_TRUE(alloc1.has_value());
+        for (int b = 0; b < alloc1->size(); ++b) pr1->block_table.push_back((*alloc1)[b]);
+    }
 
     // Cache them.
     auto cf = mgr_.cache_full_blocks(pr1->block_table, tokens, 32);
@@ -109,8 +118,14 @@ TEST_F(KVCacheManagerTest, PrepareBlocksWithPrefixHit) {
     EXPECT_GT(stats.block_cached_idle, 0);
 
     // Request 2: same tokens → should get prefix hit.
-    auto pr2 = mgr_.prepare_blocks(tokens);
+    auto pr2 = mgr_.lookup_prefix_cache(tokens);
     ASSERT_TRUE(pr2.has_value());
+    int remaining2 = 2 - pr2->block_table.size();
+    if (remaining2 > 0) {
+        auto alloc2 = mgr_.allocate_blocks(remaining2);
+        ASSERT_TRUE(alloc2.has_value());
+        for (int b = 0; b < alloc2->size(); ++b) pr2->block_table.push_back((*alloc2)[b]);
+    }
     EXPECT_EQ(pr2->block_table.size(), 2);
     EXPECT_EQ(pr2->prefix_hit_blocks, 2);
     EXPECT_EQ(pr2->block_table.shared_count(), 2);
@@ -120,8 +135,14 @@ TEST_F(KVCacheManagerTest, PrepareBlocksWithPrefixHit) {
 
 TEST_F(KVCacheManagerTest, LookupPrefixCacheDoesNotAllocateSuffixBlocks) {
     std::vector<int32_t> cached_prefix(16, 7);
-    auto pr1 = mgr_.prepare_blocks(cached_prefix);
+    auto pr1 = mgr_.lookup_prefix_cache(cached_prefix);
     ASSERT_TRUE(pr1.has_value());
+    int remaining1 = 1 - pr1->block_table.size();
+    if (remaining1 > 0) {
+        auto alloc1 = mgr_.allocate_blocks(remaining1);
+        ASSERT_TRUE(alloc1.has_value());
+        for (int b = 0; b < alloc1->size(); ++b) pr1->block_table.push_back((*alloc1)[b]);
+    }
     ASSERT_TRUE(mgr_.cache_full_blocks(pr1->block_table, cached_prefix, 16).has_value());
     ASSERT_TRUE(mgr_.release_blocks(pr1->block_table).has_value());
 
@@ -140,14 +161,26 @@ TEST_F(KVCacheManagerTest, LookupPrefixCacheDoesNotAllocateSuffixBlocks) {
 
 TEST_F(KVCacheManagerTest, PrefixHitRefCountBumped) {
     std::vector<int32_t> tokens(16, 7);  // 1 block
-    auto pr1 = mgr_.prepare_blocks(tokens);
+    auto pr1 = mgr_.lookup_prefix_cache(tokens);
     ASSERT_TRUE(pr1.has_value());
+    int remaining1 = 1 - pr1->block_table.size();
+    if (remaining1 > 0) {
+        auto alloc1 = mgr_.allocate_blocks(remaining1);
+        ASSERT_TRUE(alloc1.has_value());
+        for (int b = 0; b < alloc1->size(); ++b) pr1->block_table.push_back((*alloc1)[b]);
+    }
     mgr_.cache_full_blocks(pr1->block_table, tokens, 16);
     mgr_.release_blocks(pr1->block_table);
 
     // Second request: hit.
-    auto pr2 = mgr_.prepare_blocks(tokens);
+    auto pr2 = mgr_.lookup_prefix_cache(tokens);
     ASSERT_TRUE(pr2.has_value());
+    int remaining2 = 1 - pr2->block_table.size();
+    if (remaining2 > 0) {
+        auto alloc2 = mgr_.allocate_blocks(remaining2);
+        ASSERT_TRUE(alloc2.has_value());
+        for (int b = 0; b < alloc2->size(); ++b) pr2->block_table.push_back((*alloc2)[b]);
+    }
     EXPECT_EQ(pr2->prefix_hit_blocks, 1);
 
     // Block should be ACTIVE_CACHED (ref_count=1, not in LRU).
@@ -163,8 +196,11 @@ TEST_F(KVCacheManagerTest, LruEvictionWhenFreeListEmpty) {
     // Fill prefix cache with all 64 blocks using distinct tokens per request.
     for (int i = 0; i < 64; ++i) {
         std::vector<int32_t> tokens(16, i + 1);
-        auto pr = mgr_.prepare_blocks(tokens);
+        auto pr = mgr_.lookup_prefix_cache(tokens);
         ASSERT_TRUE(pr.has_value());
+        auto alloc = mgr_.allocate_blocks(1 - pr->block_table.size());
+        ASSERT_TRUE(alloc.has_value());
+        for (int b = 0; b < alloc->size(); ++b) pr->block_table.push_back((*alloc)[b]);
         mgr_.cache_full_blocks(pr->block_table, tokens, 16);
         mgr_.release_blocks(pr->block_table);
     }
@@ -182,8 +218,11 @@ TEST_F(KVCacheManagerTest, LruEvictionWhenFreeListEmpty) {
 TEST_F(KVCacheManagerTest, CacheFullBlocksRejectsUncommitted) {
     // 32 tokens = 2 blocks. Only commit 16 (1 block).
     std::vector<int32_t> tokens(32, 1);
-    auto pr = mgr_.prepare_blocks(tokens);
+    auto pr = mgr_.lookup_prefix_cache(tokens);
     ASSERT_TRUE(pr.has_value());
+    auto alloc = mgr_.allocate_blocks(2 - pr->block_table.size());
+    ASSERT_TRUE(alloc.has_value());
+    for (int b = 0; b < alloc->size(); ++b) pr->block_table.push_back((*alloc)[b]);
 
     // Cache only first 16 tokens (1 block committed).
     auto cf = mgr_.cache_full_blocks(pr->block_table, tokens, 16);
@@ -216,8 +255,11 @@ TEST_F(KVCacheManagerTest, PrefixStatsReflectsCache) {
     EXPECT_EQ(ps.cached_blocks, 0);
 
     std::vector<int32_t> tokens(16, 42);
-    auto pr = mgr_.prepare_blocks(tokens);
+    auto pr = mgr_.lookup_prefix_cache(tokens);
     ASSERT_TRUE(pr.has_value());
+    auto alloc = mgr_.allocate_blocks(1 - pr->block_table.size());
+    ASSERT_TRUE(alloc.has_value());
+    for (int b = 0; b < alloc->size(); ++b) pr->block_table.push_back((*alloc)[b]);
     mgr_.cache_full_blocks(pr->block_table, tokens, 16);
 
     ps = mgr_.prefix_stats();

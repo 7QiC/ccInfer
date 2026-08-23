@@ -63,13 +63,6 @@ Result<void> PrefixCache::insert(uint64_t hash, int32_t block_id) {
     return {};
 }
 
-void PrefixCache::remove(uint64_t hash) {
-    auto it = hash_to_block_.find(hash);
-    if (it == hash_to_block_.end()) return;
-    block_to_hash_.erase(it->second);
-    hash_to_block_.erase(it);
-}
-
 void PrefixCache::remove_by_block(int32_t block_id) {
     auto it = block_to_hash_.find(block_id);
     if (it == block_to_hash_.end()) return;

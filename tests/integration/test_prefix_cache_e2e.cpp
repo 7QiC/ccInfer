@@ -13,8 +13,8 @@
 namespace ccinfer {
 namespace {
 
-// Full lifecycle: prepare_blocks → cache_full_blocks → release →
-// prepare_blocks (hit) → verify shared blocks produce correct attention output.
+// Full lifecycle: lookup/allocate → cache_full_blocks → release →
+// lookup (hit) → verify shared blocks produce correct attention output.
 TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
     constexpr int kNumTokens = 32;
     constexpr int kMaxBlocks = 16;
@@ -41,8 +41,11 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
     std::vector<int32_t> tokens(kNumTokens);
     for (int i = 0; i < kNumTokens; ++i) tokens[i] = i + 1;
 
-    auto pr1 = mgr.prepare_blocks(tokens);
+    auto pr1 = mgr.lookup_prefix_cache(tokens);
     ASSERT_TRUE(pr1.has_value());
+    auto alloc1 = mgr.allocate_blocks(kNumTokens / block_size - pr1->block_table.size());
+    ASSERT_TRUE(alloc1.has_value());
+    for (int b = 0; b < alloc1->size(); ++b) pr1->block_table.push_back((*alloc1)[b]);
     ASSERT_EQ(pr1->block_table.size(), 2);
     ASSERT_EQ(pr1->prefix_hit_blocks, 0);
     int free_before_cache = mgr.num_free_blocks();
@@ -76,7 +79,7 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
     EXPECT_EQ(mgr.num_free_blocks(), free_before_cache);
 
     // 5. Request 2: same tokens → prefix hit.
-    auto pr2 = mgr.prepare_blocks(tokens);
+    auto pr2 = mgr.lookup_prefix_cache(tokens);
     ASSERT_TRUE(pr2.has_value());
     EXPECT_EQ(pr2->block_table.size(), 2);
     EXPECT_EQ(pr2->prefix_hit_blocks, 2);
@@ -122,7 +125,7 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
     const float scale = 1.0f / std::sqrt(static_cast<float>(hd));
     ASSERT_TRUE(
         map_result(ccop::prefill_attention(q, k_cache, v_cache, block_table, query_start_loc,
-                                               context_lens, &out, scale, {stream}))
+                                           context_lens, &out, scale, {stream}))
             .has_value());
     cudaStreamSynchronize(stream);
 
@@ -142,8 +145,12 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
     int cached_count = 2;
     for (int i = 0; cached_count < kMaxBlocks; ++i) {
         std::vector<int32_t> t(32, 100 + i);
-        auto px = mgr.prepare_blocks(t);
+        auto px = mgr.lookup_prefix_cache(t);
         ASSERT_TRUE(px.has_value());
+        auto alloc_px =
+            mgr.allocate_blocks(static_cast<int>(t.size()) / block_size - px->block_table.size());
+        ASSERT_TRUE(alloc_px.has_value());
+        for (int b = 0; b < alloc_px->size(); ++b) px->block_table.push_back((*alloc_px)[b]);
         mgr.cache_full_blocks(px->block_table, t, 32);
         mgr.release_blocks(px->block_table);
         // Some may collide with previous hashes; count actual cached blocks.

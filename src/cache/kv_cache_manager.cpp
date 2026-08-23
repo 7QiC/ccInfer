@@ -145,33 +145,6 @@ Result<KVCacheManager::PrepareResult> KVCacheManager::lookup_prefix_cache(
     return result;
 }
 
-Result<KVCacheManager::PrepareResult> KVCacheManager::prepare_blocks(
-    const std::vector<int32_t>& tokens, uint64_t namespace_salt) {
-    auto lookup = lookup_prefix_cache(tokens, namespace_salt);
-    if (!lookup) return std::unexpected(lookup.error());
-
-    PrepareResult result = std::move(*lookup);
-    auto& table = result.block_table;
-
-    int64_t total_tokens = static_cast<int64_t>(tokens.size());
-    int total_blocks_needed = static_cast<int>((total_tokens + block_size_ - 1) / block_size_);
-
-    int remaining = total_blocks_needed - table.size();
-    if (remaining > 0) {
-        auto alloc = allocate_blocks(remaining);
-        if (!alloc) {
-            rollback_prefix_hits(table, result.prefix_hit_blocks);
-            return std::unexpected(alloc.error());
-        }
-        for (int b = 0; b < alloc->size(); ++b) {
-            table.push_back((*alloc)[b]);
-        }
-    }
-
-    table.set_shared_count(result.prefix_hit_blocks);
-    return result;
-}
-
 Result<void> KVCacheManager::cache_full_blocks(const BlockTable& table,
                                                const std::vector<int32_t>& tokens,
                                                int committed_tokens, uint64_t namespace_salt) {
@@ -254,7 +227,7 @@ bool KVCacheManager::evict_one() {
     auto& block = lru_list_.front();
     if (!block.is_cached_idle()) {
         ccLog::warn("evict_one: block {} not cached_idle, flags={} ref={}", block.block_id,
-                     block.flags, block.ref_count);
+                    block.flags, block.ref_count);
         return false;
     }
     lru_list_.pop_front();
@@ -277,7 +250,7 @@ void KVCacheManager::rollback_prefix_hits(const BlockTable& table, int count) {
         auto& blk = metadata_[table[b]];
         if (!blk.is_cached() || blk.ref_count <= 0) {
             ccLog::error("rollback_prefix_hits: block {} not cached/active, flags={} ref={}",
-                          blk.block_id, blk.flags, blk.ref_count);
+                         blk.block_id, blk.flags, blk.ref_count);
             continue;
         }
         blk.ref_count--;

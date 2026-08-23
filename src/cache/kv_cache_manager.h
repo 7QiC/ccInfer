@@ -43,12 +43,6 @@ public:
     };
     Result<PrepareResult> lookup_prefix_cache(const std::vector<int32_t>& tokens,
                                               uint64_t namespace_salt = 0);
-    // Test/benchmark convenience: lookup_prefix_cache + allocate remaining blocks.
-    // Production path uses lookup_prefix_cache in Worker and allocate_blocks in
-    // BatchTranslator, so this helper is not called by the engine itself.
-    Result<PrepareResult> prepare_blocks(const std::vector<int32_t>& tokens,
-                                         uint64_t namespace_salt = 0);
-
     Result<void> cache_full_blocks(const BlockTable& table, const std::vector<int32_t>& tokens,
                                    int committed_tokens, uint64_t namespace_salt = 0);
 
