@@ -21,6 +21,7 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "base/request.h"
 #include "scheduler/scheduler.h"
@@ -250,21 +251,39 @@ asio::awaitable<void> HttpServer::accept_loop_impl() {
     }
 }
 
-// NOTE: async_read_until will keep growing the streambuf until CRLF is found.
-// A malicious client sending an unbounded line without CRLF could exhaust memory.
-// Future: set a max_read_buffer_size on the streambuf, or switch to manual
-// chunked reads with a per-line length cap.
 asio::awaitable<std::string> HttpServer::read_line(asio::ip::tcp::socket& socket,
                                                    asio::streambuf& buf) {
-    auto [ec, len] = co_await asio::async_read_until(socket, buf, "\r\n", as_tuple(deferred));
-    if (ec) co_return "";
-
-    std::istream is(&buf);
     std::string line;
-    std::getline(is, line);
+    while (true) {
+        if (buf.size() > 0) {
+            std::vector<char> avail(buf.size());
+            const std::size_t avail_n = buf.sgetn(avail.data(), static_cast<std::streamsize>(avail.size()));
+            auto it = std::find(avail.begin(), avail.begin() + static_cast<std::ptrdiff_t>(avail_n), '\n');
+            if (it != avail.begin() + static_cast<std::ptrdiff_t>(avail_n)) {
+                std::size_t len = static_cast<std::size_t>(it - avail.begin());
+                if (len > 0 && avail[len - 1] == '\r') --len;
+                if (line.size() + len > kMaxHeaderSize) {
+                    co_return std::string(kMaxHeaderSize + 1, 'x');
+                }
+                line.append(avail.data(), len);
+                const std::size_t consumed = static_cast<std::size_t>(it - avail.begin()) + 1;
+                if (consumed < avail_n) {
+                    buf.sputn(avail.data() + static_cast<std::ptrdiff_t>(consumed),
+                              static_cast<std::streamsize>(avail_n - consumed));
+                }
+                co_return line;
+            }
+            if (line.size() + avail_n > kMaxHeaderSize) {
+                co_return std::string(kMaxHeaderSize + 1, 'x');
+            }
+            line.append(avail.data(), avail_n);
+        }
 
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    co_return line;
+        char chunk[4096];
+        auto [ec, n] = co_await socket.async_read_some(asio::buffer(chunk), as_tuple(deferred));
+        if (ec || n == 0) co_return "";
+        buf.sputn(chunk, static_cast<std::streamsize>(n));
+    }
 }
 
 asio::awaitable<std::optional<std::string>> HttpServer::read_body(asio::ip::tcp::socket& socket,

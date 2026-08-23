@@ -43,7 +43,10 @@ int main(int argc, char* argv[]) {
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--port" && i + 1 < argc) {
-            port = std::atoi(argv[++i]);
+            if (!parse_nonnegative_int(argv[++i], port)) {
+                std::cerr << "Invalid port: " << argv[i] << std::endl;
+                return 1;
+            }
         } else if (arg == "--model-path" && i + 1 < argc) {
             model_path = argv[++i];
         } else if (arg == "--prefill-chunk-size" && i + 1 < argc) {
