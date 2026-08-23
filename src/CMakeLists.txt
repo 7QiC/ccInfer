@@ -1,38 +1,99 @@
-add_library(engine STATIC
+# Layered static libraries. The public `engine` target keeps existing consumers
+# (server/tests) working while allowing finer-grained rebuilds and dependencies.
+
+add_library(ccinfer_core STATIC
     backend/cuda/backend_cuda.cpp
     core/tensor.cpp
-    executor/single_device_executor.cpp
-    worker/worker.cpp
-    worker/batch_translator.cpp
-    model/rope/rope_cache.cpp
-    cache/kv_cache_manager.cpp
-    cache/kv_cache_storage.cpp
-    cache/prefix_cache.cpp
-    model/loader.cpp
-    model/registry.cpp
-    model/qwen3/qwen3_model.cpp
-    model/qwen3/qwen3_weights.cpp
-    scheduler/scheduler.cpp
 )
-
-target_include_directories(engine
+target_include_directories(ccinfer_core
     PUBLIC
         ${CMAKE_SOURCE_DIR}/src
         ${Boost_INCLUDE_DIRS}
     PRIVATE
         ${CUDAToolkit_INCLUDE_DIRS}
 )
-
-target_link_libraries(engine
+target_link_libraries(ccinfer_core
     PUBLIC
         ccop::ccop
+    PRIVATE
+        CUDA::cublas
+        CUDA::cudart
+)
+
+add_library(ccinfer_cache STATIC
+    cache/kv_cache_manager.cpp
+    cache/kv_cache_storage.cpp
+    cache/prefix_cache.cpp
+)
+target_include_directories(ccinfer_cache
+    PUBLIC
+        ${CMAKE_SOURCE_DIR}/src
+        ${Boost_INCLUDE_DIRS}
+    PRIVATE
+        ${CUDAToolkit_INCLUDE_DIRS}
+)
+target_link_libraries(ccinfer_cache
+    PUBLIC
+        ccinfer_core
+        ccop::ccop
+        spdlog::spdlog
+    PRIVATE
+        CUDA::cudart
+)
+
+add_library(ccinfer_model STATIC
+    model/loader.cpp
+    model/registry.cpp
+    model/rope/rope_cache.cpp
+    model/qwen3/qwen3_model.cpp
+    model/qwen3/qwen3_weights.cpp
+)
+target_include_directories(ccinfer_model
+    PUBLIC
+        ${CMAKE_SOURCE_DIR}/src
+        ${Boost_INCLUDE_DIRS}
+    PRIVATE
+        ${CUDAToolkit_INCLUDE_DIRS}
+)
+target_link_libraries(ccinfer_model
+    PUBLIC
+        ccinfer_cache
+        ccinfer_core
         nlohmann_json::nlohmann_json
-        fmt::fmt
         spdlog::spdlog
     PRIVATE
         CUDA::cublas
         CUDA::cudart
 )
+
+add_library(ccinfer_engine STATIC
+    executor/single_device_executor.cpp
+    worker/worker.cpp
+    worker/batch_translator.cpp
+    scheduler/scheduler.cpp
+)
+target_include_directories(ccinfer_engine
+    PUBLIC
+        ${CMAKE_SOURCE_DIR}/src
+        ${Boost_INCLUDE_DIRS}
+    PRIVATE
+        ${CUDAToolkit_INCLUDE_DIRS}
+)
+target_link_libraries(ccinfer_engine
+    PUBLIC
+        ccinfer_model
+        ccinfer_cache
+        ccinfer_core
+        fmt::fmt
+        nlohmann_json::nlohmann_json
+        spdlog::spdlog
+    PRIVATE
+        CUDA::cudart
+)
+
+# Compatibility target for existing server/tests.
+add_library(engine INTERFACE)
+target_link_libraries(engine INTERFACE ccinfer_engine)
 
 if(BUILD_SERVER)
     add_library(server STATIC
