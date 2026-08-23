@@ -21,7 +21,6 @@ public:
                          Backend& backend) override;
 
     const ModelConfig& config() const override { return config_; }
-    const char* architecture() const override { return "qwen3"; }
 
 private:
     ModelConfig config_;

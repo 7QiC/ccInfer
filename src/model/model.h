@@ -48,7 +48,6 @@ public:
                                  Backend& backend) = 0;
 
     virtual const ModelConfig& config() const = 0;
-    virtual const char* architecture() const = 0;
 };
 
 }  // namespace ccinfer
