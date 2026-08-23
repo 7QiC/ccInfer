@@ -32,7 +32,6 @@ public:
         std::vector<int32_t> slot_mapping;  // per-token physical slot [new_tokens]
         int kv_tokens_to_commit = 0;
         int prompt_tokens_to_commit = 0;
-        bool release_after_forward = false;  // scratch blocks for BootstrapDecode
     };
 
     struct TranslateResult {
@@ -43,7 +42,8 @@ public:
     // Build a GPU-ready PhysicalBatch from the scheduled batch and current
     // SequenceState.  Allocates additional KV blocks as needed.  The batch is
     // treated as authoritative: PrefillChunk spans must already exclude cached
-    // prefix tokens, and fully-cached prompts must arrive as BootstrapDecode.
+    // prefix tokens, and fully-cached prompts must arrive as DecodeOneToken
+    // with write_kv=false.
     Result<TranslateResult> translate(
         const ScheduledBatch& batch,
         const std::unordered_map<SequenceId, SequenceState>& sequences);

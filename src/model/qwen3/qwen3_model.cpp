@@ -179,6 +179,8 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
         }
 
         {
+            // The whole batch enters write_kv_cache once.  DecodeOneToken with
+            // write_kv=false uses -1 slots, so the operator skips them.
             auto k_cache = input.kv_mgr_->k_cache(l);
             auto v_cache = input.kv_mgr_->v_cache(l);
             auto r = ops::map_result(

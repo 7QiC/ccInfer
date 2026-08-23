@@ -90,7 +90,7 @@ TEST_F(SchedulerTest, SingleDecodeItem) {
     EXPECT_EQ(d->expected_context_len, 0);  // 1 + 0 - 1 = 0
 }
 
-TEST_F(SchedulerTest, FullPrefixHitSchedulesBootstrapDecode) {
+TEST_F(SchedulerTest, FullPrefixHitSchedulesNonWritingDecode) {
     auto state = std::make_shared<SchedulerRequestState>();
     state->seq_id = 1;
     state->prefill_done = true;
@@ -103,11 +103,12 @@ TEST_F(SchedulerTest, FullPrefixHitSchedulesBootstrapDecode) {
 
     auto batch = scheduler_->build_scheduled_batch();
     ASSERT_EQ(batch.items.size(), 1u);
-    auto* b = std::get_if<BootstrapDecode>(&batch.items[0]);
-    ASSERT_NE(b, nullptr);
-    EXPECT_EQ(b->seq_id, 1u);
-    EXPECT_EQ(b->input_token, 4);
-    EXPECT_EQ(b->expected_context_len, 4);
+    auto* d = std::get_if<DecodeOneToken>(&batch.items[0]);
+    ASSERT_NE(d, nullptr);
+    EXPECT_EQ(d->seq_id, 1u);
+    EXPECT_EQ(d->input_token, 4);
+    EXPECT_EQ(d->expected_context_len, 4);
+    EXPECT_FALSE(d->write_kv);
 }
 
 TEST_F(SchedulerTest, SkipsFinishedAndCancelled) {

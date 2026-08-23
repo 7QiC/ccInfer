@@ -24,7 +24,7 @@ struct SuspendSequenceResult {
 };
 
 enum class ForwardMode : uint8_t { Prefill, Decode, Mixed };
-enum class WorkKind : uint8_t { PrefillChunk, DecodeOneToken, BootstrapDecode };
+enum class WorkKind : uint8_t { PrefillChunk, DecodeOneToken };
 
 struct TokenSpan {
     int start = 0;
@@ -42,18 +42,12 @@ struct DecodeOneToken {
     SequenceId seq_id = 0;
     int32_t input_token = 0;
     std::optional<int> expected_context_len;
+    // false = bootstrap decode: sample from the last cached prompt token and
+    // write no new KV / allocate no new block.
+    bool write_kv = true;
 };
 
-// Runs one decode step using the last prompt token as the query when the whole
-// prompt is already present in the KV cache.  It produces the first generated
-// token but does not commit any new KV (scratch KV is released after forward).
-struct BootstrapDecode {
-    SequenceId seq_id = 0;
-    int32_t input_token = 0;
-    std::optional<int> expected_context_len;
-};
-
-using WorkItem = std::variant<PrefillChunk, DecodeOneToken, BootstrapDecode>;
+using WorkItem = std::variant<PrefillChunk, DecodeOneToken>;
 
 // Sampling parameters — user-facing, per-request.
 // Shared by all sequences in a batch.

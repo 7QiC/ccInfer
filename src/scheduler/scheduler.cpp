@@ -445,18 +445,16 @@ void Scheduler::build_decode_batch(BatchBuildContext& ctx) {
             state->finished = true;
             continue;
         }
+
         if (state->bootstrap_pending) {
+            // A bootstrap decode (DecodeOneToken with write_kv=false) only samples
+            // from an already-cached prompt; it writes no KV and allocates no
+            // block, so it does not touch budget.
             int expected_ctx = static_cast<int>(state->prompt_tokens.size()) +
                                state->tokens_generated - state->generated_in_prompt;
             if (expected_ctx >= state->max_context_len) {
                 state->finished = true;
                 send_terminal_event(state);
-                continue;
-            }
-
-            int decode_blocks = (expected_ctx % ctx.block_size == 0) ? 1 : 0;
-            if (decode_blocks > ctx.budget) {
-                budget_blocked_.push_back(id);
                 continue;
             }
 
@@ -467,9 +465,8 @@ void Scheduler::build_decode_batch(BatchBuildContext& ctx) {
                 ctx.sampling_set = true;
             }
 
-            ctx.batch.items.push_back(BootstrapDecode{
-                id, state->prompt_tokens.back(), std::optional<int>(expected_ctx)});
-            ctx.budget -= decode_blocks;
+            ctx.batch.items.push_back(DecodeOneToken{id, state->prompt_tokens.back(),
+                                                      std::optional<int>(expected_ctx), false});
             ctx.compute_budget -= 1;
             ctx.included.push_back(id);
             continue;
@@ -633,10 +630,8 @@ asio::awaitable<void> Scheduler::apply_and_push(const ScheduledBatch& batch,
                 using T = std::decay_t<decltype(w)>;
                 if constexpr (std::is_same_v<T, PrefillChunk>) {
                     expected_kind = WorkKind::PrefillChunk;
-                } else if constexpr (std::is_same_v<T, DecodeOneToken>) {
-                    expected_kind = WorkKind::DecodeOneToken;
                 } else {
-                    expected_kind = WorkKind::BootstrapDecode;
+                    expected_kind = WorkKind::DecodeOneToken;
                 }
             },
             original_item);
@@ -700,7 +695,8 @@ asio::awaitable<void> Scheduler::apply_and_push(const ScheduledBatch& batch,
                 if (state->suspended) state->suspended = false;
             }
         } else {
-            // BootstrapDecode and DecodeOneToken both represent one decode step.
+            // DecodeOneToken represents one decode step; bootstrap decode simply
+            // uses write_kv=false.
             state->bootstrap_pending = false;
             if (!state->prefill_done) {
                 state->prefill_cursor = static_cast<int>(state->prompt_tokens.size());
@@ -725,10 +721,8 @@ asio::awaitable<void> Scheduler::apply_and_push(const ScheduledBatch& batch,
             }
         }
 
-        // eos only valid for decode/bootstrap items and final prefill chunks.
-        if (wr.eos &&
-            (wr.kind == WorkKind::DecodeOneToken || wr.kind == WorkKind::BootstrapDecode ||
-             is_final_chunk))
+        // eos only valid for decode items and final prefill chunks.
+        if (wr.eos && (wr.kind == WorkKind::DecodeOneToken || is_final_chunk))
             state->finished = true;
         if (state->sampling.max_tokens <= 0) state->finished = true;
         if (state->tokens_generated >= state->sampling.max_tokens) state->finished = true;

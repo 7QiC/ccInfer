@@ -67,8 +67,7 @@ public:
                 const bool kind_ok =
                     batch.mode == ForwardMode::Prefill
                         ? batch.item_kinds[i] == WorkKind::PrefillChunk
-                        : (batch.item_kinds[i] == WorkKind::DecodeOneToken ||
-                           batch.item_kinds[i] == WorkKind::BootstrapDecode);
+                        : batch.item_kinds[i] == WorkKind::DecodeOneToken;
                 if (!kind_ok) return std::unexpected(ErrorCode::InvalidArgument);
                 if (batch.item_indices[i] >
                     static_cast<std::size_t>(std::numeric_limits<int>::max()))
@@ -111,9 +110,7 @@ public:
             if (len <= 0) return std::unexpected(ErrorCode::InvalidArgument);
             if (batch.mode == ForwardMode::Decode && len != 1)
                 return std::unexpected(ErrorCode::InvalidArgument);
-            if ((batch.item_kinds[i] == WorkKind::DecodeOneToken ||
-                 batch.item_kinds[i] == WorkKind::BootstrapDecode) &&
-                len != 1)
+            if (batch.item_kinds[i] == WorkKind::DecodeOneToken && len != 1)
                 return std::unexpected(ErrorCode::InvalidArgument);
             if (batch.mode == ForwardMode::Decode && !batch.sample_flags[i])
                 return std::unexpected(ErrorCode::InvalidArgument);

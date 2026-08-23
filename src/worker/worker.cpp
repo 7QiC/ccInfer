@@ -428,11 +428,8 @@ void Worker::process_batch(PendingBatch pending) {
                     if constexpr (std::is_same_v<T, PrefillChunk>) {
                         expected_kind = WorkKind::PrefillChunk;
                         expected_tokens = w.prompt_span.length;
-                    } else if constexpr (std::is_same_v<T, DecodeOneToken>) {
-                        expected_kind = WorkKind::DecodeOneToken;
-                        expected_tokens = 1;
                     } else {
-                        expected_kind = WorkKind::BootstrapDecode;
+                        expected_kind = WorkKind::DecodeOneToken;
                         expected_tokens = 1;
                     }
                 },
@@ -522,9 +519,7 @@ void Worker::process_batch(PendingBatch pending) {
                     delta.kv_tokens_committed = w.prompt_span.length;
                     delta.prompt_tokens_committed = w.prompt_span.length;
                 } else if constexpr (std::is_same_v<T, DecodeOneToken>) {
-                    delta.kv_tokens_committed = 1;
-                } else {
-                    delta.kv_tokens_committed = 0;
+                    delta.kv_tokens_committed = w.write_kv ? 1 : 0;
                 }
             },
             item);
@@ -549,11 +544,8 @@ BatchResult Worker::generate_dummy_result(const ScheduledBatch& batch) {
                 if constexpr (std::is_same_v<W, PrefillChunk>) {
                     wr.kind = WorkKind::PrefillChunk;
                     wr.tokens_consumed = w.prompt_span.length;
-                } else if constexpr (std::is_same_v<W, DecodeOneToken>) {
-                    wr.kind = WorkKind::DecodeOneToken;
-                    wr.tokens_consumed = 1;
                 } else {
-                    wr.kind = WorkKind::BootstrapDecode;
+                    wr.kind = WorkKind::DecodeOneToken;
                     wr.tokens_consumed = 1;
                 }
             },
