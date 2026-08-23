@@ -65,6 +65,12 @@ private:
 
     void sync_capacity();
 
+    std::unordered_map<SequenceId, SequenceState> build_sequence_states(
+        const std::unordered_map<SequenceId, SequenceSnapshot>& snapshots) const;
+    Result<std::vector<SequenceDelta>> build_deltas(
+        const std::unordered_map<SequenceId, SequenceState>& sequences,
+        const std::unordered_map<SequenceId, SequenceSnapshot>& snapshots);
+
     BatchResult generate_dummy_result(const ScheduledBatch& batch);
 
     template <typename ChanPtr, typename T>

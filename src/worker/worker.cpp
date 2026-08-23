@@ -323,6 +323,50 @@ Result<void> Worker::release_sequence_blocks(BlockTableIter it) {
     return {};
 }
 
+std::unordered_map<SequenceId, SequenceState> Worker::build_sequence_states(
+    const std::unordered_map<SequenceId, SequenceSnapshot>& snapshots) const {
+    std::unordered_map<SequenceId, SequenceState> sequences;
+    sequences.reserve(snapshots.size());
+    for (const auto& [seq_id, snapshot] : snapshots) {
+        SequenceState state;
+        state.seq_id = snapshot.seq_id;
+        state.prompt_tokens = snapshot.prompt_tokens;
+        state.max_context_len = snapshot.max_context_len;
+        state.kv_written = snapshot.kv_written;
+        state.prompt_processed = snapshot.prompt_processed;
+        state.block_table = block_tables_.at(seq_id);
+        state.aborted = snapshot.aborted;
+        sequences.emplace(seq_id, std::move(state));
+    }
+    return sequences;
+}
+
+Result<std::vector<SequenceDelta>> Worker::build_deltas(
+    const std::unordered_map<SequenceId, SequenceState>& sequences,
+    const std::unordered_map<SequenceId, SequenceSnapshot>& snapshots) {
+    std::vector<SequenceDelta> deltas;
+    deltas.reserve(sequences.size());
+    for (const auto& [seq_id, state] : sequences) {
+        const auto& before = snapshots.at(seq_id);
+        auto bt = block_tables_.find(seq_id);
+        if (bt == block_tables_.end()) {
+            return std::unexpected(ErrorCode::InvalidArgument);
+        }
+        bt->second = state.block_table;
+        SequenceDelta delta;
+        delta.seq_id = seq_id;
+        delta.kv_tokens_committed = state.kv_written - before.kv_written;
+        delta.prompt_tokens_committed = state.prompt_processed - before.prompt_processed;
+        if (delta.kv_tokens_committed < 0 || delta.prompt_tokens_committed < 0) {
+            return std::unexpected(ErrorCode::InternalError);
+        }
+        if (delta.kv_tokens_committed > 0 || delta.prompt_tokens_committed > 0) {
+            deltas.push_back(delta);
+        }
+    }
+    return deltas;
+}
+
 void Worker::process_batch(PendingBatch pending) {
     std::lock_guard resource_lock(resource_mutex_);
 
@@ -365,19 +409,7 @@ void Worker::process_batch(PendingBatch pending) {
         }
     }
 
-    std::unordered_map<SequenceId, SequenceState> sequences;
-    sequences.reserve(snapshots.size());
-    for (const auto& [seq_id, snapshot] : snapshots) {
-        SequenceState state;
-        state.seq_id = snapshot.seq_id;
-        state.prompt_tokens = snapshot.prompt_tokens;
-        state.max_context_len = snapshot.max_context_len;
-        state.kv_written = snapshot.kv_written;
-        state.prompt_processed = snapshot.prompt_processed;
-        state.block_table = block_tables_.at(seq_id);
-        state.aborted = snapshot.aborted;
-        sequences.emplace(seq_id, std::move(state));
-    }
+    auto sequences = build_sequence_states(snapshots);
 
     if (model_) {
         BatchTranslator translator(*backend_, *kv_mgr_, kKVBlockSize);
@@ -471,30 +503,13 @@ void Worker::process_batch(PendingBatch pending) {
 
         sync_capacity();
 
-        std::vector<SequenceDelta> deltas;
-        deltas.reserve(sequences.size());
-        for (const auto& [seq_id, state] : sequences) {
-            const auto& before = snapshots.at(seq_id);
-            auto bt = block_tables_.find(seq_id);
-            if (bt == block_tables_.end()) {
-                resolve(pending.chan,
-                        Result<WorkerBatchResult>(std::unexpected(ErrorCode::InvalidArgument)));
-                return;
-            }
-            bt->second = state.block_table;
-            SequenceDelta delta;
-            delta.seq_id = seq_id;
-            delta.kv_tokens_committed = state.kv_written - before.kv_written;
-            delta.prompt_tokens_committed = state.prompt_processed - before.prompt_processed;
-            if (delta.kv_tokens_committed < 0 || delta.prompt_tokens_committed < 0) {
-                resolve(pending.chan,
-                        Result<WorkerBatchResult>(std::unexpected(ErrorCode::InternalError)));
-                return;
-            }
-            if (delta.kv_tokens_committed > 0 || delta.prompt_tokens_committed > 0) {
-                deltas.push_back(delta);
-            }
+        auto deltas_r = build_deltas(sequences, snapshots);
+        if (!deltas_r) {
+            resolve(pending.chan,
+                    Result<WorkerBatchResult>(std::unexpected(deltas_r.error())));
+            return;
         }
+        auto deltas = std::move(*deltas_r);
 
         WorkerBatchResult worker_result;
         worker_result.batch = std::move(result);
