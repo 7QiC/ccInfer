@@ -4,9 +4,9 @@ Contributor guide for ccInfer, a high-performance C++23 LLM inference framework 
 
 ## Project Structure & Module Organization
 
-- `src/` — Source code. `base/` holds common types (`Result<T>`, error codes, channels); `backend/` abstracts the GPU backend (`Backend`, `Buffer`); `cache/` implements the paged KV cache and prefix cache; `core/` defines the framework `Tensor` and dtype traits; `executor/`, `worker/`, and `scheduler/` form the execution pipeline; `model/` handles model loading and Qwen3; `ops/` is the operator-library facade (ccop); `http/` and `tokenizer/` make up the server layer; `main.cpp` is the server entry point.
+- `src/` — Source code. `common/` holds shared types (`Result<T>`, error codes, request types, and channels); `backend/` abstracts the GPU backend (`Backend`, `Buffer`); `cache/` implements the paged KV cache and prefix cache; `core/` defines the framework `Tensor` and dtype traits; `engine/`, `executor/`, `worker/`, and `scheduler/` form the execution pipeline; `model/` handles model loading and Qwen3; `facade/` adapts external libraries such as ccop; `http/` and `tokenizer/` make up the server layer; `main.cpp` is the server entry point.
 - `tests/` — `unit/` GTest tests and `integration/` end-to-end tests.
-- `docs/`, `scripts/`, `models/`, `tools/` — Architecture docs, Python benchmark/profiling scripts, downloaded model weights, and helper utilities.
+- `docs/`, `scripts/`, `models/`, `tools/` — Project notes, Python benchmark/profiling scripts, downloaded model weights, and helper utilities.
 
 ## Build, Test, and Development Commands
 
@@ -21,7 +21,7 @@ Configure with `-DBUILD_SERVER=ON` to build the HTTP server (`BUILD_TESTS` defau
 
 ## Coding Style & Naming Conventions
 
-C++23 with the `ccinfer` namespace. `.clang-format` enforces Google base style: 100-column limit, 4-space indentation, no tabs; run `clang-format` on changed files before committing. Classes/enums use PascalCase; functions, variables, and files use snake_case; members end with an underscore (e.g. `int count_;`). Parameter semantics: read-only parameters use `const T&`; parameters that are written (outputs/in-place) take a pointer `T*`, never a reference. Headers use `.h` with `#pragma once` and sorted includes (source-file header first, then C std → C++ std → third-party → project). Errors use `Result<T> = std::expected<T, ErrorCode>`; never throw in hot paths. Device memory is owned by the framework-side `Buffer` (`backend/buffer.h`).
+C++23 with the `ccinfer` namespace. `.clang-format` enforces Google base style: 100-column limit, 4-space indentation, no tabs; run `clang-format-20` on changed files before committing. Classes/enums use PascalCase; functions, variables, and files use snake_case; members end with an underscore (e.g. `int count_;`). Parameter semantics: read-only parameters use `const T&`; parameters that are written (outputs/in-place) take a pointer `T*`, never a reference. Headers use `.h` with `#pragma once` and sorted includes (source-file header first, then C std → C++ std → third-party → project). Errors use `Result<T> = std::expected<T, ErrorCode>` from `common/error_code.h`; never throw in hot paths. Device memory is owned by the framework-side `Buffer` (`backend/buffer.h`).
 
 ## Comment Policy
 
