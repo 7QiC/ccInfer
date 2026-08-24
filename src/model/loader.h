@@ -13,7 +13,7 @@
 #include <cuda_fp16.h>
 
 #include "backend/backend.h"
-#include "base/result.h"
+#include "common/error_code.h"
 #include "core/tensor.h"
 
 namespace ccinfer {

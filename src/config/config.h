@@ -2,8 +2,8 @@
 
 #include <string>
 
-#include "base/result.h"
 #include "cache/block.h"
+#include "common/error_code.h"
 #include "model/config.h"
 
 namespace ccinfer {

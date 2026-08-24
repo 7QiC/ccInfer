@@ -1,10 +1,6 @@
 #pragma once
 
 #include <atomic>
-#include <boost/asio/awaitable.hpp>
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/ip/tcp.hpp>
-#include <boost/asio/streambuf.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <future>
@@ -15,8 +11,13 @@
 #include <string>
 #include <string_view>
 
-#include "base/channel.h"
-#include "base/result.h"
+#include <boost/asio/awaitable.hpp>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/streambuf.hpp>
+
+#include "common/channel.h"
+#include "common/error_code.h"
 
 namespace ccinfer {
 
@@ -36,8 +37,7 @@ namespace asio = boost::asio;
 
 class HttpServer {
 public:
-    HttpServer(asio::io_context& io, uint16_t port, Scheduler& scheduler,
-               Tokenizer& tokenizer);
+    HttpServer(asio::io_context& io, uint16_t port, Scheduler& scheduler, Tokenizer& tokenizer);
     ~HttpServer();
 
     HttpServer(const HttpServer&) = delete;

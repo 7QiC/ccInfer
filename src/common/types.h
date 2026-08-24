@@ -1,17 +1,26 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <variant>
 #include <vector>
 
-#include "base/error_code.h"
+#include <boost/asio/any_io_executor.hpp>
+#include <boost/asio/experimental/channel.hpp>
+#include <boost/system/error_code.hpp>
+
+#include "common/error_code.h"
 
 namespace ccinfer {
 
-// Shared types used by Executor, DeviceWorker, Scheduler, and HTTP.
-// No CUDA or ASIO dependency.
+namespace asio = boost::asio;
+
+// Shared types used by Executor, DeviceWorker, Scheduler, and HTTP. This file
+// also contains the HTTP request boundary, so it depends on the lightweight
+// Boost.Asio channel/executor types but not on CUDA or model implementations.
 using SequenceId = uint64_t;
 
 struct SequenceInitialState {
@@ -138,6 +147,25 @@ struct GeneratedToken {
     std::string text;
     bool has_token = false;
     bool finished = false;
+};
+
+using TokenChannel =
+    asio::experimental::channel<void(boost::system::error_code, Result<GeneratedToken>)>;
+
+// HTTP -> Scheduler request boundary.
+// TokenSink lets Scheduler post tokens/events back to the HTTP io_context.
+struct TokenSink {
+    asio::any_io_executor executor;
+    std::weak_ptr<TokenChannel> channel;
+    std::function<void()> on_send_failed;
+};
+
+struct SchedulerRequest {
+    std::string request_id;
+    std::vector<int32_t> prompt_tokens;
+    SamplingParams sampling;
+    int max_context_len = 0;  // 0 means use EngineConfig::default_max_context_len.
+    TokenSink sink;
 };
 
 struct Capacity {

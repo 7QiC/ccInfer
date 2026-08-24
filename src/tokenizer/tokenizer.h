@@ -6,7 +6,7 @@
 #include <string_view>
 #include <vector>
 
-#include "base/result.h"
+#include "common/error_code.h"
 
 namespace ccinfer {
 

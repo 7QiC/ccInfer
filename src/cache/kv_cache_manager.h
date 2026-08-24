@@ -4,9 +4,9 @@
 #include <memory>
 #include <vector>
 
-#include "base/result.h"
 #include "cache/block.h"
 #include "cache/cache_stats.h"
+#include "common/error_code.h"
 #include "core/tensor.h"
 
 namespace ccinfer {

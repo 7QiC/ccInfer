@@ -8,8 +8,8 @@
 #include <utility>
 #include <variant>
 
-#include "base/error_code.h"
 #include "cache/kv_cache_manager.h"
+#include "common/error_code.h"
 #include "facade/log.h"
 
 namespace ccinfer {

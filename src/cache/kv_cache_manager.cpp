@@ -5,10 +5,10 @@
 #include <unordered_set>
 #include <utility>
 
-#include "base/error_code.h"
 #include "cache/cache_stats.h"
 #include "cache/kv_cache_storage.h"
 #include "cache/prefix_cache.h"
+#include "common/error_code.h"
 #include "facade/log.h"
 
 namespace ccinfer {

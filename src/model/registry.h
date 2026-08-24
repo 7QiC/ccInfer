@@ -4,7 +4,7 @@
 #include <string>
 #include <unordered_map>
 
-#include "base/result.h"
+#include "common/error_code.h"
 #include "model/config.h"
 #include "model/model.h"
 

@@ -14,7 +14,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/signal_set.hpp>
 
-#include "base/error_code.h"
+#include "common/error_code.h"
 #include "config/config.h"
 #include "executor/executor.h"
 #include "http/http_server.h"

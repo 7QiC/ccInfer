@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <memory>
 
-#include "base/result.h"
+#include "common/error_code.h"
 #include "core/tensor.h"
 
 namespace ccinfer {

@@ -16,7 +16,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
 
-#include "base/request.h"
+#include "common/types.h"
 #include "config/config.h"
 #include "executor/executor.h"
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <expected>
 #include <string_view>
 
 namespace ccinfer {
@@ -44,6 +45,9 @@ enum class ErrorCode : uint16_t {
     Unsupported,
     InternalError,
 };
+
+template <typename T>
+using Result = std::expected<T, ErrorCode>;
 
 inline constexpr std::string_view error_message(ErrorCode c) noexcept {
     switch (c) {

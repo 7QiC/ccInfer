@@ -6,8 +6,8 @@
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/io_context.hpp>
 
-#include "base/channel.h"
-#include "base/types.h"
+#include "common/channel.h"
+#include "common/types.h"
 #include "config/config.h"
 
 namespace ccinfer {

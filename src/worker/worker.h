@@ -15,9 +15,9 @@
 #include <boost/asio/post.hpp>
 
 #include "backend/backend.h"
-#include "base/channel.h"
-#include "base/result.h"
-#include "base/types.h"
+#include "common/channel.h"
+#include "common/error_code.h"
+#include "common/types.h"
 #include "config/config.h"
 #include "executor/execution.h"
 #include "facade/log.h"

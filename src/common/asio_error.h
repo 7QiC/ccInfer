@@ -3,7 +3,7 @@
 #include <boost/asio/error.hpp>
 #include <boost/system/error_code.hpp>
 
-#include "base/error_code.h"
+#include "common/error_code.h"
 
 namespace ccinfer {
 

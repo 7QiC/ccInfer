@@ -2,8 +2,8 @@
 
 #include <cstdint>
 
-#include "base/result.h"
-#include "base/types.h"
+#include "common/error_code.h"
+#include "common/types.h"
 #include "core/tensor.h"
 
 namespace ccinfer {

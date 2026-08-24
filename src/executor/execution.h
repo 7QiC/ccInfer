@@ -4,8 +4,8 @@
 #include <cstdint>
 #include <vector>
 
-#include "base/types.h"
 #include "cache/block.h"
+#include "common/types.h"
 #include "core/tensor.h"
 
 namespace ccinfer {

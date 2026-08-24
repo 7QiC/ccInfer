@@ -7,7 +7,7 @@
 #include <utility>
 
 #include "backend/backend.h"
-#include "base/error_code.h"
+#include "common/error_code.h"
 
 namespace ccinfer {
 
@@ -89,7 +89,7 @@ Tensor Tensor::from_buffer(std::shared_ptr<Buffer> buffer, void* data, ccop::DTy
     }
     Tensor tensor;
     static_cast<ccop::Tensor&>(tensor) = ccop::Tensor(data, dtype, buffer->device(), shape_arr,
-                                                    stride, static_cast<int>(shape.size()));
+                                                      stride, static_cast<int>(shape.size()));
     tensor.buffer_ = std::move(buffer);
     assert(data_in_buffer(tensor.buffer_.get(), data, tensor.nbytes()));
     return tensor;

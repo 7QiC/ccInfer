@@ -6,7 +6,7 @@
 #include <cuda_bf16.h>
 
 #include "backend/backend.h"
-#include "base/result.h"
+#include "common/error_code.h"
 #include "core/tensor.h"
 #include "model/config.h"
 #include "model/loader.h"

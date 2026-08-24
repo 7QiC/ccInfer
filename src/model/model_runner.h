@@ -9,10 +9,10 @@
 #include <vector>
 
 #include "backend/backend.h"
-#include "executor/execution.h"
-#include "base/result.h"
 #include "cache/kv_cache_manager.h"
+#include "common/error_code.h"
 #include "core/traits.h"
+#include "executor/execution.h"
 #include "model/config.h"
 #include "model/model.h"
 
@@ -64,10 +64,9 @@ public:
 
         if (batch.mode != ForwardMode::Mixed) {
             for (int i = 0; i < B; ++i) {
-                const bool kind_ok =
-                    batch.mode == ForwardMode::Prefill
-                        ? batch.item_kinds[i] == WorkKind::PrefillChunk
-                        : batch.item_kinds[i] == WorkKind::DecodeOneToken;
+                const bool kind_ok = batch.mode == ForwardMode::Prefill
+                                         ? batch.item_kinds[i] == WorkKind::PrefillChunk
+                                         : batch.item_kinds[i] == WorkKind::DecodeOneToken;
                 if (!kind_ok) return std::unexpected(ErrorCode::InvalidArgument);
                 if (batch.item_indices[i] >
                     static_cast<std::size_t>(std::numeric_limits<int>::max()))
@@ -153,7 +152,7 @@ public:
         if (!fwd_r) return std::unexpected(fwd_r.error());
 
         auto s_r = map_result(ccop::greedy_sample(output.logits, batch.logits_indices,
-                                                      &output.tokens_out, backend.context()));
+                                                  &output.tokens_out, backend.context()));
         if (!s_r) return std::unexpected(s_r.error());
 
         // D2H: sampled tokens.
@@ -171,9 +170,8 @@ public:
             wr.item_index = static_cast<int>(batch.item_indices[i]);
             wr.seq_id = batch.item_seq_ids[i];
             wr.kind = batch.item_kinds[i];
-            wr.sampled_tokens = batch.sample_flags[i]
-                                    ? std::vector<int32_t>{tokens_host[i]}
-                                    : std::vector<int32_t>{};
+            wr.sampled_tokens = batch.sample_flags[i] ? std::vector<int32_t>{tokens_host[i]}
+                                                      : std::vector<int32_t>{};
             wr.tokens_consumed = batch.item_token_counts[i];
             wr.eos = false;
             results.push_back(std::move(wr));

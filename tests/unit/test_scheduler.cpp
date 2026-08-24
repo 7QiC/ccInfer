@@ -18,7 +18,7 @@
 #include "scheduler/scheduler.h"
 #undef private
 
-#include "base/channel.h"
+#include "common/channel.h"
 
 namespace ccinfer {
 namespace {

@@ -13,9 +13,9 @@
 #include <cuda_bf16.h>
 
 #include "backend/backend.h"
-#include "base/error_code.h"
 #include "cache/kv_cache_manager.h"
 #include "cache/kv_cache_storage.h"
+#include "common/error_code.h"
 #include "core/traits.h"
 #include "facade/log.h"
 #include "model/loader.h"

@@ -7,7 +7,7 @@
 #include <span>
 
 #include "backend/buffer.h"
-#include "base/result.h"
+#include "common/error_code.h"
 
 namespace ccinfer {
 

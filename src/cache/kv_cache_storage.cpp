@@ -5,7 +5,7 @@
 #include <utility>
 
 #include "backend/backend.h"
-#include "base/error_code.h"
+#include "common/error_code.h"
 
 namespace ccinfer {
 

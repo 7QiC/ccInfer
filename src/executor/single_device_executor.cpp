@@ -7,8 +7,8 @@
 #include <boost/asio/deferred.hpp>
 #include <boost/asio/this_coro.hpp>
 
-#include "base/asio_error.h"
-#include "base/channel.h"
+#include "common/asio_error.h"
+#include "common/channel.h"
 #include "worker/worker.h"
 
 namespace ccinfer {

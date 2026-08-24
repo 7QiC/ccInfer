@@ -6,8 +6,8 @@
 #include <unordered_map>
 #include <vector>
 
-#include "base/result.h"
 #include "cache/cache_stats.h"
+#include "common/error_code.h"
 
 namespace ccinfer {
 

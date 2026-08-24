@@ -7,7 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "base/result.h"
+#include "common/error_code.h"
 #include "facade/ops.h"
 
 namespace ccinfer {

@@ -5,9 +5,9 @@
 #include <vector>
 
 #include "backend/backend.h"
-#include "base/result.h"
-#include "base/types.h"
 #include "cache/block.h"
+#include "common/error_code.h"
+#include "common/types.h"
 #include "executor/execution.h"
 
 namespace ccinfer {
