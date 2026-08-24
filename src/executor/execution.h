@@ -21,6 +21,10 @@ struct SequenceState {
     int prompt_processed = 0;  // tokens already consumed from prompt
     BlockTable block_table;
     SequenceStatus status = SequenceStatus::Active;
+    int32_t last_token = -1;
+    int tokens_generated = 0;
+    int max_tokens = 0;
+    bool finished = false;
 };
 
 // PhysicalBatch — GPU-ready data for ModelRunner::inference.

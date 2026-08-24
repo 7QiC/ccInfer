@@ -19,13 +19,15 @@ public:
     Result<void> init(const Config& config) override;
     void shutdown() override;
 
-    asio::awaitable<Result<CreateSequenceResult>> create_sequence(
-        std::vector<int32_t> prompt_tokens, int max_context_len) override;
+    asio::awaitable<Result<AdmitSequenceResult>> admit_sequence(
+        std::vector<int32_t> prompt_tokens, int max_context_len,
+        SequenceInitialState initial_state = {}) override;
     asio::awaitable<Result<SuspendSequenceResult>> suspend_sequence(
         SequenceId seq_id, std::vector<int32_t> prompt_tokens, int max_context_len) override;
     asio::awaitable<Result<void>> release_sequence(SequenceId seq_id) override;
     asio::awaitable<Result<void>> abort_sequence(SequenceId seq_id) override;
-    asio::awaitable<Result<BatchResult>> execute_batch(ScheduledBatch batch) override;
+    Result<BatchFuture> execute_batch(ScheduledBatch batch) override;
+    asio::awaitable<Result<BatchResult>> collect_batch(BatchFuture future) override;
 
     Capacity capacity() const override;
 

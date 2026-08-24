@@ -8,6 +8,7 @@
 #include <thread>
 #include <unordered_map>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <boost/asio/io_context.hpp>
@@ -19,6 +20,7 @@
 #include "base/types.h"
 #include "config/config.h"
 #include "executor/execution.h"
+#include "facade/log.h"
 
 namespace ccinfer {
 
@@ -38,39 +40,86 @@ public:
     Result<void> init(const Config& config);
     void shutdown();
 
-    Result<CreateSequenceResult> prepare_sequence_resources(
-        SequenceId seq_id, const std::vector<int32_t>& prompt_tokens, int max_context_len);
-    Result<SuspendSequenceResult> reset_sequence_resources(
-        SequenceId seq_id, const std::vector<int32_t>& prompt_tokens, int max_context_len);
-    Result<void> release_sequence_resources(SequenceId seq_id);
-    void enqueue_execute_batch(ScheduledBatch batch, std::vector<SequenceSnapshot> sequences,
-                               std::shared_ptr<BatchChannel> chan);
+    Result<std::shared_ptr<AdmitSequenceChannel>> enqueue_admit_sequence(
+        SequenceId seq_id, std::vector<int32_t> prompt_tokens, int max_context_len,
+        SequenceInitialState initial_state = {});
+    Result<std::shared_ptr<SuspendSequenceChannel>> enqueue_suspend_sequence(
+        SequenceId seq_id, std::vector<int32_t> prompt_tokens, int max_context_len);
+    Result<std::shared_ptr<VoidChannel>> enqueue_release_sequence(SequenceId seq_id);
+    Result<std::shared_ptr<VoidChannel>> enqueue_abort_sequence(SequenceId seq_id);
+    Result<BatchFuture> enqueue_execute_batch(ScheduledBatch batch);
 
     Capacity capacity() const;
 
 private:
+    struct AdmitCommand {
+        SequenceId seq_id;
+        std::vector<int32_t> prompt_tokens;
+        int max_context_len;
+        SequenceInitialState initial_state;
+        std::shared_ptr<AdmitSequenceChannel> channel;
+    };
+
+    struct SuspendCommand {
+        SequenceId seq_id;
+        std::vector<int32_t> prompt_tokens;
+        int max_context_len;
+        std::shared_ptr<SuspendSequenceChannel> channel;
+    };
+
+    struct ReleaseCommand {
+        SequenceId seq_id;
+        std::shared_ptr<VoidChannel> channel;
+    };
+
+    struct AbortCommand {
+        SequenceId seq_id;
+        std::shared_ptr<VoidChannel> channel;
+    };
+
     struct PendingBatch {
         ScheduledBatch batch;
-        std::vector<SequenceSnapshot> sequences;
         std::shared_ptr<BatchChannel> chan;
     };
 
+    struct ResolvedBatch {
+        ScheduledBatch batch;
+        std::vector<std::size_t> original_indices;
+        std::vector<WorkItemResult> stale_results;
+    };
+
+    using PendingCommand =
+        std::variant<AdmitCommand, SuspendCommand, ReleaseCommand, AbortCommand, PendingBatch>;
+    using SequenceRegistry = std::unordered_map<SequenceId, SequenceState>;
+
     void worker_loop();
+    void process_command(PendingCommand command);
+    void process_admit(AdmitCommand command);
+    void process_suspend(SuspendCommand command);
+    void process_release(ReleaseCommand command);
+    void process_abort(AbortCommand command);
     void process_batch(PendingBatch pending);
 
     Result<void> init_resources(const Config& config);
     void reset_resources();
 
-    using BlockTableIter = std::unordered_map<SequenceId, BlockTable>::iterator;
-    Result<void> release_sequence_blocks(BlockTableIter it);
+    Result<AdmitSequenceResult> admit_sequence_resources(SequenceId seq_id,
+                                                         const std::vector<int32_t>& prompt_tokens,
+                                                         int max_context_len,
+                                                         SequenceInitialState initial_state);
+    Result<SuspendSequenceResult> reset_sequence_resources(
+        SequenceId seq_id, const std::vector<int32_t>& prompt_tokens, int max_context_len);
+    Result<void> release_sequence_resources(SequenceId seq_id);
 
     void sync_capacity();
 
-    std::unordered_map<SequenceId, SequenceState> build_sequence_states(
-        const std::unordered_map<SequenceId, SequenceSnapshot>& snapshots) const;
-    Result<std::vector<SequenceDelta>> build_deltas(
-        const std::unordered_map<SequenceId, SequenceState>& sequences,
-        const std::unordered_map<SequenceId, SequenceSnapshot>& snapshots);
+    SequenceRegistry build_sequence_states(const ScheduledBatch& batch) const;
+    Result<ResolvedBatch> resolve_batch(const ScheduledBatch& batch) const;
+    Result<std::vector<SequenceDelta>> build_deltas(const SequenceRegistry& before,
+                                                    const SequenceRegistry& after);
+    static Result<void> apply_sequence_deltas(SequenceRegistry& states,
+                                              const std::vector<SequenceDelta>& deltas);
+    static Result<void> apply_sampled_progress(SequenceRegistry& states, const BatchResult& batch);
 
     WorkerBatchResult generate_dummy_batch_result(const ScheduledBatch& batch) const;
 
@@ -79,14 +128,15 @@ private:
 
     asio::io_context& io_;
 
-    std::deque<PendingBatch> queue_;
+    std::deque<PendingCommand> queue_;
     std::mutex queue_mutex_;
     std::condition_variable cv_;
     std::thread worker_thread_;
     std::atomic<bool> running_{false};
+    std::size_t in_flight_batches_ = 0;
 
     std::mutex resource_mutex_;
-    std::unordered_map<SequenceId, BlockTable> block_tables_;
+    std::unordered_map<SequenceId, SequenceState> request_states_;
 
     // Cached capacity, synced from KVCacheManager::stats().
     std::atomic<int> active_sequences_{0};
@@ -111,7 +161,12 @@ private:
 template <typename ChanPtr, typename T>
 void Worker::resolve(ChanPtr& chan_ptr, Result<T> result) {
     asio::post(io_, [chan_ptr, result = std::move(result)]() mutable {
-        chan_ptr->try_send(boost::system::error_code{}, std::move(result));
+        chan_ptr->async_send(
+            boost::system::error_code{}, std::move(result), [](boost::system::error_code ec) {
+                if (ec) {
+                    ccLog::warn("worker completion channel failed ec={}", ec.value());
+                }
+            });
     });
 }
 

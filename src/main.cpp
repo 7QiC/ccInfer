@@ -35,9 +35,10 @@ bool parse_nonnegative_int(const char* text, int& value) {
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0
               << " --model-path PATH [--port PORT] [--device N] [--max-blocks N] "
-                 "[--block-size N] [--max-sequences N] "
-                 "[--max-active-scheduled-sequences N] [--schedule-compute-budget N] "
-                 "[--prefill-chunk-size N] [--max-context-len N]\n";
+                 "[--block-size N] [--max-sequences N] [--max-running-requests N] "
+                 "[--max-concurrent-batches N] [--max-pending-requests N] "
+                 "[--max-token-budget N] [--max-seq-prefill-tokens N] "
+                 "[--max-context-len N]\n";
 }
 
 }  // namespace
@@ -75,19 +76,29 @@ int main(int argc, char* argv[]) {
                 std::cerr << "Invalid max sequences: " << argv[i] << std::endl;
                 return 1;
             }
-        } else if (arg == "--max-active-scheduled-sequences" && i + 1 < argc) {
-            if (!parse_nonnegative_int(argv[++i], engine_config.max_active_scheduled_sequences)) {
-                std::cerr << "Invalid max active scheduled sequences: " << argv[i] << std::endl;
+        } else if (arg == "--max-running-requests" && i + 1 < argc) {
+            if (!parse_nonnegative_int(argv[++i], engine_config.max_running_requests)) {
+                std::cerr << "Invalid max running requests: " << argv[i] << std::endl;
                 return 1;
             }
-        } else if (arg == "--schedule-compute-budget" && i + 1 < argc) {
-            if (!parse_nonnegative_int(argv[++i], engine_config.schedule_compute_budget)) {
-                std::cerr << "Invalid schedule compute budget: " << argv[i] << std::endl;
+        } else if (arg == "--max-concurrent-batches" && i + 1 < argc) {
+            if (!parse_nonnegative_int(argv[++i], engine_config.max_concurrent_batches)) {
+                std::cerr << "Invalid max concurrent batches: " << argv[i] << std::endl;
                 return 1;
             }
-        } else if (arg == "--prefill-chunk-size" && i + 1 < argc) {
-            if (!parse_nonnegative_int(argv[++i], engine_config.prefill_chunk_size)) {
-                std::cerr << "Invalid prefill chunk size: " << argv[i] << std::endl;
+        } else if (arg == "--max-pending-requests" && i + 1 < argc) {
+            if (!parse_nonnegative_int(argv[++i], engine_config.max_pending_requests)) {
+                std::cerr << "Invalid max pending requests: " << argv[i] << std::endl;
+                return 1;
+            }
+        } else if (arg == "--max-token-budget" && i + 1 < argc) {
+            if (!parse_nonnegative_int(argv[++i], engine_config.max_token_budget)) {
+                std::cerr << "Invalid max token budget: " << argv[i] << std::endl;
+                return 1;
+            }
+        } else if (arg == "--max-seq-prefill-tokens" && i + 1 < argc) {
+            if (!parse_nonnegative_int(argv[++i], engine_config.max_seq_prefill_tokens)) {
+                std::cerr << "Invalid max sequence prefill tokens: " << argv[i] << std::endl;
                 return 1;
             }
         } else if (arg == "--max-context-len" && i + 1 < argc) {

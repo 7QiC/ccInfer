@@ -14,7 +14,13 @@ namespace ccinfer {
 // No CUDA or ASIO dependency.
 using SequenceId = uint64_t;
 
-struct CreateSequenceResult {
+struct SequenceInitialState {
+    int32_t last_token = -1;
+    int tokens_generated = 0;
+    int max_tokens = 0;
+};
+
+struct AdmitSequenceResult {
     SequenceId seq_id = 0;
     int prompt_processed = 0;
 };
@@ -26,9 +32,8 @@ struct SuspendSequenceResult {
 enum class ForwardMode : uint8_t { Prefill, Decode, Mixed };
 enum class WorkKind : uint8_t { PrefillChunk, DecodeOneToken };
 
-// Lifecycle of a request that has been admitted into Scheduler::active_.
-// Pending and creating requests are represented by Scheduler's pending queues
-// because they do not have an executor sequence yet.
+// Lifecycle of a request in the Scheduler. A waiting request has no executor
+// sequence yet; admission materializes that sequence in its RequestState.
 enum class RequestStatus : uint8_t { Active, Finished, Cancelled, Failed };
 
 // Lifecycle of an executor-owned logical sequence. The map entry itself is the
@@ -51,12 +56,27 @@ struct DecodeOneToken {
     SequenceId seq_id = 0;
     int32_t input_token = 0;
     std::optional<int> expected_context_len;
+    bool late_bind = false;
     // false = bootstrap decode: sample from the last cached prompt token and
     // write no new KV / allocate no new block.
     bool write_kv = true;
 };
 
 using WorkItem = std::variant<PrefillChunk, DecodeOneToken>;
+
+inline SequenceId work_sequence_id(const WorkItem& item) noexcept {
+    return std::visit([](const auto& work) { return work.seq_id; }, item);
+}
+
+inline WorkKind work_kind(const WorkItem& item) noexcept {
+    return std::holds_alternative<PrefillChunk>(item) ? WorkKind::PrefillChunk
+                                                      : WorkKind::DecodeOneToken;
+}
+
+inline int work_token_count(const WorkItem& item) noexcept {
+    if (const auto* prefill = std::get_if<PrefillChunk>(&item)) return prefill->prompt_span.length;
+    return 1;
+}
 
 // Sampling parameters — user-facing, per-request.
 // Shared by all sequences in a batch.
@@ -81,6 +101,7 @@ struct WorkItemResult {
     std::vector<int32_t> sampled_tokens;
     int tokens_consumed = 0;
     bool eos = false;
+    bool stale = false;
 };
 
 struct BatchResult {

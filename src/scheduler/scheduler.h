@@ -4,11 +4,12 @@
 #include <cstdint>
 #include <deque>
 #include <future>
+#include <list>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include <boost/asio/awaitable.hpp>
@@ -25,35 +26,53 @@ namespace asio = boost::asio;
 
 enum class GenerationPhase : uint8_t { Prefill, ReplayPrefill, Bootstrap, Decode };
 
-// Scheduler-owned request state — only accessed on scheduler_io thread.
-struct SchedulerRequestState {
-    std::string request_id;
+struct SequenceReservation {
+    // Number of scheduled work items that still own an execution lifetime
+    // lease. This is not a scheduling mutex.
+    int execution_leases = 0;
+    int reserved_prompt_tokens = 0;
+    int reserved_generation_tokens = 0;
+};
+
+// Scheduler's committed logical frontier. The physical execution frontier is
+// owned by Worker::SequenceState and must not be mirrored here.
+struct SequenceScheduleCursor {
+    GenerationPhase phase = GenerationPhase::Prefill;
+    int prefill_cursor = 0;
+    int generated_tokens_in_prompt = 0;
+    bool replay_pending = false;
+};
+
+struct SequenceSchedulingState {
     SequenceId seq_id = 0;
+    SequenceReservation reservation;
+    SequenceScheduleCursor cursor;
+};
+
+// One canonical request object shared by waiting and running scheduling
+// indexes. Execution state is materialized only after admission succeeds.
+struct RequestState {
+    std::string request_id;
 
     std::vector<int32_t> initial_prompt_tokens;
     std::vector<int32_t> prompt_tokens;
     RequestStatus status = RequestStatus::Active;
     bool sink_disconnected = false;
-    GenerationPhase phase = GenerationPhase::Prefill;
-    int prefill_cursor = 0;  // number of prompt tokens already consumed / committed
-    int generated_in_prompt = 0;
 
-    int32_t last_token = -1;   // next decode input; sampled but not yet in KV cache
-    int tokens_generated = 0;  // output tokens already sent to client
     std::vector<int32_t> generated_tokens;
     SamplingParams sampling;
     int max_context_len = 2048;
 
     TokenSink sink;
+    // Materialized only after admission. This is Scheduler-owned scheduling
+    // state; Worker owns the physical execution frontier separately.
+    std::optional<SequenceSchedulingState> scheduling;
 };
 
-// Scheduler must outlive the detached do_work() coroutine.
-// Server shutdown must call shutdown() and keep io_context running
-// until do_work() exits.
-//
-// Public API (submit, cancel, start, shutdown, shutdown_async) is thread-safe.
-// All internal state is accessed only on the scheduler_io thread.
+class EngineCore;
 
+// Scheduler owns request policy and state. EngineCore owns the execution loop
+// and batch completion FIFO; both run on the scheduler io_context thread.
 class Scheduler {
 public:
     Scheduler(asio::io_context& io, Executor& executor, EngineConfig config = {});
@@ -62,83 +81,84 @@ public:
     Scheduler(const Scheduler&) = delete;
     Scheduler& operator=(const Scheduler&) = delete;
 
-    // Thread-safe — callable from any thread.
+    // Thread-safe public boundary.
     void submit(SchedulerRequest req);
     void cancel(std::string request_id);
     void start();
     Capacity capacity() const;
-
-    // Fire-and-forget shutdown.  Prefer shutdown_async() for waitable shutdown.
     void shutdown();
-
-    // Initiates shutdown; returns a future that is set when do_work() has
-    // completed its cleanup (fail-all-pending + cleanup-all-active).
     std::shared_future<void> shutdown_async();
 
 private:
-    using StatePtr = std::shared_ptr<SchedulerRequestState>;
-    using SeqMap = std::unordered_map<SequenceId, StatePtr>;
+    friend class EngineCore;
 
-    // Must be called on scheduler_io thread.
+    using RequestPtr = std::shared_ptr<RequestState>;
+    using RequestRegistry = std::unordered_map<std::string, RequestPtr>;
+    using RunningOrder = std::list<RequestPtr>;
+    using RunningIterator = RunningOrder::iterator;
+
+    struct BatchBuildContext {
+        ScheduledBatch batch;
+        int token_budget = 0;
+        int block_size = 0;
+        bool sampling_set = false;
+    };
+
+    // All methods below run on scheduler_io unless explicitly marked public.
     void submit_on_scheduler_thread(SchedulerRequest req);
     void cancel_on_scheduler_thread(const std::string& request_id);
     void wake_on_scheduler_thread();
     void complete_shutdown_on_scheduler_thread();
 
-    struct BatchBuildContext {
-        ScheduledBatch batch;
-        int budget = 0;
-        int compute_budget = 0;
-        int block_size = 0;
-        int started_active = 0;
-        bool sampling_set = false;
-        std::vector<SequenceId> included;
-    };
+    asio::awaitable<ScheduledBatch> schedule_step();
+    asio::awaitable<bool> admit_one_waiting(BatchBuildContext& ctx);
+    bool has_schedulable_work() const;
+    bool has_waiting_work() const noexcept { return !waiting_.empty(); }
 
-    void build_decode_batch(BatchBuildContext& ctx);
-    void build_prefill_batch(BatchBuildContext& ctx);
-    static bool is_schedulable_state(const StatePtr& state) noexcept;
-    static bool has_started_execution(const StatePtr& state) noexcept;
+    void build_running_batch(BatchBuildContext& ctx);
+    bool build_state_work(BatchBuildContext& ctx, RequestState& state);
+    static void retire_reservation(RequestState& state, const WorkItem& item);
+    static bool is_schedulable_state(const RequestState& state) noexcept;
+    static bool is_prefill_phase(GenerationPhase phase) noexcept;
+    static bool is_decode_phase(GenerationPhase phase) noexcept;
     static bool sampling_compatible(const SamplingParams& lhs, const SamplingParams& rhs) noexcept;
 
-    asio::awaitable<void> do_work();
-    asio::awaitable<void> drain_pending();
-    ScheduledBatch build_scheduled_batch();
-    asio::awaitable<void> apply_and_push(const ScheduledBatch& batch, const BatchResult& result);
+    asio::awaitable<void> update_from_output(const ScheduledBatch& batch,
+                                             const BatchResult& result);
+    asio::awaitable<void> handle_batch_error(const ScheduledBatch& batch, ErrorCode err);
     asio::awaitable<void> cleanup_terminal_requests();
     asio::awaitable<void> fail_batch(const ScheduledBatch& batch, ErrorCode err);
-    asio::awaitable<void> suspend_sequence_for_replay(StatePtr& state);
-    void fail_all_pending_on_scheduler_thread(ErrorCode err);
-    asio::awaitable<void> cleanup_all_active(ErrorCode shutdown_err);
+    asio::awaitable<void> suspend_sequence_for_replay(RequestState& state);
+    asio::awaitable<void> preempt_one_for_admission();
+    void fail_all_waiting(ErrorCode err);
+    asio::awaitable<void> cleanup_all_running(ErrorCode shutdown_err);
     asio::awaitable<void> wait_for_work();
 
-    void filter_active_order();
-    void reorder_after_batch(const std::vector<SequenceId>& included);
-
+    void mark_dispatch_failed(const ScheduledBatch& batch, ErrorCode err);
     bool send_event(const TokenSink& sink, Result<GeneratedToken> result);
-    bool send_token_event(StatePtr& state);
-    bool send_terminal_event(StatePtr& state);
-    bool send_error_event(StatePtr& state, ErrorCode err);
+    bool send_token_event(RequestState& state);
+    bool send_terminal_event(RequestState& state);
+    bool send_error_event(RequestState& state, ErrorCode err);
+    void erase_request(const RequestPtr& request);
 
     asio::io_context& io_;
     Executor& executor_;
     EngineConfig engine_config_;
     asio::steady_timer idle_timer_;
+    std::unique_ptr<EngineCore> core_;
 
-    // Only accessed on scheduler_io thread — no mutex needed.
-    std::vector<SchedulerRequest> pending_requests_;
-    std::unordered_set<std::string> pending_or_creating_ids_;
-    std::unordered_set<std::string> cancelled_pending_ids_;
-    SeqMap active_;
-    std::deque<SequenceId> active_order_;
-    std::unordered_map<std::string, StatePtr> by_request_id_;
-    std::unordered_map<SequenceId, std::string> seq_to_request_id_;
+    // requests_ is the canonical registry. A request has exactly one scheduling
+    // position: waiting_ or running_. The indexes retain shared ownership of
+    // that canonical state instead of copying it; by_seq_id_ is populated only
+    // while the request is running.
+    RequestRegistry requests_;
+    std::deque<RequestPtr> waiting_;
+    RunningOrder running_;
+    std::unordered_map<SequenceId, RequestPtr> by_seq_id_;
 
-    std::vector<SequenceId> budget_blocked_{};  // items skipped due to KV budget
-    std::atomic<bool> running_{false};
+    std::atomic<bool> accepting_{false};
     uint64_t next_batch_id_{1};
 
-    // Shutdown synchronisation.
     std::mutex shutdown_mutex_;
     std::unique_ptr<std::promise<void>> shutdown_promise_;
     std::shared_future<void> shutdown_future_;

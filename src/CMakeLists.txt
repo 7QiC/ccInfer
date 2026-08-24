@@ -68,6 +68,7 @@ target_link_libraries(ccinfer_model
 
 add_library(ccinfer_engine STATIC
     config/config.cpp
+    engine/engine_core.cpp
     executor/single_device_executor.cpp
     worker/worker.cpp
     worker/batch_translator.cpp

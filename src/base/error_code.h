@@ -33,6 +33,7 @@ enum class ErrorCode : uint16_t {
     ServerShuttingDown,
 
     MaxSequencesReached,
+    RequestQueueFull,
     BatchTranslationFailed,
 
     ChannelClosed,
@@ -94,6 +95,8 @@ inline constexpr std::string_view error_message(ErrorCode c) noexcept {
 
         case ErrorCode::MaxSequencesReached:
             return "maximum concurrent sequences reached";
+        case ErrorCode::RequestQueueFull:
+            return "request queue full";
         case ErrorCode::BatchTranslationFailed:
             return "WorkItem to PhysicalBatch translation failed";
 

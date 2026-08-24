@@ -13,9 +13,11 @@ struct EngineConfig {
     int max_blocks = 1024;
     int block_size = kKVBlockSize;
     int max_sequences = 64;
-    int max_active_scheduled_sequences = 16;
-    int schedule_compute_budget = 4096;
-    int prefill_chunk_size = 512;
+    int max_running_requests = 16;
+    int max_concurrent_batches = 2;
+    int max_pending_requests = 256;
+    int max_token_budget = 4096;
+    int max_seq_prefill_tokens = 512;
     int default_max_context_len = 2048;
 
     // Used only when the Worker is intentionally initialized without a model.
