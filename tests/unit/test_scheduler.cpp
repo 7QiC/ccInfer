@@ -1,22 +1,38 @@
+#include <algorithm>
+#include <chrono>
+#include <deque>
+#include <future>
+#include <iterator>
+#include <memory>
+#include <string>
+#include <utility>
+
+#include <boost/asio/as_tuple.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/deferred.hpp>
+#include <boost/asio/post.hpp>
+#include <boost/asio/use_future.hpp>
 #include <gtest/gtest.h>
 
 #define private public
 #include "scheduler/scheduler.h"
 #undef private
 
-#include "base/types.h"
+#include "base/channel.h"
 
 namespace ccinfer {
 namespace {
 
 class FakeExecutor final : public Executor {
 public:
+    explicit FakeExecutor(boost::asio::io_context& io) : io_(io) {}
+
     Result<void> init(const Config&) override { return {}; }
     void shutdown() override {}
 
-    asio::awaitable<Result<CreateSequenceResult>> create_sequence(std::vector<int32_t>,
-                                                                  int) override {
-        co_return CreateSequenceResult{next_id_++, 0};
+    asio::awaitable<Result<AdmitSequenceResult>> admit_sequence(
+        std::vector<int32_t> prompt, int, SequenceInitialState = {}) override {
+        co_return AdmitSequenceResult{next_id_++, static_cast<int>(prompt.size())};
     }
 
     asio::awaitable<Result<SuspendSequenceResult>> suspend_sequence(SequenceId,
@@ -28,612 +44,225 @@ public:
     asio::awaitable<Result<void>> release_sequence(SequenceId) override {
         co_return Result<void>{};
     }
-
     asio::awaitable<Result<void>> abort_sequence(SequenceId) override { co_return Result<void>{}; }
 
-    asio::awaitable<Result<BatchResult>> execute_batch(ScheduledBatch batch) override {
-        BatchResult result;
-        result.batch_id = batch.batch_id;
-        co_return result;
+    Result<BatchFuture> execute_batch(ScheduledBatch batch) override {
+        ++execute_calls_;
+        auto future = std::make_shared<BatchChannel>(io_.get_executor(), 1);
+        batches_.push_back(std::move(batch));
+        futures_.push_back(future);
+        max_queued_batches_ = std::max(max_queued_batches_, batches_.size());
+        if (auto_complete_) asio::post(io_, [this] { complete_oldest(); });
+        return future;
+    }
+
+    asio::awaitable<Result<BatchResult>> collect_batch(BatchFuture future) override {
+        auto [ec, result] = co_await future->async_receive(asio::as_tuple(asio::deferred));
+        if (ec) co_return std::unexpected(ErrorCode::ChannelClosed);
+        if (!result) co_return std::unexpected(result.error());
+        co_return std::move(result->batch);
     }
 
     Capacity capacity() const override { return cap_; }
 
-private:
-    uint64_t next_id_{1};
+    void complete_oldest() {
+        ASSERT_FALSE(batches_.empty());
+        auto batch = std::move(batches_.front());
+        batches_.pop_front();
+        auto future = std::move(futures_.front());
+        futures_.pop_front();
+
+        WorkerBatchResult result;
+        result.batch.batch_id = batch.batch_id;
+        for (std::size_t i = 0; i < batch.items.size(); ++i) {
+            WorkItemResult item_result;
+            item_result.item_index = static_cast<int>(i);
+            item_result.sampled_tokens = {42};
+            std::visit(
+                [&](const auto& work) {
+                    item_result.seq_id = work.seq_id;
+                    using T = std::decay_t<decltype(work)>;
+                    if constexpr (std::is_same_v<T, PrefillChunk>) {
+                        item_result.kind = WorkKind::PrefillChunk;
+                        item_result.tokens_consumed = work.prompt_span.length;
+                    } else {
+                        item_result.kind = WorkKind::DecodeOneToken;
+                        item_result.tokens_consumed = 1;
+                    }
+                },
+                batch.items[i]);
+            result.batch.items.push_back(std::move(item_result));
+        }
+        future->try_send(boost::system::error_code{}, std::move(result));
+    }
+
+    int execute_calls() const { return execute_calls_; }
+    std::size_t queued_batches() const { return batches_.size(); }
+    std::size_t max_queued_batches() const { return max_queued_batches_; }
+
+    boost::asio::io_context& io_;
     Capacity cap_{64, 0, 1024, 1024, 16, 0, 0, 0, 0, 0, 0};
+    SequenceId next_id_{1};
+    int execute_calls_{0};
+    bool auto_complete_{false};
+    std::size_t max_queued_batches_{0};
+    std::deque<ScheduledBatch> batches_;
+    std::deque<BatchFuture> futures_;
 };
 
 class SchedulerTest : public ::testing::Test {
 protected:
-    void SetUp() override { scheduler_ = std::make_unique<Scheduler>(io_, executor_); }
+    void SetUp() override {
+        config_.max_token_budget = 4096;
+        config_.max_seq_prefill_tokens = 512;
+        scheduler_ = std::make_unique<Scheduler>(io_, executor_, config_);
+    }
 
-    void TearDown() override { scheduler_.reset(); }
-
-    static boost::asio::io_context io_;
-    static FakeExecutor executor_;
-
+    boost::asio::io_context io_;
+    FakeExecutor executor_{io_};
+    EngineConfig config_;
     std::unique_ptr<Scheduler> scheduler_;
+
+    ScheduledBatch schedule_step() {
+        io_.restart();
+        auto future = asio::co_spawn(io_, scheduler_->schedule_step(), asio::use_future);
+        io_.run();
+        return future.get();
+    }
 };
 
-boost::asio::io_context SchedulerTest::io_{};
-FakeExecutor SchedulerTest::executor_;
-
-TEST_F(SchedulerTest, EmptyBatchWhenNoActiveSequences) {
-    auto batch = scheduler_->build_scheduled_batch();
-    EXPECT_TRUE(batch.items.empty());
-    EXPECT_TRUE(scheduler_->budget_blocked_.empty());
+RequestState make_decode(SequenceId id) {
+    RequestState state;
+    state.scheduling.emplace();
+    state.scheduling->seq_id = id;
+    state.scheduling->cursor.phase = GenerationPhase::Decode;
+    state.prompt_tokens = {1};
+    state.max_context_len = 64;
+    state.sampling.max_tokens = 10;
+    return state;
 }
 
-TEST_F(SchedulerTest, AllFinishedReturnsEmptyBatch) {
-    auto fin = std::make_shared<SchedulerRequestState>();
-    fin->seq_id = 1;
-    fin->phase = GenerationPhase::Decode;
-    fin->status = RequestStatus::Finished;
-
-    scheduler_->active_[1] = fin;
-    scheduler_->active_order_.push_back(1);
-
-    auto batch = scheduler_->build_scheduled_batch();
-    EXPECT_TRUE(batch.items.empty());
+RequestState& add_running(Scheduler& scheduler, RequestState state) {
+    if (state.request_id.empty()) {
+        state.request_id = "seq-" + std::to_string(state.scheduling->seq_id);
+    }
+    auto request = std::make_shared<RequestState>(std::move(state));
+    scheduler.requests_[request->request_id] = request;
+    scheduler.running_.push_back(request);
+    scheduler.by_seq_id_[request->scheduling->seq_id] = request;
+    return *request;
 }
 
-TEST_F(SchedulerTest, SingleDecodeItem) {
-    auto state = std::make_shared<SchedulerRequestState>();
-    state->seq_id = 1;
-    state->phase = GenerationPhase::Decode;
-    state->last_token = 7;
-    state->prompt_tokens = {1};
-    state->sampling.max_tokens = 10;
+TEST_F(SchedulerTest, RunningSetAllowsSameSequenceAcrossInFlightBatches) {
+    auto& first = add_running(*scheduler_, make_decode(1));
+    auto& second = add_running(*scheduler_, make_decode(2));
 
-    scheduler_->active_[1] = state;
-    scheduler_->active_order_.push_back(1);
+    auto batch = schedule_step();
+    ASSERT_EQ(batch.items.size(), 2u);
+    EXPECT_EQ(first.scheduling->reservation.execution_leases, 1);
+    EXPECT_EQ(second.scheduling->reservation.execution_leases, 1);
+    EXPECT_EQ(scheduler_->running_.size(), 2u);
 
-    auto batch = scheduler_->build_scheduled_batch();
+    auto next = schedule_step();
+    ASSERT_EQ(next.items.size(), 2u);
+    EXPECT_EQ(first.scheduling->reservation.execution_leases, 2);
+    EXPECT_EQ(second.scheduling->reservation.execution_leases, 2);
+}
+
+TEST_F(SchedulerTest, AdmissionKeepsOneCanonicalRequestState) {
+    scheduler_->accepting_.store(true);
+    SchedulerRequest request;
+    request.request_id = "canonical";
+    request.prompt_tokens = {1, 2, 3};
+    request.sampling.max_tokens = 4;
+    scheduler_->submit_on_scheduler_thread(std::move(request));
+
+    ASSERT_EQ(scheduler_->requests_.size(), 1u);
+    const auto request_ptr = scheduler_->waiting_.front();
+    auto batch = schedule_step();
+
     ASSERT_EQ(batch.items.size(), 1u);
-    auto* d = std::get_if<DecodeOneToken>(&batch.items[0]);
-    ASSERT_NE(d, nullptr);
-    EXPECT_EQ(d->seq_id, 1u);
-    EXPECT_EQ(d->input_token, 7);
-    EXPECT_EQ(d->expected_context_len, 0);  // 1 + 0 - 1 = 0
+    EXPECT_TRUE(scheduler_->waiting_.empty());
+    ASSERT_EQ(scheduler_->running_.size(), 1u);
+    EXPECT_EQ(scheduler_->running_.front(), request_ptr);
+    EXPECT_EQ(scheduler_->requests_.at("canonical"), request_ptr);
+    EXPECT_TRUE(request_ptr->scheduling.has_value());
 }
 
-TEST_F(SchedulerTest, FullPrefixHitSchedulesNonWritingDecode) {
-    auto state = std::make_shared<SchedulerRequestState>();
-    state->seq_id = 1;
-    state->phase = GenerationPhase::Decode;
-    state->phase = GenerationPhase::Bootstrap;
-    state->prompt_tokens = {1, 2, 3, 4};
-    state->sampling.max_tokens = 10;
+TEST_F(SchedulerTest, PerSequencePrefillCapBoundsOneBatch) {
+    scheduler_->engine_config_.max_token_budget = 2048;
+    scheduler_->engine_config_.max_seq_prefill_tokens = 256;
+    RequestState state;
+    state.scheduling.emplace();
+    state.scheduling->seq_id = 1;
+    state.prompt_tokens = std::vector<int32_t>(4096, 1);
+    state.max_context_len = 4096;
+    state.sampling.max_tokens = 10;
+    add_running(*scheduler_, std::move(state));
 
-    scheduler_->active_[1] = state;
-    scheduler_->active_order_.push_back(1);
-
-    auto batch = scheduler_->build_scheduled_batch();
+    auto batch = schedule_step();
     ASSERT_EQ(batch.items.size(), 1u);
-    auto* d = std::get_if<DecodeOneToken>(&batch.items[0]);
-    ASSERT_NE(d, nullptr);
-    EXPECT_EQ(d->seq_id, 1u);
-    EXPECT_EQ(d->input_token, 4);
-    EXPECT_EQ(d->expected_context_len, 4);
-    EXPECT_FALSE(d->write_kv);
+    EXPECT_EQ(std::get<PrefillChunk>(batch.items.front()).prompt_span.length, 256);
 }
 
-TEST_F(SchedulerTest, SkipsFinishedAndCancelled) {
-    auto finished = std::make_shared<SchedulerRequestState>();
-    finished->seq_id = 1;
-    finished->phase = GenerationPhase::Decode;
-    finished->status = RequestStatus::Finished;
+TEST_F(SchedulerTest, DecodeAndPrefillShareOneTokenBudget) {
+    scheduler_->engine_config_.max_token_budget = 3;
+    scheduler_->engine_config_.max_seq_prefill_tokens = 2;
+    auto decode = make_decode(1);
+    RequestState prefill;
+    prefill.scheduling.emplace();
+    prefill.scheduling->seq_id = 2;
+    prefill.prompt_tokens = {1, 2, 3, 4};
+    prefill.max_context_len = 64;
+    prefill.sampling.max_tokens = 10;
+    add_running(*scheduler_, std::move(decode));
+    add_running(*scheduler_, std::move(prefill));
 
-    auto cancelled = std::make_shared<SchedulerRequestState>();
-    cancelled->seq_id = 2;
-    cancelled->phase = GenerationPhase::Decode;
-    cancelled->status = RequestStatus::Cancelled;
-
-    auto active = std::make_shared<SchedulerRequestState>();
-    active->seq_id = 3;
-    active->phase = GenerationPhase::Decode;
-    active->last_token = 5;
-    active->prompt_tokens = {1};
-    active->sampling.max_tokens = 10;
-
-    scheduler_->active_[1] = finished;
-    scheduler_->active_[2] = cancelled;
-    scheduler_->active_[3] = active;
-    scheduler_->active_order_ = {1, 2, 3};
-
-    auto batch = scheduler_->build_scheduled_batch();
-    ASSERT_EQ(batch.items.size(), 1u);
-    EXPECT_EQ(std::get<DecodeOneToken>(batch.items[0]).seq_id, 3u);
-}
-
-TEST_F(SchedulerTest, MultipleDecodeItemsBatched) {
-    auto mk = [](int id) {
-        auto s = std::make_shared<SchedulerRequestState>();
-        s->seq_id = id;
-        s->phase = GenerationPhase::Decode;
-        s->last_token = id * 10;
-        s->prompt_tokens = {1};
-        s->sampling.max_tokens = 10;
-        return s;
-    };
-    scheduler_->active_[1] = mk(1);
-    scheduler_->active_[2] = mk(2);
-    scheduler_->active_[3] = mk(3);
-    scheduler_->active_order_ = {1, 2, 3};
-
-    auto batch = scheduler_->build_scheduled_batch();
-    ASSERT_EQ(batch.items.size(), 3u);
-    for (size_t i = 0; i < 3; ++i)
-        ASSERT_TRUE(std::holds_alternative<DecodeOneToken>(batch.items[i]));
-}
-
-TEST_F(SchedulerTest, SkipsIncompatibleTemperature) {
-    auto s1 = std::make_shared<SchedulerRequestState>();
-    s1->seq_id = 1;
-    s1->phase = GenerationPhase::Decode;
-    s1->last_token = 10;
-    s1->prompt_tokens = {1};
-    s1->sampling.max_tokens = 10;
-    s1->sampling.temperature = 0.0f;
-
-    auto s2 = std::make_shared<SchedulerRequestState>();
-    s2->seq_id = 2;
-    s2->phase = GenerationPhase::Decode;
-    s2->last_token = 20;
-    s2->prompt_tokens = {1};
-    s2->sampling.max_tokens = 10;
-    s2->sampling.temperature = 0.5f;
-
-    scheduler_->active_[1] = s1;
-    scheduler_->active_[2] = s2;
-    scheduler_->active_order_ = {1, 2};
-
-    auto batch = scheduler_->build_scheduled_batch();
-    ASSERT_EQ(batch.items.size(), 1u);
+    auto batch = schedule_step();
+    ASSERT_EQ(batch.items.size(), 2u);
     EXPECT_EQ(std::get<DecodeOneToken>(batch.items[0]).seq_id, 1u);
+    EXPECT_EQ(std::get<PrefillChunk>(batch.items[1]).prompt_span.length, 2);
 }
 
-TEST_F(SchedulerTest, SkipsIncompatibleSeed) {
-    auto s1 = std::make_shared<SchedulerRequestState>();
-    s1->seq_id = 1;
-    s1->phase = GenerationPhase::Decode;
-    s1->last_token = 10;
-    s1->prompt_tokens = {1};
-    s1->sampling.max_tokens = 10;
-    s1->sampling.seed = 42;
+TEST_F(SchedulerTest, NonBlockingExecutorKeepsMultipleBatchFutures) {
+    ScheduledBatch first;
+    first.batch_id = 1;
+    first.items.push_back(DecodeOneToken{1, 7, 0, true});
+    ScheduledBatch second;
+    second.batch_id = 2;
+    second.items.push_back(DecodeOneToken{2, 8, 0, true});
 
-    auto s2 = std::make_shared<SchedulerRequestState>();
-    s2->seq_id = 2;
-    s2->phase = GenerationPhase::Decode;
-    s2->last_token = 20;
-    s2->prompt_tokens = {1};
-    s2->sampling.max_tokens = 10;
-    s2->sampling.seed = 99;
-
-    scheduler_->active_[1] = s1;
-    scheduler_->active_[2] = s2;
-    scheduler_->active_order_ = {1, 2};
-
-    auto batch = scheduler_->build_scheduled_batch();
-    ASSERT_EQ(batch.items.size(), 1u);
-    EXPECT_EQ(std::get<DecodeOneToken>(batch.items[0]).seq_id, 1u);
+    auto first_future = executor_.execute_batch(first);
+    auto second_future = executor_.execute_batch(second);
+    ASSERT_TRUE(first_future.has_value());
+    ASSERT_TRUE(second_future.has_value());
+    EXPECT_EQ(executor_.execute_calls(), 2);
+    EXPECT_EQ(executor_.queued_batches(), 2u);
 }
 
-TEST_F(SchedulerTest, AllIncompatibleSamplingReturnsEmpty) {
-    auto s1 = std::make_shared<SchedulerRequestState>();
-    s1->seq_id = 1;
-    s1->phase = GenerationPhase::Decode;
-    s1->last_token = 10;
-    s1->prompt_tokens = {1};
-    s1->sampling.max_tokens = 10;
-    s1->sampling.temperature = 0.0f;
+TEST_F(SchedulerTest, EngineCoreDispatchesUpToConcurrentBatchLimit) {
+    scheduler_->engine_config_.max_concurrent_batches = 2;
+    scheduler_->engine_config_.max_running_requests = 4;
+    scheduler_->engine_config_.max_token_budget = 1;
+    scheduler_->engine_config_.max_seq_prefill_tokens = 1;
+    executor_.auto_complete_ = true;
 
-    auto s2 = std::make_shared<SchedulerRequestState>();
-    s2->seq_id = 2;
-    s2->phase = GenerationPhase::Decode;
-    s2->last_token = 20;
-    s2->prompt_tokens = {1};
-    s2->sampling.max_tokens = 10;
-    s2->sampling.temperature = 0.5f;
-
-    // Order matters: s1 (temp=0) is first, sets batch sampling.
-    // s2 (temp=0.5) is incompatible → skipped. Result: only s1 included.
-    // To test all-incompatible: reverse order so s2 is first.
-    scheduler_->active_[2] = s2;
-    scheduler_->active_[1] = s1;
-    scheduler_->active_order_ = {2, 1};
-
-    auto batch = scheduler_->build_scheduled_batch();
-    ASSERT_EQ(batch.items.size(), 1u);
-    // s2 (temp=0.5) is first and sets batch sampling; s1 (temp=0.0) is incompatible.
-    EXPECT_EQ(std::get<DecodeOneToken>(batch.items[0]).seq_id, 2u);
-}
-
-TEST_F(SchedulerTest, SkipsMaxTokensReached) {
-    auto state = std::make_shared<SchedulerRequestState>();
-    state->seq_id = 1;
-    state->phase = GenerationPhase::Decode;
-    state->last_token = 7;
-    state->prompt_tokens = {1};
-    state->tokens_generated = 10;
-    state->sampling.max_tokens = 10;
-
-    scheduler_->active_[1] = state;
-    scheduler_->active_order_.push_back(1);
-
-    auto batch = scheduler_->build_scheduled_batch();
-    EXPECT_TRUE(batch.items.empty());
-    EXPECT_EQ(state->status, RequestStatus::Finished);
-}
-
-TEST_F(SchedulerTest, MaxTokensNotReachedIncluded) {
-    auto state = std::make_shared<SchedulerRequestState>();
-    state->seq_id = 1;
-    state->phase = GenerationPhase::Decode;
-    state->last_token = 7;
-    state->prompt_tokens = {1};
-    state->tokens_generated = 9;
-    state->sampling.max_tokens = 10;
-
-    scheduler_->active_[1] = state;
-    scheduler_->active_order_.push_back(1);
-
-    auto batch = scheduler_->build_scheduled_batch();
-    ASSERT_EQ(batch.items.size(), 1u);
-}
-
-TEST_F(SchedulerTest, MaxContextExceededTriggersTerminal) {
-    auto state = std::make_shared<SchedulerRequestState>();
-    state->seq_id = 1;
-    state->phase = GenerationPhase::Decode;
-    state->last_token = 7;
-    state->prompt_tokens = {1, 2, 3};
-    state->tokens_generated = 1;  // expected_ctx = 3+1-1 = 3
-    state->max_context_len = 3;   // >= max → terminal
-    state->sampling.max_tokens = 10;
-
-    scheduler_->active_[1] = state;
-    scheduler_->active_order_.push_back(1);
-
-    auto batch = scheduler_->build_scheduled_batch();
-    EXPECT_TRUE(batch.items.empty());
-    EXPECT_EQ(state->status, RequestStatus::Finished);
-}
-
-TEST_F(SchedulerTest, MaxContextNotExceededIncluded) {
-    auto state = std::make_shared<SchedulerRequestState>();
-    state->seq_id = 1;
-    state->phase = GenerationPhase::Decode;
-    state->last_token = 7;
-    state->prompt_tokens = {1, 2, 3};
-    state->tokens_generated = 0;  // expected_ctx = 3+0-1 = 2
-    state->max_context_len = 4;   // 2 < 4 → OK
-    state->sampling.max_tokens = 10;
-
-    scheduler_->active_[1] = state;
-    scheduler_->active_order_.push_back(1);
-
-    auto batch = scheduler_->build_scheduled_batch();
-    ASSERT_EQ(batch.items.size(), 1u);
-}
-
-TEST_F(SchedulerTest, MixedBatchDecodesThenPrefills) {
-    // With prefill and decode both pending, decode should be selected first
-    // and prefill should use the remaining compute budget in the same batch.
-    auto prefill = std::make_shared<SchedulerRequestState>();
-    prefill->seq_id = 1;
-    prefill->phase = GenerationPhase::Prefill;
-    prefill->prompt_tokens = {1, 2, 3, 4, 5};
-    prefill->sampling.max_tokens = 10;
-
-    auto decode = std::make_shared<SchedulerRequestState>();
-    decode->seq_id = 2;
-    decode->phase = GenerationPhase::Decode;
-    decode->last_token = 99;
-    decode->prompt_tokens = {1};
-    decode->sampling.max_tokens = 10;
-
-    scheduler_->active_[1] = prefill;
-    scheduler_->active_[2] = decode;
-    scheduler_->active_order_ = {1, 2};
-
-    auto batch1 = scheduler_->build_scheduled_batch();
-    ASSERT_EQ(batch1.items.size(), 2u);
-    ASSERT_TRUE(std::holds_alternative<DecodeOneToken>(batch1.items[0]));
-    EXPECT_EQ(std::get<DecodeOneToken>(batch1.items[0]).seq_id, 2u);
-    ASSERT_TRUE(std::holds_alternative<PrefillChunk>(batch1.items[1]));
-    EXPECT_EQ(std::get<PrefillChunk>(batch1.items[1]).seq_id, 1u);
-
-    decode->status = RequestStatus::Finished;
-    auto batch2 = scheduler_->build_scheduled_batch();
-    ASSERT_EQ(batch2.items.size(), 1u);
-    ASSERT_TRUE(std::holds_alternative<PrefillChunk>(batch2.items[0]));
-    EXPECT_EQ(std::get<PrefillChunk>(batch2.items[0]).seq_id, 1u);
-}
-
-TEST_F(SchedulerTest, RoundRobinReordersAfterDecodeBatch) {
-    auto mk = [](int id) {
-        auto s = std::make_shared<SchedulerRequestState>();
-        s->seq_id = id;
-        s->phase = GenerationPhase::Decode;
-        s->last_token = id * 10;
-        s->prompt_tokens = {1};
-        s->sampling.max_tokens = 10;
-        return s;
-    };
-    scheduler_->active_[1] = mk(1);
-    scheduler_->active_[2] = mk(2);
-    scheduler_->active_[3] = mk(3);
-    scheduler_->active_order_ = {1, 2, 3};
-
-    scheduler_->build_scheduled_batch();
-
-    ASSERT_EQ(scheduler_->active_order_.size(), 3u);
-    EXPECT_EQ(scheduler_->active_order_[0], 1u);
-    EXPECT_EQ(scheduler_->active_order_[1], 2u);
-    EXPECT_EQ(scheduler_->active_order_[2], 3u);
-}
-
-TEST_F(SchedulerTest, ReorderWithMixedIncludedAndSkipped) {
-    // s1: decode, included. s2: cancelled, skipped. s3: decode, included.
-    auto s1 = std::make_shared<SchedulerRequestState>();
-    s1->seq_id = 1;
-    s1->phase = GenerationPhase::Decode;
-    s1->last_token = 10;
-    s1->prompt_tokens = {1};
-    s1->sampling.max_tokens = 10;
-
-    auto s2 = std::make_shared<SchedulerRequestState>();
-    s2->seq_id = 2;
-    s2->phase = GenerationPhase::Decode;
-    s2->status = RequestStatus::Cancelled;
-
-    auto s3 = std::make_shared<SchedulerRequestState>();
-    s3->seq_id = 3;
-    s3->phase = GenerationPhase::Decode;
-    s3->last_token = 30;
-    s3->prompt_tokens = {1};
-    s3->sampling.max_tokens = 10;
-
-    scheduler_->active_[1] = s1;
-    scheduler_->active_[2] = s2;
-    scheduler_->active_[3] = s3;
-    scheduler_->active_order_ = {1, 2, 3};
-
-    scheduler_->build_scheduled_batch();
-
-    // s2 (cancelled) removed by filter; s1 and s3 at back
-    ASSERT_EQ(scheduler_->active_order_.size(), 2u);
-    EXPECT_EQ(scheduler_->active_order_[0], 1u);
-    EXPECT_EQ(scheduler_->active_order_[1], 3u);
-}
-
-TEST_F(SchedulerTest, PrefillChunkLimitedTo512Tokens) {
-    auto state = std::make_shared<SchedulerRequestState>();
-    state->seq_id = 1;
-    state->phase = GenerationPhase::Prefill;
-    state->prompt_tokens = std::vector<int32_t>(1000, 1);
-    state->sampling.max_tokens = 10;
-
-    scheduler_->active_[1] = state;
-    scheduler_->active_order_.push_back(1);
-
-    auto batch = scheduler_->build_scheduled_batch();
-    ASSERT_EQ(batch.items.size(), 1u);
-    auto* p = std::get_if<PrefillChunk>(&batch.items[0]);
-    ASSERT_NE(p, nullptr);
-    EXPECT_EQ(p->prompt_span.length, 512);
-    EXPECT_EQ(p->prompt_span.start, 0);
-}
-
-TEST_F(SchedulerTest, PrefillChunkExact512) {
-    auto state = std::make_shared<SchedulerRequestState>();
-    state->seq_id = 1;
-    state->phase = GenerationPhase::Prefill;
-    state->prompt_tokens = std::vector<int32_t>(512, 1);
-    state->sampling.max_tokens = 10;
-
-    scheduler_->active_[1] = state;
-    scheduler_->active_order_.push_back(1);
-
-    auto batch = scheduler_->build_scheduled_batch();
-    ASSERT_EQ(batch.items.size(), 1u);
-    auto* p = std::get_if<PrefillChunk>(&batch.items[0]);
-    ASSERT_NE(p, nullptr);
-    EXPECT_EQ(p->prompt_span.length, 512);
-    EXPECT_EQ(p->prompt_span.start, 0);
-}
-
-TEST_F(SchedulerTest, PrefillChunkFromNonzeroCursor) {
-    auto state = std::make_shared<SchedulerRequestState>();
-    state->seq_id = 1;
-    state->phase = GenerationPhase::Prefill;
-    state->prefill_cursor = 256;  // already consumed 256
-    state->prompt_tokens = std::vector<int32_t>(800, 1);
-    state->sampling.max_tokens = 10;
-
-    scheduler_->active_[1] = state;
-    scheduler_->active_order_.push_back(1);
-
-    auto batch = scheduler_->build_scheduled_batch();
-    ASSERT_EQ(batch.items.size(), 1u);
-    auto* p = std::get_if<PrefillChunk>(&batch.items[0]);
-    ASSERT_NE(p, nullptr);
-    EXPECT_EQ(p->prompt_span.length, 512);  // min(800-256=544, 512)
-    EXPECT_EQ(p->prompt_span.start, 256);
-    EXPECT_EQ(p->expected_context_len, 256);
-}
-
-TEST_F(SchedulerTest, MaxActiveScheduledSeqsBlocksOnlyNewPrefill) {
-    for (int id = 1; id <= 16; ++id) {
-        auto state = std::make_shared<SchedulerRequestState>();
-        state->seq_id = id;
-        state->phase = GenerationPhase::Decode;
-        state->last_token = id;
-        state->prompt_tokens = {1};
-        state->sampling.max_tokens = 10;
-        scheduler_->active_[id] = state;
-        scheduler_->active_order_.push_back(id);
+    scheduler_->start();
+    for (int i = 0; i < 4; ++i) {
+        SchedulerRequest request;
+        request.request_id = "req-" + std::to_string(i);
+        request.prompt_tokens = {1};
+        request.sampling.max_tokens = 1;
+        scheduler_->submit(std::move(request));
     }
 
-    auto new_prefill = std::make_shared<SchedulerRequestState>();
-    new_prefill->seq_id = 100;
-    new_prefill->phase = GenerationPhase::Prefill;
-    new_prefill->prefill_cursor = 0;
-    new_prefill->prompt_tokens = std::vector<int32_t>(64, 1);
-    new_prefill->sampling.max_tokens = 10;
-    scheduler_->active_[100] = new_prefill;
-    scheduler_->active_order_.push_back(100);
+    io_.run_for(std::chrono::milliseconds(20));
+    EXPECT_GE(executor_.execute_calls(), 2);
+    EXPECT_EQ(executor_.max_queued_batches(), 2u);
 
-    auto started_prefill = std::make_shared<SchedulerRequestState>();
-    started_prefill->seq_id = 101;
-    started_prefill->phase = GenerationPhase::Prefill;
-    started_prefill->prefill_cursor = 16;
-    started_prefill->prompt_tokens = std::vector<int32_t>(64, 1);
-    started_prefill->sampling.max_tokens = 10;
-    scheduler_->active_[101] = started_prefill;
-    scheduler_->active_order_.push_back(101);
-
-    auto batch = scheduler_->build_scheduled_batch();
-
-    bool saw_new_prefill = false;
-    bool saw_started_prefill = false;
-    int decode_count = 0;
-    for (const auto& item : batch.items) {
-        if (auto* d = std::get_if<DecodeOneToken>(&item)) {
-            ++decode_count;
-            EXPECT_GE(d->seq_id, 1u);
-            EXPECT_LE(d->seq_id, 16u);
-        } else if (auto* p = std::get_if<PrefillChunk>(&item)) {
-            if (p->seq_id == 100) saw_new_prefill = true;
-            if (p->seq_id == 101) {
-                saw_started_prefill = true;
-                EXPECT_EQ(p->prompt_span.start, 16);
-                EXPECT_EQ(p->prompt_span.length, 48);
-            }
-        }
-    }
-
-    EXPECT_EQ(decode_count, 16);
-    EXPECT_FALSE(saw_new_prefill);
-    EXPECT_TRUE(saw_started_prefill);
-}
-
-TEST_F(SchedulerTest, SuspendedSeqCountsAsActiveAndReplaysWithoutSampling) {
-    for (int id = 1; id <= 16; ++id) {
-        auto state = std::make_shared<SchedulerRequestState>();
-        state->seq_id = id;
-        state->phase = GenerationPhase::Decode;
-        state->last_token = id;
-        state->prompt_tokens = {1};
-        state->sampling.max_tokens = 10;
-        scheduler_->active_[id] = state;
-        scheduler_->active_order_.push_back(id);
-    }
-
-    auto suspended = std::make_shared<SchedulerRequestState>();
-    suspended->seq_id = 100;
-    suspended->prefill_cursor = 0;
-    suspended->phase = GenerationPhase::ReplayPrefill;
-    suspended->prompt_tokens = std::vector<int32_t>(32, 1);
-    suspended->generated_tokens = {42};
-    suspended->generated_in_prompt = 0;
-    suspended->last_token = 42;
-    suspended->tokens_generated = 1;
-    suspended->sampling.max_tokens = 10;
-    scheduler_->active_[100] = suspended;
-    scheduler_->active_order_.push_back(100);
-
-    auto fresh = std::make_shared<SchedulerRequestState>();
-    fresh->seq_id = 101;
-    fresh->phase = GenerationPhase::Prefill;
-    fresh->prompt_tokens = std::vector<int32_t>(32, 1);
-    fresh->sampling.max_tokens = 10;
-    scheduler_->active_[101] = fresh;
-    scheduler_->active_order_.push_back(101);
-
-    auto batch = scheduler_->build_scheduled_batch();
-
-    bool saw_suspended = false;
-    bool saw_fresh = false;
-    for (const auto& item : batch.items) {
-        if (auto* p = std::get_if<PrefillChunk>(&item)) {
-            if (p->seq_id == 100) {
-                saw_suspended = true;
-                EXPECT_FALSE(p->needs_sample);
-            }
-            if (p->seq_id == 101) saw_fresh = true;
-        }
-    }
-
-    EXPECT_TRUE(saw_suspended);
-    EXPECT_FALSE(saw_fresh);
-}
-
-TEST_F(SchedulerTest, DecodeExpectedContextLen) {
-    // expected_ctx = prompt_len + tokens_generated - 1
-    auto state = std::make_shared<SchedulerRequestState>();
-    state->seq_id = 1;
-    state->phase = GenerationPhase::Decode;
-    state->last_token = 7;
-    state->prompt_tokens = {1, 2, 3};  // prompt_len = 3
-    state->tokens_generated = 2;       // expected_ctx = 3+2-1 = 4
-    state->sampling.max_tokens = 10;
-
-    scheduler_->active_[1] = state;
-    scheduler_->active_order_.push_back(1);
-
-    auto batch = scheduler_->build_scheduled_batch();
-    ASSERT_EQ(batch.items.size(), 1u);
-    auto* d = std::get_if<DecodeOneToken>(&batch.items[0]);
-    ASSERT_NE(d, nullptr);
-    ASSERT_TRUE(d->expected_context_len.has_value());
-    EXPECT_EQ(*d->expected_context_len, 4);
-}
-
-TEST_F(SchedulerTest, DecodeExpectedContextLenAccountsForReplayPrompt) {
-    auto state = std::make_shared<SchedulerRequestState>();
-    state->seq_id = 1;
-    state->phase = GenerationPhase::Decode;
-    state->last_token = 9;
-    state->prompt_tokens = {1, 2, 3, 7};  // original prompt + one generated token replayed
-    state->generated_in_prompt = 1;
-    state->tokens_generated = 2;
-    state->sampling.max_tokens = 10;
-
-    scheduler_->active_[1] = state;
-    scheduler_->active_order_.push_back(1);
-
-    auto batch = scheduler_->build_scheduled_batch();
-    ASSERT_EQ(batch.items.size(), 1u);
-    auto* d = std::get_if<DecodeOneToken>(&batch.items[0]);
-    ASSERT_NE(d, nullptr);
-    ASSERT_TRUE(d->expected_context_len.has_value());
-    EXPECT_EQ(*d->expected_context_len, 4);
-}
-
-TEST_F(SchedulerTest, PrefillBudgetBlockedTracked) {
-    // A prefill needing more blocks than free_blocks is impractical to build
-    // here; verify that a small prompt is not budget-blocked.
-    auto state = std::make_shared<SchedulerRequestState>();
-    state->seq_id = 1;
-    state->phase = GenerationPhase::Prefill;
-    state->prompt_tokens = {1, 2, 3, 4, 5};
-    state->sampling.max_tokens = 10;
-
-    scheduler_->active_[1] = state;
-    scheduler_->active_order_.push_back(1);
-
-    scheduler_->build_scheduled_batch();  // 5-token prompt fits in budget
-    EXPECT_TRUE(scheduler_->budget_blocked_.empty());
-}
-
-TEST_F(SchedulerTest, ZeroBlockSizeFailsAllActive) {
-    // capacity() cannot be mocked to bs=0; this verifies the guard path stays
-    // inert in normal operation.
-    auto cap = scheduler_->executor_.capacity();
-    EXPECT_GT(cap.block_size, 0);
+    auto shutdown = scheduler_->shutdown_async();
+    io_.run_for(std::chrono::milliseconds(20));
+    EXPECT_EQ(shutdown.wait_for(std::chrono::seconds(0)), std::future_status::ready);
 }
 
 }  // namespace
