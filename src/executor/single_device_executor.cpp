@@ -5,7 +5,6 @@
 
 #include <boost/asio/as_tuple.hpp>
 #include <boost/asio/deferred.hpp>
-#include <boost/asio/this_coro.hpp>
 
 #include "common/asio_error.h"
 #include "common/channel.h"

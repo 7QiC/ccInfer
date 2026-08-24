@@ -1,7 +1,5 @@
 #pragma once
 
-#include <cstdint>
-
 #include "common/error_code.h"
 #include "common/types.h"
 #include "core/tensor.h"

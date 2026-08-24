@@ -30,7 +30,6 @@
 #include <ccop/tensor.h>
 
 #include "common/error_code.h"
-#include "facade/log.h"
 
 namespace ccinfer {
 
