@@ -1,11 +1,11 @@
 #pragma once
 
-#include <cstdio>
 #include <cublas_v2.h>
 
 #include <cuda_runtime.h>
 
 #include "common/error_code.h"
+#include "facade/log.h"
 
 namespace ccinfer {
 
@@ -36,7 +36,7 @@ inline ErrorCode map_cuda_error(cudaError_t err) {
 
 inline Result<void> cuda_check(cudaError_t err) {
     if (err != cudaSuccess) {
-        fprintf(stderr, "CUDA error: %s\n", cudaGetErrorString(err));
+        ccLog::error("CUDA error: {}", cudaGetErrorString(err));
         return std::unexpected(map_cuda_error(err));
     }
     return {};
@@ -57,13 +57,10 @@ inline ErrorCode map_cublas_error(cublasStatus_t status) {
 
 inline Result<void> cublas_check(cublasStatus_t status) {
     if (status != CUBLAS_STATUS_SUCCESS) {
-        fprintf(stderr, "cuBLAS error: %d\n", static_cast<int>(status));
+        ccLog::error("cuBLAS error: {}", static_cast<int>(status));
         return std::unexpected(map_cublas_error(status));
     }
     return {};
 }
-
-// Check and clear the last CUDA error.  Call after every kernel launch.
-inline Result<void> cuda_check_last_error() { return cuda_check(cudaGetLastError()); }
 
 }  // namespace ccinfer

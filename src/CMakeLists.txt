@@ -16,6 +16,7 @@ target_link_libraries(ccinfer_core
     PUBLIC
         ccop::ccop
     PRIVATE
+        spdlog::spdlog
         CUDA::cublas
         CUDA::cudart
 )

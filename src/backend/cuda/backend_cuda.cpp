@@ -18,7 +18,6 @@ namespace {
 class CudaBuffer final : public Buffer {
 public:
     static Result<std::shared_ptr<CudaBuffer>> create(std::size_t bytes, ccop::Device device) {
-        if (bytes == 0) return std::unexpected(ErrorCode::InvalidArgument);
         void* ptr = nullptr;
         auto r = cuda_check(cudaMalloc(&ptr, bytes));
         if (!r) return std::unexpected(r.error());
@@ -46,6 +45,11 @@ private:
 }  // namespace
 
 struct Backend::Impl {
+    ~Impl() {
+        if (stream_) cudaStreamDestroy(stream_);
+        if (cublas_handle_) cublasDestroy(cublas_handle_);
+    }
+
     cudaStream_t stream_ = nullptr;
     cublasHandle_t cublas_handle_ = nullptr;
     int device_id_ = 0;
