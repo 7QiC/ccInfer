@@ -1,6 +1,7 @@
 #include "cache/kv_cache_manager.h"
 
 #include <algorithm>
+#include <cassert>
 #include <limits>
 #include <unordered_set>
 #include <utility>
@@ -76,9 +77,8 @@ Result<BlockTable> KVCacheManager::allocate_blocks(int num_blocks) {
     BlockTable result;
     for (int b = 0; b < num_blocks; ++b) {
         auto& block = free_list_.front();
-        if (!block.is_free() || block.ref_count != 0 || block.is_cached() || block.is_in_lru() ||
-            block.block_hash != 0)
-            return std::unexpected(ErrorCode::InternalError);
+        assert(block.is_free() && block.ref_count == 0 && !block.is_cached() &&
+               !block.is_in_lru() && block.block_hash == 0);
         free_list_.pop_front();
 
         block.flags = static_cast<uint32_t>(BlockFlags::kNone);

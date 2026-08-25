@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cstdint>
 #include <limits>
 #include <utility>
 
@@ -14,10 +15,10 @@ namespace ccinfer {
 namespace {
 
 bool data_in_buffer(const Buffer* buffer, const void* data, std::size_t bytes) noexcept {
-    const auto* base = static_cast<const char*>(buffer->data());
-    const auto* ptr = static_cast<const char*>(data);
+    const auto base = reinterpret_cast<std::uintptr_t>(buffer->data());
+    const auto ptr = reinterpret_cast<std::uintptr_t>(data);
     return ptr >= base && bytes <= buffer->bytes() &&
-           static_cast<std::size_t>(ptr - base) <= buffer->bytes() - bytes;
+           (ptr - base) <= buffer->bytes() - bytes;
 }
 
 Result<std::size_t> checked_nbytes(ccop::DType dtype, std::initializer_list<std::int64_t> shape) {
@@ -95,21 +96,21 @@ Tensor Tensor::from_buffer(std::shared_ptr<Buffer> buffer, void* data, ccop::DTy
     return tensor;
 }
 
-Tensor Tensor::view(std::initializer_list<std::int64_t> shape) const {
+Tensor Tensor::view(std::initializer_list<std::int64_t> shape) {
     assert(buffer_ && "Tensor has no owner");
-    const ccop::Tensor view(const_cast<void*>(data()), dtype(), device(), shape);
+    const ccop::Tensor view(data(), dtype(), device(), shape);
     assert(view.numel() == numel() && "view shape must preserve numel");
     assert(view.nbytes() <= buffer_->bytes());
     return with_view(view);
 }
 
-Tensor Tensor::flat() const { return view({numel()}); }
+Tensor Tensor::flat() { return view({numel()}); }
 
-Tensor Tensor::slice(int dim, std::int64_t start, std::int64_t end) const {
+Tensor Tensor::slice(int dim, std::int64_t start, std::int64_t end) {
     return with_view(ccop::Tensor::slice(dim, start, end));
 }
 
-Tensor Tensor::select(int dim, std::int64_t index) const {
+Tensor Tensor::select(int dim, std::int64_t index) {
     return with_view(ccop::Tensor::select(dim, index));
 }
 

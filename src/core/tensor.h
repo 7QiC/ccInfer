@@ -44,10 +44,10 @@ public:
 
     [[nodiscard]] const std::shared_ptr<Buffer>& buffer() const noexcept { return buffer_; }
 
-    Tensor view(std::initializer_list<std::int64_t> shape) const;
-    Tensor flat() const;
-    Tensor slice(int dim, std::int64_t start, std::int64_t end) const;
-    Tensor select(int dim, std::int64_t index) const;
+    Tensor view(std::initializer_list<std::int64_t> shape);
+    Tensor flat();
+    Tensor slice(int dim, std::int64_t start, std::int64_t end);
+    Tensor select(int dim, std::int64_t index);
 
 private:
     Tensor with_view(const ccop::Tensor& view) const {

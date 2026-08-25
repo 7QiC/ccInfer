@@ -20,11 +20,6 @@ struct EngineConfig {
     int max_seq_prefill_tokens = 512;
     int default_max_context_len = 2048;
 
-    // Used only when the Worker is intentionally initialized without a model.
-    int dummy_num_layers = 32;
-    int dummy_num_kv_heads = 8;
-    int dummy_head_dim = 128;
-
     Result<void> validate() const;
 };
 

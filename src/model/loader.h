@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -58,10 +59,6 @@ public:
     WeightLoader& operator=(WeightLoader&& other) noexcept;
 
     bool has(const std::string& name) const { return tensors_.find(name) != tensors_.end(); }
-
-    size_t tensor_count() const noexcept { return tensors_.size(); }
-
-    Result<TensorInfo> info(const std::string& name) const;
 
     template <typename T>
     Result<std::shared_ptr<Buffer>> load(Backend& backend, const std::string& name,
@@ -126,15 +123,9 @@ Result<std::shared_ptr<Buffer>> WeightLoader::load(
     }
 
     const uint64_t data_start = kHeaderSize + header_len_;
-    if (data_start > static_cast<uint64_t>(size_)) {
-        return std::unexpected(ErrorCode::ModelLoadFailed);
-    }
-    if (info.offset_ > static_cast<uint64_t>(size_) - data_start) {
-        return std::unexpected(ErrorCode::ModelLoadFailed);
-    }
-    if (info.size_bytes_ > static_cast<uint64_t>(size_) - data_start - info.offset_) {
-        return std::unexpected(ErrorCode::ModelLoadFailed);
-    }
+    assert(data_start <= static_cast<uint64_t>(size_));
+    assert(info.offset_ <= static_cast<uint64_t>(size_) - data_start);
+    assert(info.size_bytes_ <= static_cast<uint64_t>(size_) - data_start - info.offset_);
 
     if (expected_bytes > std::numeric_limits<std::size_t>::max()) {
         return std::unexpected(ErrorCode::ModelShapeMismatch);

@@ -18,13 +18,10 @@
 #include <ccop/ops/embed.h>
 #include <ccop/ops/gemm.h>
 #include <ccop/ops/greedy_sample.h>
-#include <ccop/ops/naive_attention.h>
 #include <ccop/ops/prefill_attention.h>
-#include <ccop/ops/reduce.h>
 #include <ccop/ops/rms_norm.h>
 #include <ccop/ops/rope.h>
 #include <ccop/ops/silu_mul.h>
-#include <ccop/ops/softmax.h>
 #include <ccop/ops/split_qkv.h>
 #include <ccop/ops/write_kv_cache.h>
 #include <ccop/tensor.h>
@@ -48,13 +45,10 @@ static_assert(requires {
     ccop::embed;
     ccop::gemm;
     ccop::greedy_sample;
-    ccop::naive_attention;
     ccop::prefill_attention;
-    ccop::reduce_sum_rows;
     ccop::rms_norm;
     ccop::rope;
     ccop::silu_mul;
-    ccop::softmax;
     ccop::split_qkv;
     ccop::write_kv_cache;
 });

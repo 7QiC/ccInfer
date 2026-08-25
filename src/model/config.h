@@ -46,7 +46,7 @@ struct ModelConfig {
         if (j.contains("architectures") && j["architectures"].is_array() &&
             !j["architectures"].empty() && j["architectures"][0].is_string()) {
             std::string arch = j["architectures"][0].get<std::string>();
-            if (arch.find("Qwen") != std::string::npos) {
+            if (arch == "Qwen3ForCausalLM") {
                 cfg.arch_ = ModelArch::Qwen3;
             }
         }

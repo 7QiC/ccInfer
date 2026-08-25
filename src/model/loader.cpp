@@ -1,7 +1,5 @@
 #include "model/loader.h"
 
-#include <cuda_bf16.h>
-#include <cuda_runtime.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -159,12 +157,6 @@ Result<void> WeightLoader::parse() {
     if (tensors_.empty()) return std::unexpected(ErrorCode::ModelLoadFailed);
 
     return {};
-}
-
-Result<TensorInfo> WeightLoader::info(const std::string& name) const {
-    auto it = tensors_.find(name);
-    if (it == tensors_.end()) return std::unexpected(ErrorCode::ModelLoadFailed);
-    return it->second;
 }
 
 }  // namespace ccinfer

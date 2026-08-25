@@ -30,7 +30,6 @@ enum class ErrorCode : uint16_t {
 
     RequestTooLong,
     RequestCancelled,
-    RequestTimeout,
     ServerShuttingDown,
 
     MaxSequencesReached,
@@ -92,8 +91,6 @@ inline constexpr std::string_view error_message(ErrorCode c) noexcept {
             return "request too long";
         case ErrorCode::RequestCancelled:
             return "request cancelled";
-        case ErrorCode::RequestTimeout:
-            return "request timed out";
         case ErrorCode::ServerShuttingDown:
             return "server shutting down";
 

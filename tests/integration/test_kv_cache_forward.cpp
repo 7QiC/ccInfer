@@ -11,6 +11,7 @@
 #include "cache/kv_cache_manager.h"
 #include "cache/kv_cache_storage.h"
 #include "facade/ops.h"
+#include <ccop/ops/naive_attention.h>
 
 namespace ccinfer {
 namespace {
@@ -27,7 +28,7 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     const int block_size = kKVBlockSize;
 
     auto backend_r = Backend::create(0);
-    ASSERT_TRUE(backend_r.has_value());
+    if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
     auto &backend = **backend_r;
     auto r_storage = KVCacheStorage::create(backend, kNumLayers, kMaxBlocks, block_size, nkv, hd,
                                             ccop::DType::kBFloat16);

@@ -7,7 +7,6 @@
 #include <utility>
 
 #include <cuda_bf16.h>
-#include <cuda_runtime.h>
 
 namespace ccinfer {
 
@@ -48,16 +47,6 @@ Result<Qwen3Weights> Qwen3Weights::load(Backend& backend, const ModelConfig& con
                                         const WeightLoader& loader) {
     if (config.weight_dtype_ != ccop::DType::kBFloat16) {
         return std::unexpected(ErrorCode::ModelUnsupportedDType);
-    }
-
-    if (config.d_model_ <= 0 || config.n_q_heads_ <= 0 || config.n_kv_heads_ <= 0 ||
-        config.head_dim_ <= 0 || config.n_layers_ <= 0 || config.d_ff_ <= 0 ||
-        config.vocab_size_ <= 0) {
-        return std::unexpected(ErrorCode::ModelShapeMismatch);
-    }
-
-    if (config.n_q_heads_ % config.n_kv_heads_ != 0) {
-        return std::unexpected(ErrorCode::ModelShapeMismatch);
     }
 
     const int D = config.d_model_;

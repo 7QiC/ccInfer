@@ -13,8 +13,7 @@ Result<void> EngineConfig::validate() const {
     if (device_id < 0 || max_blocks <= 0 || block_size <= 0 || max_sequences <= 0 ||
         max_running_requests <= 0 || max_running_requests > max_sequences ||
         max_concurrent_batches <= 0 || max_pending_requests <= 0 || max_token_budget <= 0 ||
-        max_seq_prefill_tokens < 0 || default_max_context_len <= 0 || dummy_num_layers <= 0 ||
-        dummy_num_kv_heads <= 0 || dummy_head_dim <= 0) {
+        max_seq_prefill_tokens < 0 || default_max_context_len <= 0) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
 
@@ -40,6 +39,10 @@ Result<Config> Config::load(const std::string& model_path, EngineConfig engine) 
 
     auto model_r = ModelConfig::from_json(json);
     if (!model_r) return std::unexpected(model_r.error());
+
+    if (engine.default_max_context_len > model_r->max_seq_len_) {
+        return std::unexpected(ErrorCode::InvalidArgument);
+    }
 
     return Config{.model_path_ = model_path, .model_ = std::move(*model_r), .engine_ = engine};
 }
