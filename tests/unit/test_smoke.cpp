@@ -18,7 +18,7 @@ TEST(SmokeTest, GPUAccessible) {
 
 TEST(SmokeTest, AllocateAndZero) {
     auto backend_r = Backend::create(0);
-    ASSERT_TRUE(backend_r.has_value());
+    if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
     auto& backend = **backend_r;
     auto buf_r = backend.allocate_buffer(256 * sizeof(float));
     ASSERT_TRUE(buf_r.has_value());
@@ -35,7 +35,7 @@ TEST(SmokeTest, AllocateAndZero) {
 
 TEST(SmokeTest, TensorSmoke) {
     auto backend_r = Backend::create(0);
-    ASSERT_TRUE(backend_r.has_value());
+    if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
     auto& backend = **backend_r;
     auto t_r = Tensor::empty(backend, ccop::DType::kFloat32, {2, 3});
     ASSERT_TRUE(t_r.has_value());

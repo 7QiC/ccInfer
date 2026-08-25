@@ -10,6 +10,7 @@ if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
     set(CMAKE_CUDA_ARCHITECTURES 89)
 endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+add_compile_options(-Wall -Wextra)
 
 find_package(CUDAToolkit REQUIRED)
 find_package(nlohmann_json REQUIRED)

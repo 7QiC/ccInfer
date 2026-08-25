@@ -1,34 +1,17 @@
-add_executable(test_result test_result.cpp)
-target_link_libraries(test_result PRIVATE engine gtest_main)
-gtest_discover_tests(test_result)
+function(ccinfer_add_unit_test name)
+    add_executable(${name} ${name}.cpp)
+    target_link_libraries(${name} PRIVATE ccinfer_engine gtest_main ${ARGN})
+    gtest_discover_tests(${name})
+endfunction()
 
-add_executable(test_block test_block.cpp)
-target_link_libraries(test_block PRIVATE engine gtest_main)
-gtest_discover_tests(test_block)
-
-add_executable(test_kv_cache_storage test_kv_cache_storage.cpp)
-target_link_libraries(test_kv_cache_storage PRIVATE engine gtest_main CUDA::cudart)
-gtest_discover_tests(test_kv_cache_storage)
-
-add_executable(test_kv_cache_manager test_kv_cache_manager.cpp)
-target_link_libraries(test_kv_cache_manager PRIVATE engine gtest_main CUDA::cudart)
-gtest_discover_tests(test_kv_cache_manager)
-
-add_executable(test_device_buffer test_device_buffer.cpp)
-target_link_libraries(test_device_buffer PRIVATE engine gtest_main CUDA::cudart)
-gtest_discover_tests(test_device_buffer)
-
-add_executable(test_tensor test_tensor.cpp)
-target_link_libraries(test_tensor PRIVATE engine gtest_main CUDA::cudart)
-gtest_discover_tests(test_tensor)
-
-add_executable(test_config test_config.cpp)
-target_link_libraries(test_config PRIVATE engine gtest_main)
-gtest_discover_tests(test_config)
-
-add_executable(test_smoke test_smoke.cpp)
-target_link_libraries(test_smoke PRIVATE engine gtest_main CUDA::cudart)
-gtest_discover_tests(test_smoke)
+ccinfer_add_unit_test(test_result)
+ccinfer_add_unit_test(test_block)
+ccinfer_add_unit_test(test_kv_cache_storage CUDA::cudart)
+ccinfer_add_unit_test(test_kv_cache_manager CUDA::cudart)
+ccinfer_add_unit_test(test_device_buffer CUDA::cudart)
+ccinfer_add_unit_test(test_tensor CUDA::cudart)
+ccinfer_add_unit_test(test_config)
+ccinfer_add_unit_test(test_smoke CUDA::cudart)
 
 add_executable(test_tokenizer test_tokenizer.cpp)
 target_link_libraries(test_tokenizer PRIVATE tokenizer gtest_main)
@@ -40,18 +23,7 @@ target_compile_definitions(test_tokenizer_alignment PRIVATE
     REFERENCE_PATH="${CMAKE_SOURCE_DIR}/tests/unit/tokenizer_alignment_reference.json")
 gtest_discover_tests(test_tokenizer_alignment)
 
-add_executable(test_batch_translator test_batch_translator.cpp)
-target_link_libraries(test_batch_translator PRIVATE engine gtest_main CUDA::cudart)
-gtest_discover_tests(test_batch_translator)
-
-add_executable(test_scheduler test_scheduler.cpp)
-target_link_libraries(test_scheduler PRIVATE engine gtest_main)
-gtest_discover_tests(test_scheduler)
-
-add_executable(test_prefix_cache test_prefix_cache.cpp)
-target_link_libraries(test_prefix_cache PRIVATE engine gtest_main)
-gtest_discover_tests(test_prefix_cache)
-
-add_executable(test_rope_cache test_rope_cache.cpp)
-target_link_libraries(test_rope_cache PRIVATE engine gtest_main CUDA::cudart)
-gtest_discover_tests(test_rope_cache)
+ccinfer_add_unit_test(test_batch_translator CUDA::cudart)
+ccinfer_add_unit_test(test_scheduler)
+ccinfer_add_unit_test(test_prefix_cache)
+ccinfer_add_unit_test(test_rope_cache CUDA::cudart)

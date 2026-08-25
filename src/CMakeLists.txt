@@ -94,10 +94,6 @@ target_link_libraries(ccinfer_engine
         CUDA::cudart
 )
 
-# Compatibility target for existing server/tests.
-add_library(engine INTERFACE)
-target_link_libraries(engine INTERFACE ccinfer_engine)
-
 add_library(tokenizer STATIC
     tokenizer/byte_level_bpe_tokenizer.cpp
 )
@@ -125,7 +121,7 @@ if(BUILD_SERVER)
 
     target_link_libraries(server
         PUBLIC
-            engine
+            ccinfer_engine
             tokenizer
             nlohmann_json::nlohmann_json
     )
@@ -137,6 +133,6 @@ if(BUILD_SERVER)
     target_link_libraries(ccinfer-server
         PRIVATE
             server
-            engine
+            ccinfer_engine
     )
 endif()

@@ -18,7 +18,7 @@ TEST(KVCacheStorageTest, LayerOffsetsAreCorrect) {
     constexpr int kHeadDim = 4;
 
     auto backend_r = Backend::create(0);
-    ASSERT_TRUE(backend_r.has_value());
+    if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
     auto& backend = **backend_r;
     auto s_r = KVCacheStorage::create(backend, kNumLayers, kMaxBlocks, kKVBlockSize, kNvKVHeads,
                                       kHeadDim, ccop::DType::kBFloat16);
@@ -50,7 +50,7 @@ TEST(KVCacheStorageTest, LayersAreIndependent) {
     constexpr int kHeadDim = 4;
 
     auto backend_r = Backend::create(0);
-    ASSERT_TRUE(backend_r.has_value());
+    if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
     auto& backend = **backend_r;
     auto s_r = KVCacheStorage::create(backend, kNumLayers, kMaxBlocks, kKVBlockSize, kNvKVHeads,
                                       kHeadDim, ccop::DType::kBFloat16);
@@ -115,7 +115,7 @@ TEST(KVCacheStorageTest, ZeroInitialized) {
     constexpr int kHeadDim = 32;
 
     auto backend_r = Backend::create(0);
-    ASSERT_TRUE(backend_r.has_value());
+    if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
     auto& backend = **backend_r;
     auto s_r = KVCacheStorage::create(backend, kNumLayers, kMaxBlocks, kKVBlockSize, kNvKVHeads,
                                       kHeadDim, ccop::DType::kBFloat16);

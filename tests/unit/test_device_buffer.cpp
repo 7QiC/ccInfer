@@ -16,7 +16,7 @@ TEST(BufferTest, DefaultConstruction) {
 
 TEST(BufferTest, AllocateAndZero) {
     auto backend_r = Backend::create(0);
-    ASSERT_TRUE(backend_r.has_value());
+    if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
     auto& backend = **backend_r;
     auto buf_r = backend.allocate_buffer(1024 * sizeof(float));
     ASSERT_TRUE(buf_r.has_value());
@@ -35,7 +35,7 @@ TEST(BufferTest, AllocateAndZero) {
 
 TEST(BufferTest, TensorViewBorrowsData) {
     auto backend_r = Backend::create(0);
-    ASSERT_TRUE(backend_r.has_value());
+    if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
     auto& backend = **backend_r;
     auto buf_r = backend.allocate_buffer(24 * sizeof(float));
     ASSERT_TRUE(buf_r.has_value());
@@ -56,7 +56,7 @@ TEST(BufferTest, TensorViewBorrowsData) {
 
 TEST(BufferTest, MoveConstruction) {
     auto backend_r = Backend::create(0);
-    ASSERT_TRUE(backend_r.has_value());
+    if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
     auto& backend = **backend_r;
     auto a_r = backend.allocate_buffer(512 * sizeof(float));
     ASSERT_TRUE(a_r.has_value());
@@ -72,7 +72,7 @@ TEST(BufferTest, MoveConstruction) {
 
 TEST(BufferTest, MoveAssignment) {
     auto backend_r = Backend::create(0);
-    ASSERT_TRUE(backend_r.has_value());
+    if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
     auto& backend = **backend_r;
     auto a_r = backend.allocate_buffer(256 * sizeof(float));
     ASSERT_TRUE(a_r.has_value());

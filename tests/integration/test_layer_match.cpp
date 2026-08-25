@@ -74,7 +74,7 @@ protected:
         if (!model_available()) GTEST_SKIP() << "CCINFER_TEST_MODEL_DIR not set";
         cudaStreamCreate(&stream_);
         auto b = Backend::create(0);
-        ASSERT_TRUE(b.has_value());
+        if (!b) GTEST_SKIP() << "CUDA unavailable";
         backend_ = std::move(*b);
         dir_ = model_dir();
 

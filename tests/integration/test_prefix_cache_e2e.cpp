@@ -25,7 +25,7 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
     const int block_size = kKVBlockSize;
 
     auto backend_r = Backend::create(0);
-    ASSERT_TRUE(backend_r.has_value());
+    if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
     auto &backend = **backend_r;
 
     // 1. Init storage and manager.

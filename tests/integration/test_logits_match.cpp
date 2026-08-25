@@ -437,7 +437,7 @@ protected:
         loader_ = std::make_unique<WeightLoader>(std::move(*loader_result));
 
         auto b = Backend::create(0);
-        ASSERT_TRUE(b.has_value());
+        if (!b) GTEST_SKIP() << "CUDA unavailable";
         backend_ = std::move(*b);
         register_builtin_models();
     }

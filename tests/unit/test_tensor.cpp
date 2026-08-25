@@ -7,7 +7,7 @@ using namespace ccinfer;
 
 TEST(TensorTest, EmptyAllocatesAndOwnsBuffer) {
     auto backend_r = Backend::create(0);
-    ASSERT_TRUE(backend_r.has_value());
+    if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
     auto& backend = **backend_r;
 
     auto t_r = Tensor::empty(backend, ccop::DType::kFloat32, {2, 3, 4});
@@ -28,7 +28,7 @@ TEST(TensorTest, EmptyAllocatesAndOwnsBuffer) {
 
 TEST(TensorTest, CopySharesOwnerAndView) {
     auto backend_r = Backend::create(0);
-    ASSERT_TRUE(backend_r.has_value());
+    if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
     auto& backend = **backend_r;
 
     auto t_r = Tensor::empty(backend, ccop::DType::kFloat32, {10});
@@ -42,7 +42,7 @@ TEST(TensorTest, CopySharesOwnerAndView) {
 
 TEST(TensorTest, FlatSharesOwner) {
     auto backend_r = Backend::create(0);
-    ASSERT_TRUE(backend_r.has_value());
+    if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
     auto& backend = **backend_r;
 
     auto t_r = Tensor::empty(backend, ccop::DType::kFloat32, {2, 3, 4});
@@ -57,7 +57,7 @@ TEST(TensorTest, FlatSharesOwner) {
 
 TEST(TensorTest, FlatAndViewKeepOffsetViewDataPointer) {
     auto backend_r = Backend::create(0);
-    ASSERT_TRUE(backend_r.has_value());
+    if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
     auto& backend = **backend_r;
 
     auto buffer_r = backend.allocate_buffer(10 * sizeof(float));
@@ -78,7 +78,7 @@ TEST(TensorTest, FlatAndViewKeepOffsetViewDataPointer) {
 
 TEST(TensorTest, SliceAdjustsViewOnly) {
     auto backend_r = Backend::create(0);
-    ASSERT_TRUE(backend_r.has_value());
+    if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
     auto& backend = **backend_r;
 
     auto t_r = Tensor::empty(backend, ccop::DType::kFloat32, {2, 3, 4});
@@ -95,7 +95,7 @@ TEST(TensorTest, SliceAdjustsViewOnly) {
 
 TEST(TensorTest, SelectAdjustsViewOnly) {
     auto backend_r = Backend::create(0);
-    ASSERT_TRUE(backend_r.has_value());
+    if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
     auto& backend = **backend_r;
 
     auto t_r = Tensor::empty(backend, ccop::DType::kFloat32, {2, 3, 4});

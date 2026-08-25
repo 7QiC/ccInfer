@@ -12,7 +12,7 @@ class KVCacheManagerTest : public ::testing::Test {
 protected:
     void SetUp() override {
         auto be = Backend::create(0);
-        ASSERT_TRUE(be.has_value());
+        if (!be) GTEST_SKIP() << "CUDA unavailable";
         backend_ = std::move(*be);
 
         auto sr =
