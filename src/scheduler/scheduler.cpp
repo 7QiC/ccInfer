@@ -722,6 +722,10 @@ asio::awaitable<void> Scheduler::handle_batch_error(const ScheduledBatch& batch,
         co_return;
     }
 
+    // Free lower-priority skipped sequences before evicting running ones.
+    while (co_await evict_one_skipped()) {
+    }
+
     std::unordered_set<SequenceId> seen;
     std::vector<RequestPtr> to_wait;
     for (const auto& item : batch.items) {
