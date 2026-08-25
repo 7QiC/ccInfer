@@ -14,13 +14,28 @@
 #include <boost/asio/use_future.hpp>
 #include <gtest/gtest.h>
 
-#define private public
 #include "scheduler/scheduler.h"
-#undef private
 
 #include "common/channel.h"
 
 namespace ccinfer {
+
+struct SchedulerTestAccess {
+    static auto schedule_step(Scheduler& s) { return s.schedule_step(); }
+    static auto update_from_output(Scheduler& s, const ScheduledBatch& b, const BatchResult& r) {
+        return s.update_from_output(b, r);
+    }
+    static void submit_on_scheduler_thread(Scheduler& s, SchedulerRequest req) {
+        s.submit_on_scheduler_thread(std::move(req));
+    }
+    static auto& accepting(Scheduler& s) { return s.accepting_; }
+    static auto& engine_config(Scheduler& s) { return s.engine_config_; }
+    static auto& requests(Scheduler& s) { return s.requests_; }
+    static auto& waiting(Scheduler& s) { return s.waiting_; }
+    static auto& running(Scheduler& s) { return s.running_; }
+    static auto& by_seq_id(Scheduler& s) { return s.by_seq_id_; }
+};
+
 namespace {
 
 class FakeExecutor final : public Executor {
@@ -125,7 +140,7 @@ protected:
 
     ScheduledBatch schedule_step() {
         io_.restart();
-        auto future = asio::co_spawn(io_, scheduler_->schedule_step(), asio::use_future);
+        auto future = asio::co_spawn(io_, SchedulerTestAccess::schedule_step(*scheduler_), asio::use_future);
         io_.run();
         return future.get();
     }
@@ -147,9 +162,9 @@ RequestState& add_running(Scheduler& scheduler, RequestState state) {
         state.request_id = "seq-" + std::to_string(state.scheduling->seq_id);
     }
     auto request = std::make_shared<RequestState>(std::move(state));
-    scheduler.requests_[request->request_id] = request;
-    scheduler.running_.push_back(request);
-    scheduler.by_seq_id_[request->scheduling->seq_id] = request;
+    SchedulerTestAccess::requests(scheduler)[request->request_id] = request;
+    SchedulerTestAccess::running(scheduler).push_back(request);
+    SchedulerTestAccess::by_seq_id(scheduler)[request->scheduling->seq_id] = request;
     return *request;
 }
 
@@ -161,7 +176,7 @@ TEST_F(SchedulerTest, RunningSetAllowsSameSequenceAcrossInFlightBatches) {
     ASSERT_EQ(batch.items.size(), 2u);
     EXPECT_EQ(first.scheduling->reservation.execution_leases, 1);
     EXPECT_EQ(second.scheduling->reservation.execution_leases, 1);
-    EXPECT_EQ(scheduler_->running_.size(), 2u);
+    EXPECT_EQ(SchedulerTestAccess::running(*scheduler_).size(), 2u);
 
     auto next = schedule_step();
     ASSERT_EQ(next.items.size(), 2u);
@@ -170,28 +185,31 @@ TEST_F(SchedulerTest, RunningSetAllowsSameSequenceAcrossInFlightBatches) {
 }
 
 TEST_F(SchedulerTest, AdmissionKeepsOneCanonicalRequestState) {
-    scheduler_->accepting_.store(true);
+    SchedulerTestAccess::accepting(*scheduler_).store(true);
     SchedulerRequest request;
     request.request_id = "canonical";
     request.prompt_tokens = {1, 2, 3};
     request.sampling.max_tokens = 4;
-    scheduler_->submit_on_scheduler_thread(std::move(request));
+    auto channel = std::make_shared<TokenChannel>(io_.get_executor(), 16);
+    request.sink.executor = io_.get_executor();
+    request.sink.channel = channel;
+    SchedulerTestAccess::submit_on_scheduler_thread(*scheduler_, std::move(request));
 
-    ASSERT_EQ(scheduler_->requests_.size(), 1u);
-    const auto request_ptr = scheduler_->waiting_.front();
+    ASSERT_EQ(SchedulerTestAccess::requests(*scheduler_).size(), 1u);
+    const auto request_ptr = SchedulerTestAccess::waiting(*scheduler_).front();
     auto batch = schedule_step();
 
     ASSERT_EQ(batch.items.size(), 1u);
-    EXPECT_TRUE(scheduler_->waiting_.empty());
-    ASSERT_EQ(scheduler_->running_.size(), 1u);
-    EXPECT_EQ(scheduler_->running_.front(), request_ptr);
-    EXPECT_EQ(scheduler_->requests_.at("canonical"), request_ptr);
+    EXPECT_TRUE(SchedulerTestAccess::waiting(*scheduler_).empty());
+    ASSERT_EQ(SchedulerTestAccess::running(*scheduler_).size(), 1u);
+    EXPECT_EQ(SchedulerTestAccess::running(*scheduler_).front(), request_ptr);
+    EXPECT_EQ(SchedulerTestAccess::requests(*scheduler_).at("canonical"), request_ptr);
     EXPECT_TRUE(request_ptr->scheduling.has_value());
 }
 
 TEST_F(SchedulerTest, PerSequencePrefillCapBoundsOneBatch) {
-    scheduler_->engine_config_.max_token_budget = 2048;
-    scheduler_->engine_config_.max_seq_prefill_tokens = 256;
+    SchedulerTestAccess::engine_config(*scheduler_).max_token_budget = 2048;
+    SchedulerTestAccess::engine_config(*scheduler_).max_seq_prefill_tokens = 256;
     RequestState state;
     state.scheduling.emplace();
     state.scheduling->seq_id = 1;
@@ -206,8 +224,8 @@ TEST_F(SchedulerTest, PerSequencePrefillCapBoundsOneBatch) {
 }
 
 TEST_F(SchedulerTest, DecodeAndPrefillShareOneTokenBudget) {
-    scheduler_->engine_config_.max_token_budget = 3;
-    scheduler_->engine_config_.max_seq_prefill_tokens = 2;
+    SchedulerTestAccess::engine_config(*scheduler_).max_token_budget = 3;
+    SchedulerTestAccess::engine_config(*scheduler_).max_seq_prefill_tokens = 2;
     auto decode = make_decode(1);
     RequestState prefill;
     prefill.scheduling.emplace();
@@ -241,10 +259,10 @@ TEST_F(SchedulerTest, NonBlockingExecutorKeepsMultipleBatchFutures) {
 }
 
 TEST_F(SchedulerTest, EngineCoreDispatchesUpToConcurrentBatchLimit) {
-    scheduler_->engine_config_.max_concurrent_batches = 2;
-    scheduler_->engine_config_.max_running_requests = 4;
-    scheduler_->engine_config_.max_token_budget = 1;
-    scheduler_->engine_config_.max_seq_prefill_tokens = 1;
+    SchedulerTestAccess::engine_config(*scheduler_).max_concurrent_batches = 2;
+    SchedulerTestAccess::engine_config(*scheduler_).max_running_requests = 4;
+    SchedulerTestAccess::engine_config(*scheduler_).max_token_budget = 1;
+    SchedulerTestAccess::engine_config(*scheduler_).max_seq_prefill_tokens = 1;
     executor_.auto_complete_ = true;
 
     scheduler_->start();
@@ -263,6 +281,55 @@ TEST_F(SchedulerTest, EngineCoreDispatchesUpToConcurrentBatchLimit) {
     auto shutdown = scheduler_->shutdown_async();
     io_.run_for(std::chrono::milliseconds(20));
     EXPECT_EQ(shutdown.wait_for(std::chrono::seconds(0)), std::future_status::ready);
+}
+
+TEST_F(SchedulerTest, BootstrapTransitionsToDecodeAfterFirstSample) {
+    SchedulerTestAccess::accepting(*scheduler_).store(true);
+    SchedulerRequest request;
+    request.request_id = "bootstrap";
+    request.prompt_tokens = {1, 2, 3};
+    request.sampling.max_tokens = 4;
+    auto channel = std::make_shared<TokenChannel>(io_.get_executor(), 16);
+    request.sink.executor = io_.get_executor();
+    request.sink.channel = channel;
+    SchedulerTestAccess::submit_on_scheduler_thread(*scheduler_, std::move(request));
+
+    auto batch = schedule_step();
+    ASSERT_EQ(batch.items.size(), 1u);
+    ASSERT_TRUE(std::holds_alternative<DecodeOneToken>(batch.items.front()));
+    const auto& first = std::get<DecodeOneToken>(batch.items.front());
+    EXPECT_FALSE(first.write_kv);
+    EXPECT_FALSE(first.late_bind);
+    EXPECT_EQ(first.input_token, 3);
+
+    BatchResult result;
+    result.batch_id = batch.batch_id;
+    WorkItemResult wr;
+    wr.item_index = 0;
+    wr.seq_id = first.seq_id;
+    wr.kind = WorkKind::DecodeOneToken;
+    wr.sampled_tokens = {42};
+    wr.tokens_consumed = 1;
+    result.items.push_back(std::move(wr));
+
+    io_.restart();
+    auto update_future =
+        asio::co_spawn(io_, SchedulerTestAccess::update_from_output(*scheduler_, batch, result),
+                       asio::use_future);
+    io_.run();
+    update_future.get();
+
+    ASSERT_TRUE(SchedulerTestAccess::running(*scheduler_).front()->scheduling.has_value());
+    auto& st = *SchedulerTestAccess::running(*scheduler_).front();
+    EXPECT_EQ(st.scheduling->cursor.phase, GenerationPhase::Decode);
+    EXPECT_EQ(st.generated_tokens.size(), 1u);
+
+    auto next = schedule_step();
+    ASSERT_EQ(next.items.size(), 1u);
+    ASSERT_TRUE(std::holds_alternative<DecodeOneToken>(next.items.front()));
+    const auto& second = std::get<DecodeOneToken>(next.items.front());
+    EXPECT_TRUE(second.write_kv);
+    EXPECT_TRUE(second.late_bind);
 }
 
 }  // namespace

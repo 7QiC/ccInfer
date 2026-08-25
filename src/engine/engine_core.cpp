@@ -31,10 +31,12 @@ asio::awaitable<void> EngineCore::run() {
 
             auto future_r = executor_.execute_batch(batch);
             if (!future_r) {
-                scheduler_.mark_dispatch_failed(batch, future_r.error());
                 if (future_r.error() == ErrorCode::KVBlockExhausted) {
                     co_await scheduler_.handle_batch_error(batch, future_r.error());
+                } else {
+                    scheduler_.mark_dispatch_failed(batch, future_r.error());
                 }
+                co_await scheduler_.cleanup_terminal_requests();
                 continue;
             }
 

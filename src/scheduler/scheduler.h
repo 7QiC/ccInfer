@@ -70,6 +70,7 @@ struct RequestState {
 };
 
 class EngineCore;
+struct SchedulerTestAccess;
 
 // Scheduler owns request policy and state. EngineCore owns the execution loop
 // and batch completion FIFO; both run on the scheduler io_context thread.
@@ -91,6 +92,7 @@ public:
 
 private:
     friend class EngineCore;
+    friend struct SchedulerTestAccess;
 
     using RequestPtr = std::shared_ptr<RequestState>;
     using RequestRegistry = std::unordered_map<std::string, RequestPtr>;
@@ -121,7 +123,6 @@ private:
     static bool is_schedulable_state(const RequestState& state) noexcept;
     static bool is_prefill_phase(GenerationPhase phase) noexcept;
     static bool is_decode_phase(GenerationPhase phase) noexcept;
-    static bool sampling_compatible(const SamplingParams& lhs, const SamplingParams& rhs) noexcept;
 
     asio::awaitable<void> update_from_output(const ScheduledBatch& batch,
                                              const BatchResult& result);

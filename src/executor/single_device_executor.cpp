@@ -1,5 +1,6 @@
 #include "executor/single_device_executor.h"
 
+#include <cassert>
 #include <unordered_set>
 #include <utility>
 
@@ -88,14 +89,16 @@ asio::awaitable<Result<void>> SingleDeviceExecutor::abort_sequence(SequenceId se
     auto it = sequences_.find(seq_id);
     if (it == sequences_.end()) co_return Result<void>{};
 
-    // Abort is terminal for this executor-side sequence. Keep the tombstone so
-    // an already queued batch cannot apply deltas after the abort.
+    // Abort is terminal for this executor-side sequence. The Scheduler only
+    // aborts after all in-flight leases are retired, so no queued batch can
+    // apply deltas after this point; erase the executor-side state immediately.
     it->second.status = SequenceStatus::Aborted;
     auto channel_r = worker_->enqueue_abort_sequence(seq_id);
     if (!channel_r) co_return std::unexpected(channel_r.error());
     auto [ec, result] = co_await (*channel_r)->async_receive(as_tuple(deferred));
     if (ec) co_return std::unexpected(to_error_code(ec));
     if (!result) co_return std::unexpected(result.error());
+    sequences_.erase(it);
     co_return result;
 }
 
@@ -129,22 +132,14 @@ asio::awaitable<Result<BatchResult>> SingleDeviceExecutor::collect_batch(BatchFu
         if (it == sequences_.end() || it->second.status == SequenceStatus::Aborted) {
             co_return std::unexpected(ErrorCode::InvalidArgument);
         }
-    }
 
-    for (const auto& delta : result->deltas) {
-        auto it = sequences_.find(delta.seq_id);
-        if (it == sequences_.end()) co_return std::unexpected(ErrorCode::InternalError);
         auto& state = it->second;
-        if (delta.kv_tokens_committed < 0 || delta.prompt_tokens_committed < 0) {
-            co_return std::unexpected(ErrorCode::InternalError);
-        }
+        assert(delta.kv_tokens_committed >= 0 && delta.prompt_tokens_committed >= 0);
         state.kv_written += delta.kv_tokens_committed;
         state.prompt_processed += delta.prompt_tokens_committed;
-        if (state.kv_written > state.max_context_len ||
-            state.prompt_processed > static_cast<int>(state.prompt_tokens.size()) ||
-            state.prompt_processed > state.kv_written) {
-            co_return std::unexpected(ErrorCode::InternalError);
-        }
+        assert(state.kv_written <= state.max_context_len);
+        assert(state.prompt_processed <= static_cast<int>(state.prompt_tokens.size()));
+        assert(state.prompt_processed <= state.kv_written);
         state.status = SequenceStatus::Active;
     }
 

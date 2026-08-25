@@ -118,6 +118,11 @@ void Scheduler::cancel_on_scheduler_thread(const std::string& request_id) {
         auto& state = *it->second;
         if (state.status == RequestStatus::Active) {
             state.status = RequestStatus::Cancelled;
+            if (state.scheduling) {
+                const SequenceId seq_id = state.scheduling->seq_id;
+                asio::co_spawn(io_, executor_.abort_sequence(seq_id), asio::detached);
+                state.scheduling.reset();
+            }
         }
         return;
     }
@@ -182,10 +187,6 @@ asio::awaitable<bool> Scheduler::admit_one_waiting(BatchBuildContext& ctx) {
         co_return false;
     }
 
-    if (ctx.sampling_set && !sampling_compatible(waiting_.front()->sampling, ctx.batch.sampling)) {
-        co_return false;
-    }
-
     auto request = waiting_.front();
     waiting_.pop_front();
     auto& state = *request;
@@ -201,48 +202,73 @@ asio::awaitable<bool> Scheduler::admit_one_waiting(BatchBuildContext& ctx) {
         co_return true;
     }
 
-    SequenceInitialState initial_state;
-    initial_state.tokens_generated = generated_token_count(state);
-    initial_state.max_tokens = state.sampling.max_tokens;
-    if (!state.generated_tokens.empty()) initial_state.last_token = state.generated_tokens.back();
-    auto result = co_await executor_.admit_sequence(state.prompt_tokens, state.max_context_len,
-                                                    initial_state);
+    const bool resumed = state.scheduling.has_value();
+    AdmitSequenceResult result;
+    if (resumed) {
+        auto suspend_r = co_await executor_.suspend_sequence(state.scheduling->seq_id,
+                                                             state.prompt_tokens,
+                                                             state.max_context_len);
+        if (!suspend_r) {
+            if (suspend_r.error() == ErrorCode::KVBlockExhausted ||
+                suspend_r.error() == ErrorCode::MaxSequencesReached) {
+                waiting_.push_front(request);
+                co_return false;
+            }
+            send_event(state.sink, std::unexpected(suspend_r.error()));
+            erase_request(request);
+            co_return true;
+        }
+        result = AdmitSequenceResult{state.scheduling->seq_id, suspend_r->prompt_processed};
+    } else {
+        SequenceInitialState initial_state;
+        initial_state.tokens_generated = generated_token_count(state);
+        initial_state.max_tokens = state.sampling.max_tokens;
+        if (!state.generated_tokens.empty()) initial_state.last_token = state.generated_tokens.back();
+        auto admit_r = co_await executor_.admit_sequence(state.prompt_tokens, state.max_context_len,
+                                                         initial_state);
+        if (!admit_r) {
+            if (admit_r.error() == ErrorCode::KVBlockExhausted ||
+                admit_r.error() == ErrorCode::MaxSequencesReached) {
+                waiting_.push_front(request);
+                co_return false;
+            }
+            send_event(state.sink, std::unexpected(admit_r.error()));
+            erase_request(request);
+            co_return true;
+        }
+        result = *admit_r;
+        state.scheduling.emplace();
+        state.scheduling->seq_id = result.seq_id;
+    }
 
+    // Post-admission checks are shared by both paths.
     if (!accepting_.load()) {
-        if (result) co_await executor_.release_sequence(result->seq_id);
+        if (state.scheduling) {
+            if (resumed) {
+                co_await executor_.abort_sequence(state.scheduling->seq_id);
+            } else {
+                co_await executor_.release_sequence(state.scheduling->seq_id);
+            }
+        }
         send_event(state.sink, std::unexpected(ErrorCode::ServerShuttingDown));
         erase_request(request);
         co_return true;
     }
 
     if (state.status == RequestStatus::Cancelled) {
-        if (result) co_await executor_.abort_sequence(result->seq_id);
+        if (state.scheduling) co_await executor_.abort_sequence(state.scheduling->seq_id);
         send_event(state.sink, std::unexpected(ErrorCode::RequestCancelled));
         erase_request(request);
         co_return true;
     }
 
-    if (!result) {
-        if (result.error() == ErrorCode::KVBlockExhausted ||
-            result.error() == ErrorCode::MaxSequencesReached) {
-            waiting_.push_front(request);
-            co_return false;
-        }
-        send_event(state.sink, std::unexpected(result.error()));
-        erase_request(request);
-        co_return true;
-    }
-
-    state.scheduling.emplace();
     auto& scheduling = *state.scheduling;
-    scheduling.seq_id = result->seq_id;
-
     const int prompt_len = static_cast<int>(state.prompt_tokens.size());
-    if (result->prompt_processed > 0 && result->prompt_processed < prompt_len) {
-        scheduling.cursor.prefill_cursor = result->prompt_processed;
+    if (result.prompt_processed > 0 && result.prompt_processed < prompt_len) {
+        scheduling.cursor.prefill_cursor = result.prompt_processed;
         scheduling.cursor.phase = state.generated_tokens.empty() ? GenerationPhase::Prefill
                                                                  : GenerationPhase::ReplayPrefill;
-    } else if (result->prompt_processed >= prompt_len) {
+    } else if (result.prompt_processed >= prompt_len) {
         scheduling.cursor.prefill_cursor = prompt_len;
         scheduling.cursor.phase =
             state.generated_tokens.empty() ? GenerationPhase::Bootstrap : GenerationPhase::Decode;
@@ -295,9 +321,8 @@ bool Scheduler::build_state_work(BatchBuildContext& ctx, RequestState& state) {
         if (!ctx.sampling_set) {
             ctx.batch.sampling = state.sampling;
             ctx.sampling_set = true;
-            return true;
         }
-        return sampling_compatible(state.sampling, ctx.batch.sampling);
+        return true;
     };
 
     if (ctx.token_budget <= 0 || !is_schedulable_state(state)) return false;
@@ -404,11 +429,6 @@ bool Scheduler::is_decode_phase(GenerationPhase phase) noexcept {
     return phase == GenerationPhase::Bootstrap || phase == GenerationPhase::Decode;
 }
 
-bool Scheduler::sampling_compatible(const SamplingParams& lhs, const SamplingParams& rhs) noexcept {
-    return lhs.temperature == rhs.temperature && lhs.top_p == rhs.top_p && lhs.top_k == rhs.top_k &&
-           lhs.seed == rhs.seed;
-}
-
 void Scheduler::retire_reservation(RequestState& state, const WorkItem& item) {
     if (!state.scheduling) return;
     auto& reservation = state.scheduling->reservation;
@@ -513,6 +533,8 @@ asio::awaitable<void> Scheduler::update_from_output(const ScheduledBatch& batch,
                 state.sampling.max_tokens;
         if (!work_result.sampled_tokens.empty()) {
             state.generated_tokens.push_back(work_result.sampled_tokens.front());
+            if (scheduling.cursor.phase == GenerationPhase::Bootstrap)
+                scheduling.cursor.phase = GenerationPhase::Decode;
         }
         if (finished || generated_token_count(state) >= state.sampling.max_tokens)
             state.status = RequestStatus::Finished;
@@ -653,11 +675,10 @@ asio::awaitable<void> Scheduler::preempt_one_for_admission() {
         if (!is_schedulable_state(state) || state.scheduling->reservation.execution_leases != 0)
             continue;
 
-        auto result = co_await executor_.abort_sequence(state.scheduling->seq_id);
-        if (!result) co_return;
+        co_await suspend_sequence_for_replay(state);
+        if (state.status != RequestStatus::Active) continue;
 
         by_seq_id_.erase(state.scheduling->seq_id);
-        state.scheduling.reset();
         running_.erase(running_it);
         waiting_.push_front(request_it);
         co_return;
@@ -668,6 +689,11 @@ void Scheduler::fail_all_waiting(ErrorCode err) {
     while (!waiting_.empty()) {
         auto request_it = waiting_.front();
         waiting_.pop_front();
+        if (request_it->scheduling) {
+            const SequenceId seq_id = request_it->scheduling->seq_id;
+            asio::co_spawn(io_, executor_.abort_sequence(seq_id), asio::detached);
+            request_it->scheduling.reset();
+        }
         send_event(request_it->sink, std::unexpected(err));
         erase_request(request_it);
     }
