@@ -44,6 +44,7 @@ asio::awaitable<void> EngineCore::run() {
         }
 
         if (in_flight_.empty()) {
+            co_await scheduler_.cleanup_terminal_requests();
             if (scheduler_.has_waiting_work() || scheduler_.has_schedulable_work()) {
                 co_await scheduler_.preempt_one_for_admission();
                 continue;

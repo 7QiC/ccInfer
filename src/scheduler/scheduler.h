@@ -40,7 +40,6 @@ struct SequenceScheduleCursor {
     GenerationPhase phase = GenerationPhase::Prefill;
     int prefill_cursor = 0;
     int generated_tokens_in_prompt = 0;
-    bool replay_pending = false;
 };
 
 struct SequenceSchedulingState {
@@ -113,9 +112,12 @@ private:
     void complete_shutdown_on_scheduler_thread();
 
     asio::awaitable<ScheduledBatch> schedule_step();
+    asio::awaitable<bool> admit_one_skipped(BatchBuildContext& ctx);
     asio::awaitable<bool> admit_one_waiting(BatchBuildContext& ctx);
+    asio::awaitable<bool> evict_one_skipped();
     bool has_schedulable_work() const;
     bool has_waiting_work() const noexcept { return !waiting_.empty(); }
+    bool has_skip_work() const noexcept { return !skip_.empty(); }
 
     void build_running_batch(BatchBuildContext& ctx);
     bool build_state_work(BatchBuildContext& ctx, RequestState& state);
@@ -129,7 +131,6 @@ private:
     asio::awaitable<void> handle_batch_error(const ScheduledBatch& batch, ErrorCode err);
     asio::awaitable<void> cleanup_terminal_requests();
     asio::awaitable<void> fail_batch(const ScheduledBatch& batch, ErrorCode err);
-    asio::awaitable<void> suspend_sequence_for_replay(RequestState& state);
     asio::awaitable<void> preempt_one_for_admission();
     void fail_all_waiting(ErrorCode err);
     asio::awaitable<void> cleanup_all_running(ErrorCode shutdown_err);
@@ -154,6 +155,7 @@ private:
     // while the request is running.
     RequestRegistry requests_;
     std::deque<RequestPtr> waiting_;
+    std::deque<RequestPtr> skip_;
     RunningOrder running_;
     std::unordered_map<SequenceId, RequestPtr> by_seq_id_;
 
