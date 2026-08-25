@@ -101,8 +101,11 @@ protected:
             size_t end = response.find("\n\n", pos);
             if (end == std::string::npos) break;
             std::string frame = response.substr(pos, end - pos);
-            s.has_done = s.has_done || (frame.find("\"done\":true") != std::string::npos);
-            if (frame.find("\"token\"") != std::string::npos) ++s.tokens;
+            s.has_done = s.has_done ||
+                         (frame.find("\"finish_reason\":\"stop\"") != std::string::npos);
+            if (frame.find("\"delta\"") != std::string::npos &&
+                frame.find("\"content\"") != std::string::npos)
+                ++s.tokens;
             pos = end + 2;
         }
         return s;

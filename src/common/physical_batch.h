@@ -10,23 +10,6 @@
 
 namespace ccinfer {
 
-// SequenceState — worker-local execution view used by BatchTranslator.
-// Logical fields are copied from Executor-owned SequenceSnapshot; block_table
-// is worker/device-local metadata owned by the Worker.
-struct SequenceState {
-    SequenceId seq_id = 0;
-    std::vector<int32_t> prompt_tokens;
-    int max_context_len = 0;
-    int kv_written = 0;        // tokens already written into KV cache
-    int prompt_processed = 0;  // tokens already consumed from prompt
-    BlockTable block_table;
-    SequenceStatus status = SequenceStatus::Active;
-    int32_t last_token = -1;
-    int tokens_generated = 0;
-    int max_tokens = 0;
-    bool finished = false;
-};
-
 // PhysicalBatch — GPU-ready data for ModelRunner::inference.
 struct PhysicalBatch {
     int num_tokens = 0;
@@ -44,9 +27,8 @@ struct PhysicalBatch {
     Tensor query_start_loc;  // [batch_size + 1]
     Tensor context_lens;     // [batch_size]
 
-    // logits_indices_[i] is the logits row sampled for request i.
-    // Prefill: query_start_loc[i + 1] - 1 (last token of the chunk).
-    // Decode:  i (the single token just computed).
+    // logits_indices_[i] is the compact row into output.logits sampled for
+    // request i; -1 means no sampling.
     Tensor logits_indices;  // [batch_size], int32
 
     std::vector<std::size_t> item_indices;  // maps physical seq → WorkItem index
@@ -58,6 +40,12 @@ struct PhysicalBatch {
     // avoiding D2H round-trips of data BatchTranslator already produced.
     std::vector<int32_t> item_token_counts;  // [batch_size] tokens per physical seq
     std::vector<bool> sample_flags;          // [batch_size] sample this seq's logits
+
+    // Original row indices into the prefill/decode hidden tensor that need
+    // logits; used by Qwen3Model to compute only the sampled rows.
+    std::vector<int32_t> logits_rows_host;
+    int num_logits = 0;
+
     int max_position_id = 0;
 };
 

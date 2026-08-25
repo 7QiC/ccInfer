@@ -29,13 +29,16 @@ struct ForwardInput {
     Tensor context_lens;     // [batch]
     int batch_size_ = 0;
     int max_blocks_per_req_ = 0;
+
+    // CPU-side rows of the hidden tensor that need logits. The model computes
+    // only these rows so the full [T, V] logits buffer is never materialized.
+    std::vector<int32_t> logits_indices_host;
+    int num_logits_ = 0;
 };
 
 struct ForwardOutput {
-    Tensor logits;            // [T, vocab] float
-    Tensor tokens_out;        // [batch_size] sampled token ids
-    Tensor eos_flags;         // [batch_size] future: per-seq EOS hit
-    Tensor tokens_generated;  // [batch_size] future: speculative decode count
+    Tensor logits;     // [num_logits, vocab] float
+    Tensor tokens_out; // [batch_size] sampled token ids
 };
 
 class Model {

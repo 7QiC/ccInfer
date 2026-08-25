@@ -95,6 +95,7 @@ struct SamplingParams {
     float top_p = 1.0f;        // >= 1.0 = disabled
     float temperature = 0.0f;  // <= 0 = greedy
     uint32_t seed = 42;
+    int32_t eos_token_id = -1; // token that ends generation, -1 = disabled
 };
 
 struct ScheduledBatch {
@@ -144,7 +145,6 @@ struct WorkerBatchResult {
 
 struct GeneratedToken {
     int32_t token_id = -1;
-    std::string text;
     bool has_token = false;
     bool finished = false;
 };

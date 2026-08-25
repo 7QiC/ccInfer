@@ -19,7 +19,7 @@
 #include "common/error_code.h"
 #include "common/types.h"
 #include "config/config.h"
-#include "executor/execution.h"
+#include "worker/sequence_state.h"
 #include "facade/log.h"
 
 namespace ccinfer {
@@ -117,11 +117,7 @@ private:
     Result<ResolvedBatch> resolve_batch(const ScheduledBatch& batch) const;
     Result<std::vector<SequenceDelta>> build_deltas(const SequenceRegistry& before,
                                                     const SequenceRegistry& after);
-    static Result<void> apply_sequence_deltas(SequenceRegistry& states,
-                                              const std::vector<SequenceDelta>& deltas);
     static Result<void> apply_sampled_progress(SequenceRegistry& states, const BatchResult& batch);
-
-    WorkerBatchResult generate_dummy_batch_result(const ScheduledBatch& batch) const;
 
     template <typename ChanPtr, typename T>
     void resolve(ChanPtr& chan_ptr, Result<T> result);
@@ -133,7 +129,6 @@ private:
     std::condition_variable cv_;
     std::thread worker_thread_;
     std::atomic<bool> running_{false};
-    std::size_t in_flight_batches_ = 0;
 
     std::mutex resource_mutex_;
     std::unordered_map<SequenceId, SequenceState> request_states_;

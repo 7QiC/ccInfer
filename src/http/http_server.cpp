@@ -1,6 +1,7 @@
 #include "http/http_server.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cmath>
 #include <limits>
@@ -17,6 +18,7 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/read_until.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/write.hpp>
 #include <nlohmann/json.hpp>
@@ -239,6 +241,9 @@ asio::awaitable<void> HttpServer::accept_loop_impl() {
         auto [acc_ec, socket] = co_await acceptor_.async_accept(as_tuple(deferred));
         if (acc_ec) {
             if (!running_) break;
+            asio::steady_timer retry_timer(co_await asio::this_coro::executor);
+            retry_timer.expires_after(std::chrono::milliseconds(10));
+            co_await retry_timer.async_wait(as_tuple(deferred));
             continue;
         }
         auto sock = std::make_shared<asio::ip::tcp::socket>(std::move(socket));
@@ -401,6 +406,10 @@ asio::awaitable<void> HttpServer::handle_connection_impl(asio::ip::tcp::socket& 
             co_await write_response(socket, kMethodNotAllowed);
             co_return;
         }
+        if (!has_content_length || content_length == 0) {
+            co_await write_response(socket, kBadRequest);
+            co_return;
+        }
         auto body = co_await read_body(socket, buf, content_length);
         if (!body) {
             co_await write_response(socket, kBadRequest);
@@ -412,14 +421,25 @@ asio::awaitable<void> HttpServer::handle_connection_impl(asio::ip::tcp::socket& 
     }
 }
 
-std::string HttpServer::make_sse_frame(const GeneratedToken& tok) {
+std::string HttpServer::make_sse_frame(const GeneratedToken& tok, const std::string& request_id) {
     nlohmann::json j;
+    j["id"] = request_id.empty() ? "chatcmpl-default" : request_id;
+    j["object"] = "chat.completion.chunk";
+    j["created"] = 0;
+    j["model"] = "default";
+    j["choices"] = nlohmann::json::array();
+
+    nlohmann::json choice;
+    choice["index"] = 0;
     if (tok.has_token) {
         auto decoded = tokenizer_.decode({tok.token_id}, false);
-        j["token"] = decoded ? *decoded : "";
-        j["token_id"] = tok.token_id;
+        choice["delta"] = nlohmann::json{{"content", decoded ? *decoded : ""}};
+    } else {
+        choice["delta"] = nlohmann::json::object();
     }
-    j["done"] = tok.finished;
+    choice["finish_reason"] = tok.finished ? "stop" : nullptr;
+    j["choices"].push_back(std::move(choice));
+
     return "data: " + j.dump() + "\n\n";
 }
 
@@ -533,6 +553,7 @@ Result<ParsedChatRequest> parse_chat_request(const std::string& body, Tokenizer&
         parsed.sampling.top_k < 0) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
+    parsed.sampling.eos_token_id = tokenizer.eos_token_id();
 
     auto max_context_state = safe_json_get(req_json, "max_context_len", parsed.max_context_len);
     if (max_context_state == JsonFieldState::Invalid ||
@@ -603,7 +624,7 @@ asio::awaitable<void> HttpServer::handle_chat(asio::ip::tcp::socket& socket, std
         std::string frame;
         bool done = false;
         if (result) {
-            frame = make_sse_frame(*result);
+            frame = make_sse_frame(*result, request_id);
             done = result->finished;
         } else {
             frame = sse_error_frame(result.error());

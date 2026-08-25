@@ -8,7 +8,8 @@
 #include "backend/backend.h"
 #include "cache/kv_cache_manager.h"
 #include "cache/kv_cache_storage.h"
-#include "executor/execution.h"
+#include "common/physical_batch.h"
+#include "worker/sequence_state.h"
 #include "worker/batch_translator.h"
 
 namespace ccinfer {
@@ -18,7 +19,7 @@ class BatchTranslatorTest : public ::testing::Test {
 protected:
     void SetUp() override {
         auto b = Backend::create(0);
-        ASSERT_TRUE(b.has_value());
+        if (!b) GTEST_SKIP() << "CUDA unavailable";
         backend_ = std::move(*b);
 
         auto sr =

@@ -1,6 +1,7 @@
 #include "worker/batch_translator.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <limits>
 #include <type_traits>
@@ -337,13 +338,19 @@ Result<BatchTranslator::BatchExecutionPlan> BatchTranslator::prepare(
     }
     query_start_loc[B_sz] = offset;
 
+    std::vector<int32_t> logits_rows_host;
+    int num_logits = 0;
     for (int i = 0; i < batch_size; ++i) {
         const int last_token_index = query_start_loc[static_cast<std::size_t>(i) + 1] - 1;
-
-        if (auto* pf = std::get_if<PrefillChunk>(&batch.items[i])) {
-            logits_indices[static_cast<std::size_t>(i)] = pf->needs_sample ? last_token_index : -1;
+        const bool sample =
+            std::holds_alternative<PrefillChunk>(batch.items[i])
+                ? std::get<PrefillChunk>(batch.items[i]).needs_sample
+                : true;
+        if (sample) {
+            logits_indices[static_cast<std::size_t>(i)] = num_logits++;
+            logits_rows_host.push_back(last_token_index);
         } else {
-            logits_indices[static_cast<std::size_t>(i)] = last_token_index;
+            logits_indices[static_cast<std::size_t>(i)] = -1;
         }
     }
 
@@ -356,6 +363,8 @@ Result<BatchTranslator::BatchExecutionPlan> BatchTranslator::prepare(
     for (std::size_t i = 0; i < B_sz; ++i) {
         pb.sample_flags[i] = logits_indices[i] >= 0;
     }
+    pb.logits_rows_host = std::move(logits_rows_host);
+    pb.num_logits = num_logits;
     pb.max_position_id = max_position_id;
     // DecodeOneToken with write_kv=false is decode-shaped but never writes KV.
     bool has_prefill = false;
@@ -441,97 +450,19 @@ Result<void> BatchTranslator::commit_plan(const ScheduledBatch& batch,
         return std::unexpected(ErrorCode::InvalidArgument);
     }
 
-    const std::size_t num_items = batch.items.size();
-    const int max_blk = kv_mgr_.max_blocks();
-
-    // Phase 1: validate all items before mutating any SequenceState.
-    std::unordered_set<SequenceId> seen_seq_ids;
-    std::vector<SequenceState*> to_update(num_items);
-
-    for (std::size_t i = 0; i < num_items; ++i) {
-        int new_tokens = 0;
-        bool is_bootstrap = false;
-        std::visit(
-            [&](const auto& w) {
-                using T = std::decay_t<decltype(w)>;
-                if constexpr (std::is_same_v<T, PrefillChunk>) {
-                    new_tokens = w.prompt_span.length;
-                } else {
-                    new_tokens = 1;
-                    is_bootstrap = !w.write_kv;
-                }
-            },
-            batch.items[i]);
-        if (new_tokens <= 0) {
-            return std::unexpected(ErrorCode::InvalidArgument);
-        }
-
-        const std::size_t slot_cnt = per_item[i].slot_mapping.size();
-        if (slot_cnt > static_cast<std::size_t>(std::numeric_limits<int>::max()))
-            return std::unexpected(ErrorCode::InvalidArgument);
-        if (!is_bootstrap && slot_cnt != static_cast<std::size_t>(new_tokens)) {
-            return std::unexpected(ErrorCode::InvalidArgument);
-        }
-        if (per_item[i].kv_tokens_to_commit < 0 || per_item[i].prompt_tokens_to_commit < 0 ||
-            per_item[i].kv_tokens_to_commit > new_tokens ||
-            per_item[i].prompt_tokens_to_commit > new_tokens) {
-            return std::unexpected(ErrorCode::InvalidArgument);
-        }
-
+    // prepare() already validated every item against the same private
+    // SequenceState copy. commit() only applies the prepared increments.
+    for (std::size_t i = 0; i < batch.items.size(); ++i) {
         SequenceId seq_id = 0;
         std::visit([&](const auto& w) { seq_id = w.seq_id; }, batch.items[i]);
 
-        if (!seen_seq_ids.insert(seq_id).second) {
-            return std::unexpected(ErrorCode::InvalidArgument);
-        }
-
         auto it = sequences.find(seq_id);
-        if (it == sequences.end()) {
-            return std::unexpected(ErrorCode::InvalidArgument);
-        }
-
+        assert(it != sequences.end() && "commit_plan called with unknown sequence");
         auto& seq = it->second;
-        if (seq.status == SequenceStatus::Aborted ||
-            !check_seq_invariant(seq, block_size_, max_blk)) {
-            return std::unexpected(ErrorCode::InvalidArgument);
-        }
-
-        const int64_t total_after =
-            static_cast<int64_t>(seq.kv_written) + per_item[i].kv_tokens_to_commit;
-        if (total_after > static_cast<int64_t>(seq.max_context_len)) {
-            return std::unexpected(ErrorCode::RequestTooLong);
-        }
-
-        // Validate new_blocks: ids must be in range, non-duplicate, and not in
-        // existing block_table.
-        std::unordered_set<int32_t> existing;
-        for (int b = 0; b < seq.block_table.size(); ++b) existing.insert(seq.block_table[b]);
-        std::unordered_set<int32_t> new_seen;
-        for (int b = 0; b < per_item[i].new_blocks.size(); ++b) {
-            int32_t bid = per_item[i].new_blocks[b];
-            if (bid < 0 || bid >= max_blk) return std::unexpected(ErrorCode::InvalidArgument);
-            if (!new_seen.insert(bid).second) return std::unexpected(ErrorCode::InvalidArgument);
-            if (existing.count(bid)) return std::unexpected(ErrorCode::InvalidArgument);
-        }
-
-        // Verify total blocks after commit cover kv_written + new_tokens.
-        int64_t total_blocks_after =
-            static_cast<int64_t>(seq.block_table.size()) + per_item[i].new_blocks.size();
-        int64_t blocks_needed = (static_cast<int64_t>(seq.kv_written) +
-                                 per_item[i].kv_tokens_to_commit + block_size_ - 1) /
-                                block_size_;
-        if (total_blocks_after < blocks_needed) return std::unexpected(ErrorCode::InvalidArgument);
-
-        to_update[i] = &seq;
-    }
-
-    // Phase 2: mutate.
-    for (std::size_t i = 0; i < num_items; ++i) {
-        auto& seq = *to_update[i];
+        assert(seq.status != SequenceStatus::Aborted && "commit_plan called on aborted sequence");
 
         seq.kv_written += per_item[i].kv_tokens_to_commit;
         seq.prompt_processed += per_item[i].prompt_tokens_to_commit;
-
         for (int b = 0; b < per_item[i].new_blocks.size(); ++b) {
             seq.block_table.push_back(per_item[i].new_blocks[b]);
         }

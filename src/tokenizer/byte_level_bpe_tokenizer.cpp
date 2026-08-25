@@ -228,7 +228,7 @@ Result<void> ByteLevelBpeTokenizer::load(const std::string& path) {
             if (content == "<s>" || content == "<|begin_of_text|>") {
                 bos_token_id_ = id;
             } else if (content == "</s>" || content == "<|end_of_text|>" ||
-                       content == "<|endoftext|>") {
+                       content == "<|endoftext|>" || content == "<|im_end|>") {
                 eos_token_id_ = id;
             } else if (content == "<pad>" || content == "[PAD]") {
                 pad_token_id_ = id;
@@ -252,6 +252,7 @@ Result<void> ByteLevelBpeTokenizer::load(const std::string& path) {
     set_if_exists("</s>", &eos_token_id_);
     set_if_exists("<|end_of_text|>", &eos_token_id_);
     set_if_exists("<|endoftext|>", &eos_token_id_);
+    set_if_exists("<|im_end|>", &eos_token_id_);
 
     set_if_exists("<pad>", &pad_token_id_);
     set_if_exists("[PAD]", &pad_token_id_);

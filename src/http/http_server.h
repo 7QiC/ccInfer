@@ -78,7 +78,7 @@ private:
     asio::awaitable<void> handle_chat(asio::ip::tcp::socket& socket, std::string body,
                                       const std::shared_ptr<ActiveConn>& conn);
 
-    std::string make_sse_frame(const GeneratedToken& tok);
+    std::string make_sse_frame(const GeneratedToken& tok, const std::string& request_id);
 
     void try_finish_shutdown_on_http_thread();
 

@@ -1,15 +1,13 @@
 #include "worker/worker.h"
 
 #include <algorithm>
+#include <cassert>
 #include <iterator>
 #include <limits>
 #include <mutex>
 #include <stdexcept>
 #include <type_traits>
-#include <unordered_set>
 #include <variant>
-
-#include <cuda_bf16.h>
 
 #include "backend/backend.h"
 #include "cache/kv_cache_manager.h"
@@ -18,7 +16,7 @@
 #include "core/traits.h"
 #include "facade/log.h"
 #include "model/loader.h"
-#include "model/model_runner.h"
+#include "worker/model_runner.h"
 #include "model/registry.h"
 #include "worker/batch_translator.h"
 
@@ -74,8 +72,13 @@ Result<AdmitSequenceResult> Worker::admit_sequence_resources(
         static_cast<int64_t>(max_blocks_.load()) * engine_config_.block_size) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
+    if (model_ && max_context_len > model_->config().max_seq_len_) {
+        return std::unexpected(ErrorCode::InvalidArgument);
+    }
+    const int vocab_size = model_ ? model_->config().vocab_size_ : 0;
     for (auto tok : prompt_tokens) {
-        if (tok < 0) return std::unexpected(ErrorCode::InvalidArgument);
+        if (tok < 0 || (vocab_size > 0 && tok >= vocab_size))
+            return std::unexpected(ErrorCode::InvalidArgument);
     }
     if (active_sequences_.load() >= engine_config_.max_sequences) {
         return std::unexpected(ErrorCode::MaxSequencesReached);
@@ -127,8 +130,13 @@ Result<SuspendSequenceResult> Worker::reset_sequence_resources(
             static_cast<int64_t>(max_blocks_.load()) * engine_config_.block_size) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
+    if (model_ && max_context_len > model_->config().max_seq_len_) {
+        return std::unexpected(ErrorCode::InvalidArgument);
+    }
+    const int vocab_size = model_ ? model_->config().vocab_size_ : 0;
     for (auto tok : prompt_tokens) {
-        if (tok < 0) return std::unexpected(ErrorCode::InvalidArgument);
+        if (tok < 0 || (vocab_size > 0 && tok >= vocab_size))
+            return std::unexpected(ErrorCode::InvalidArgument);
     }
 
     if (!it->second.block_table.empty()) {
@@ -231,10 +239,6 @@ Result<BatchFuture> Worker::enqueue_execute_batch(ScheduledBatch batch) {
     auto channel = make_result_channel<BatchChannel>(io_);
     std::unique_lock lock(queue_mutex_);
     if (!running_) return std::unexpected(ErrorCode::ServerShuttingDown);
-    if (in_flight_batches_ >= static_cast<std::size_t>(engine_config_.max_concurrent_batches)) {
-        return std::unexpected(ErrorCode::RequestQueueFull);
-    }
-    ++in_flight_batches_;
     queue_.push_back(PendingBatch{std::move(batch), channel});
     lock.unlock();
     cv_.notify_one();
@@ -288,8 +292,6 @@ void Worker::process_command(PendingCommand command) {
                 } else {
                     resolve(value.chan, Result<WorkerBatchResult>(
                                             std::unexpected(ErrorCode::ServerShuttingDown)));
-                    std::lock_guard lock(queue_mutex_);
-                    --in_flight_batches_;
                 }
             },
             std::move(command));
@@ -309,8 +311,6 @@ void Worker::process_command(PendingCommand command) {
                 process_abort(std::move(value));
             } else {
                 process_batch(std::move(value));
-                std::lock_guard lock(queue_mutex_);
-                --in_flight_batches_;
             }
         },
         std::move(command));
@@ -352,8 +352,6 @@ void Worker::sync_capacity() {
 Result<void> Worker::init_resources(const Config& config) {
     std::lock_guard lock(resource_mutex_);
     try {
-        auto config_r = config.engine_.validate();
-        if (!config_r) return std::unexpected(config_r.error());
         engine_config_ = config.engine_;
 
         auto b = Backend::create(engine_config_.device_id);
@@ -365,30 +363,20 @@ Result<void> Worker::init_resources(const Config& config) {
         static std::once_flag register_flag;
         std::call_once(register_flag, register_builtin_models);
 
-        int num_layers = 0;
-        int num_kv_heads = 0;
-        int head_dim = 0;
-
-        if (!config.model_path_.empty()) {
-            num_layers = config.model_.n_layers_;
-            num_kv_heads = config.model_.n_kv_heads_;
-            head_dim = config.model_.head_dim_;
-
-            auto loader_r = WeightLoader::create(config.model_path_ + "/model.safetensors");
-            if (!loader_r) {
-                return std::unexpected(loader_r.error());
-            }
-
-            auto model_r = ModelRegistry::instance().create(config.model_, *loader_r, *backend_);
-            if (!model_r) {
-                return std::unexpected(model_r.error());
-            }
-            model_ = std::move(*model_r);
-        } else {
-            num_layers = engine_config_.dummy_num_layers;
-            num_kv_heads = engine_config_.dummy_num_kv_heads;
-            head_dim = engine_config_.dummy_head_dim;
+        auto loader_r = WeightLoader::create(config.model_path_ + "/model.safetensors");
+        if (!loader_r) {
+            return std::unexpected(loader_r.error());
         }
+
+        auto model_r = ModelRegistry::instance().create(config.model_, *loader_r, *backend_);
+        if (!model_r) {
+            return std::unexpected(model_r.error());
+        }
+        model_ = std::move(*model_r);
+
+        const int num_layers = config.model_.n_layers_;
+        const int num_kv_heads = config.model_.n_kv_heads_;
+        const int head_dim = config.model_.head_dim_;
 
         max_blocks_.store(engine_config_.max_blocks);
 
@@ -527,21 +515,6 @@ Result<std::vector<SequenceDelta>> Worker::build_deltas(const SequenceRegistry& 
     return deltas;
 }
 
-Result<void> Worker::apply_sequence_deltas(SequenceRegistry& states,
-                                           const std::vector<SequenceDelta>& deltas) {
-    for (const auto& delta : deltas) {
-        auto it = states.find(delta.seq_id);
-        if (it == states.end() || delta.kv_tokens_committed < 0 ||
-            delta.prompt_tokens_committed < 0) {
-            return std::unexpected(ErrorCode::InvalidArgument);
-        }
-        auto& state = it->second;
-        state.kv_written += delta.kv_tokens_committed;
-        state.prompt_processed += delta.prompt_tokens_committed;
-    }
-    return {};
-}
-
 Result<void> Worker::apply_sampled_progress(SequenceRegistry& states, const BatchResult& batch) {
     for (const auto& work_result : batch.items) {
         auto it = states.find(work_result.seq_id);
@@ -588,206 +561,117 @@ void Worker::process_batch(PendingBatch pending) {
 
     auto& execution_batch = resolved.batch;
 
-    for (const auto& item : execution_batch.items) {
-        const SequenceId seq_id = work_sequence_id(item);
-        if (seq_id == 0 || request_states_.find(seq_id) == request_states_.end()) {
-            resolve(pending.chan,
-                    Result<WorkerBatchResult>(std::unexpected(ErrorCode::InvalidArgument)));
-            return;
-        }
-    }
-
     auto before = build_sequence_states(execution_batch);
     if (before.size() != execution_batch.items.size()) {
-        // Multiple work items may address one sequence, so compare against the
-        // number of distinct sequence ids instead of the raw item count.
-        std::unordered_set<SequenceId> ids;
-        for (const auto& item : execution_batch.items) {
-            ids.insert(work_sequence_id(item));
-        }
-        if (before.size() != ids.size()) {
-            resolve(pending.chan,
-                    Result<WorkerBatchResult>(std::unexpected(ErrorCode::InvalidArgument)));
-            return;
-        }
+        resolve(pending.chan,
+                Result<WorkerBatchResult>(std::unexpected(ErrorCode::InvalidArgument)));
+        return;
     }
     auto sequences = before;
 
-    if (model_) {
-        BatchTranslator translator(*backend_, *kv_mgr_, engine_config_.block_size);
+    assert(model_ && "Worker initialized without a model");
+    BatchTranslator translator(*backend_, *kv_mgr_, engine_config_.block_size);
 
-        auto plan_r = translator.prepare(execution_batch, sequences);
-        if (!plan_r) {
-            sync_capacity();  // translate may have evicted LRU blocks.
-            resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(plan_r.error())));
-            return;
-        }
-        auto plan = std::move(*plan_r);
+    auto plan_r = translator.prepare(execution_batch, sequences);
+    if (!plan_r) {
+        sync_capacity();  // translate may have evicted LRU blocks.
+        resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(plan_r.error())));
+        return;
+    }
+    auto plan = std::move(*plan_r);
 
-        sync_capacity();  // reflect allocated blocks before forward.
+    sync_capacity();  // reflect allocated blocks before forward.
 
-        auto& phys_batch = plan.physical_batch;
+    auto& phys_batch = plan.physical_batch;
 
-        auto exec_r = ModelRunner::inference<BF16RunnerTraits>(*model_, phys_batch, *backend_,
-                                                               *kv_mgr_, execution_batch.sampling);
+    auto exec_r = ModelRunner::inference<BF16RunnerTraits>(*model_, phys_batch, *backend_,
+                                                           *kv_mgr_, execution_batch.sampling);
 
-        if (!exec_r) {
+    if (!exec_r) {
+        plan.rollback();
+        sync_capacity();
+        resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(exec_r.error())));
+        return;
+    }
+
+    BatchResult result;
+    result.batch_id = pending.batch.batch_id;
+    result.items = std::move(*exec_r);
+    for (auto& wr : result.items) {
+        if (wr.item_index < 0 ||
+            static_cast<std::size_t>(wr.item_index) >= execution_batch.items.size()) {
             plan.rollback();
             sync_capacity();
-            resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(exec_r.error())));
+            resolve(pending.chan,
+                    Result<WorkerBatchResult>(std::unexpected(ErrorCode::BatchTranslationFailed)));
             return;
         }
 
-        BatchResult result;
-        result.batch_id = pending.batch.batch_id;
-        result.items = std::move(*exec_r);
-        for (auto& wr : result.items) {
-            if (wr.item_index < 0 ||
-                static_cast<std::size_t>(wr.item_index) >= execution_batch.items.size()) {
-                plan.rollback();
-                sync_capacity();
-                resolve(pending.chan, Result<WorkerBatchResult>(
-                                          std::unexpected(ErrorCode::BatchTranslationFailed)));
-                return;
-            }
-
-            const auto& requested_item =
-                execution_batch.items[static_cast<std::size_t>(wr.item_index)];
-            if (wr.kind != work_kind(requested_item) ||
-                wr.tokens_consumed != work_token_count(requested_item)) {
-                plan.rollback();
-                sync_capacity();
-                resolve(pending.chan, Result<WorkerBatchResult>(
-                                          std::unexpected(ErrorCode::BatchTranslationFailed)));
-                return;
-            }
-        }
-
-        auto commit_r = plan.commit();
-        if (!commit_r) {
+        const auto& requested_item = execution_batch.items[static_cast<std::size_t>(wr.item_index)];
+        if (wr.kind != work_kind(requested_item) ||
+            wr.tokens_consumed != work_token_count(requested_item)) {
             plan.rollback();
             sync_capacity();
-            resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(commit_r.error())));
+            resolve(pending.chan,
+                    Result<WorkerBatchResult>(std::unexpected(ErrorCode::BatchTranslationFailed)));
             return;
         }
+    }
 
-        // Cache full blocks into prefix cache for prefill items.
-        for (const auto& item : execution_batch.items) {
-            if (std::holds_alternative<PrefillChunk>(item)) {
-                const auto& pc = std::get<PrefillChunk>(item);
-                auto it = sequences.find(pc.seq_id);
-                if (it != sequences.end()) {
-                    const auto& seq = it->second;
-                    auto cf_r = kv_mgr_->cache_full_blocks(seq.block_table, seq.prompt_tokens,
-                                                           seq.kv_written,
-                                                           /*namespace_salt=*/0);
-                    if (!cf_r) {
-                        ccLog::error("cache_full_blocks failed seq={} err={}", seq.seq_id,
-                                     static_cast<int>(cf_r.error()));
-                    }
+    auto commit_r = plan.commit();
+    if (!commit_r) {
+        plan.rollback();
+        sync_capacity();
+        resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(commit_r.error())));
+        return;
+    }
+
+    // Cache full blocks into prefix cache for prefill items.
+    for (const auto& item : execution_batch.items) {
+        if (std::holds_alternative<PrefillChunk>(item)) {
+            const auto& pc = std::get<PrefillChunk>(item);
+            auto it = sequences.find(pc.seq_id);
+            if (it != sequences.end()) {
+                const auto& seq = it->second;
+                auto cf_r = kv_mgr_->cache_full_blocks(seq.block_table, seq.prompt_tokens,
+                                                       seq.kv_written,
+                                                       /*namespace_salt=*/0);
+                if (!cf_r) {
+                    ccLog::error("cache_full_blocks failed seq={} err={}", seq.seq_id,
+                                 static_cast<int>(cf_r.error()));
                 }
             }
         }
-
-        sync_capacity();
-
-        auto progress_r = apply_sampled_progress(sequences, result);
-        if (!progress_r) {
-            resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(progress_r.error())));
-            return;
-        }
-
-        auto deltas_r = build_deltas(before, sequences);
-        if (!deltas_r) {
-            resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(deltas_r.error())));
-            return;
-        }
-        auto deltas = std::move(*deltas_r);
-
-        WorkerBatchResult worker_result;
-        worker_result.batch = std::move(result);
-        for (auto& wr : worker_result.batch.items) {
-            wr.item_index = static_cast<int>(
-                resolved.original_indices[static_cast<std::size_t>(wr.item_index)]);
-        }
-        worker_result.batch.items.insert(worker_result.batch.items.end(),
-                                         std::make_move_iterator(resolved.stale_results.begin()),
-                                         std::make_move_iterator(resolved.stale_results.end()));
-        worker_result.deltas = std::move(deltas);
-        std::sort(worker_result.batch.items.begin(), worker_result.batch.items.end(),
-                  [](const auto& lhs, const auto& rhs) { return lhs.item_index < rhs.item_index; });
-        resolve(pending.chan, Result<WorkerBatchResult>(std::move(worker_result)));
-        return;
     }
 
-    // Dummy mode (no model loaded) keeps the same batch-result and logical
-    // progress contract as the real path for control-path tests.
-    auto worker_result = generate_dummy_batch_result(execution_batch);
-    auto delta_r = apply_sequence_deltas(request_states_, worker_result.deltas);
-    if (!delta_r) {
-        resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(delta_r.error())));
-        return;
-    }
-    auto progress_r = apply_sampled_progress(request_states_, worker_result.batch);
+    sync_capacity();
+
+    auto progress_r = apply_sampled_progress(sequences, result);
     if (!progress_r) {
         resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(progress_r.error())));
         return;
     }
+
+    auto deltas_r = build_deltas(before, sequences);
+    if (!deltas_r) {
+        resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(deltas_r.error())));
+        return;
+    }
+    auto deltas = std::move(*deltas_r);
+
+    WorkerBatchResult worker_result;
+    worker_result.batch = std::move(result);
     for (auto& wr : worker_result.batch.items) {
-        wr.item_index =
-            static_cast<int>(resolved.original_indices[static_cast<std::size_t>(wr.item_index)]);
+        wr.item_index = static_cast<int>(
+            resolved.original_indices[static_cast<std::size_t>(wr.item_index)]);
     }
     worker_result.batch.items.insert(worker_result.batch.items.end(),
                                      std::make_move_iterator(resolved.stale_results.begin()),
                                      std::make_move_iterator(resolved.stale_results.end()));
+    worker_result.deltas = std::move(deltas);
     std::sort(worker_result.batch.items.begin(), worker_result.batch.items.end(),
               [](const auto& lhs, const auto& rhs) { return lhs.item_index < rhs.item_index; });
     resolve(pending.chan, Result<WorkerBatchResult>(std::move(worker_result)));
-}
-
-WorkerBatchResult Worker::generate_dummy_batch_result(const ScheduledBatch& batch) const {
-    WorkerBatchResult worker_result;
-    worker_result.batch.batch_id = batch.batch_id;
-
-    for (std::size_t i = 0; i < batch.items.size(); ++i) {
-        WorkItemResult wr;
-        wr.item_index = static_cast<int>(i);
-
-        std::visit(
-            [&](const auto& w) {
-                wr.seq_id = w.seq_id;
-                using W = std::decay_t<decltype(w)>;
-                if constexpr (std::is_same_v<W, PrefillChunk>) {
-                    wr.kind = WorkKind::PrefillChunk;
-                    wr.tokens_consumed = w.prompt_span.length;
-                    if (w.needs_sample) wr.sampled_tokens = {42};
-                } else {
-                    wr.kind = WorkKind::DecodeOneToken;
-                    wr.tokens_consumed = 1;
-                    wr.sampled_tokens = {42};
-                }
-            },
-            batch.items[i]);
-
-        worker_result.batch.items.push_back(std::move(wr));
-
-        SequenceDelta delta;
-        std::visit(
-            [&](const auto& w) {
-                delta.seq_id = w.seq_id;
-                using T = std::decay_t<decltype(w)>;
-                if constexpr (std::is_same_v<T, PrefillChunk>) {
-                    delta.kv_tokens_committed = w.prompt_span.length;
-                    delta.prompt_tokens_committed = w.prompt_span.length;
-                } else {
-                    delta.kv_tokens_committed = w.write_kv ? 1 : 0;
-                }
-            },
-            batch.items[i]);
-        worker_result.deltas.push_back(delta);
-    }
-
-    return worker_result;
 }
 
 }  // namespace ccinfer

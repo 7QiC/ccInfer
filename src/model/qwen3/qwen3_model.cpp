@@ -3,8 +3,8 @@
 #include <cmath>
 #include <cstdint>
 #include <utility>
+#include <vector>
 
-#include <cuda_runtime.h>
 
 #include "backend/backend.h"
 #include "cache/kv_cache_manager.h"
@@ -49,32 +49,18 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
     }
 
     const int T = input.num_tokens_;
-    const int B = input.batch_size_;
     const int D = config_.d_model_;
     const int nq = config_.n_q_heads_;
     const int nkv = config_.n_kv_heads_;
     const int hd = config_.head_dim_;
     const int d_ff = config_.d_ff_;
-    const int V = config_.vocab_size_;
     const int n_layers = config_.n_layers_;
     const float eps = config_.rms_norm_eps_;
-
-    if (D <= 0 || nq <= 0 || nkv <= 0 || hd <= 0 || d_ff <= 0 || V <= 0 || n_layers <= 0) {
-        return std::unexpected(ErrorCode::ModelConfigInvalid);
-    }
-    if (nq % nkv != 0) return std::unexpected(ErrorCode::ModelShapeMismatch);
-    if (input.mode_ == ForwardMode::Decode) {
-        if (T != B) return std::unexpected(ErrorCode::ModelShapeMismatch);
-    }
-    if (static_cast<int>(weights_.layers_.size()) < n_layers) {
-        return std::unexpected(ErrorCode::ModelShapeMismatch);
-    }
 
     const int qkv_dim = (nq + 2 * nkv) * hd;
     const int attn_dim = nq * hd;
 
     const std::int64_t T64 = T;
-    const std::int64_t d_ff64 = d_ff;
 
     auto alloc_tensor = [&](std::initializer_list<std::int64_t> shape) -> Result<Tensor> {
         return Tensor::empty(backend, ccop::DType::kBFloat16, shape);
@@ -257,10 +243,19 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
         if (!r) return std::unexpected(r.error());
     }
 
-    {
-        auto r = map_result(
-            ccop::gemm(&output.logits, normed, weights_.lm_head, false, true, 1.0f, 0.0f, ctx));
-        if (!r) return std::unexpected(r.error());
+    if (input.num_logits_ > 0) {
+        if (input.logits_indices_host.size() != static_cast<std::size_t>(input.num_logits_)) {
+            return std::unexpected(ErrorCode::InvalidArgument);
+        }
+        for (int i = 0; i < input.num_logits_; ++i) {
+            const int row = input.logits_indices_host[static_cast<std::size_t>(i)];
+            if (row < 0 || row >= T) return std::unexpected(ErrorCode::InvalidArgument);
+            auto normed_row = normed.slice(0, row, row + 1);
+            auto logits_row = output.logits.slice(0, i, i + 1);
+            auto r = map_result(
+                ccop::gemm(&logits_row, normed_row, weights_.lm_head, false, true, 1.0f, 0.0f, ctx));
+            if (!r) return std::unexpected(r.error());
+        }
     }
 
     return {};

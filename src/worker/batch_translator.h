@@ -8,7 +8,8 @@
 #include "cache/block.h"
 #include "common/error_code.h"
 #include "common/types.h"
-#include "executor/execution.h"
+#include "common/physical_batch.h"
+#include "worker/sequence_state.h"
 
 namespace ccinfer {
 

@@ -12,7 +12,7 @@
 #include "cache/kv_cache_manager.h"
 #include "common/error_code.h"
 #include "core/traits.h"
-#include "executor/execution.h"
+#include "common/physical_batch.h"
 #include "model/config.h"
 #include "model/model.h"
 
@@ -61,22 +61,11 @@ public:
         if (batch.mode == ForwardMode::Decode && T != B) {
             return std::unexpected(ErrorCode::ModelShapeMismatch);
         }
-
-        if (batch.mode != ForwardMode::Mixed) {
-            for (int i = 0; i < B; ++i) {
-                const bool kind_ok = batch.mode == ForwardMode::Prefill
-                                         ? batch.item_kinds[i] == WorkKind::PrefillChunk
-                                         : batch.item_kinds[i] == WorkKind::DecodeOneToken;
-                if (!kind_ok) return std::unexpected(ErrorCode::InvalidArgument);
-                if (batch.item_indices[i] >
-                    static_cast<std::size_t>(std::numeric_limits<int>::max()))
-                    return std::unexpected(ErrorCode::InvalidArgument);
-            }
+        if (batch.item_token_counts.size() != static_cast<std::size_t>(B) ||
+            batch.sample_flags.size() != static_cast<std::size_t>(B) ||
+            batch.logits_rows_host.size() != static_cast<std::size_t>(batch.num_logits)) {
+            return std::unexpected(ErrorCode::InvalidArgument);
         }
-
-        // slot_mapping[t] and block_table entries are validated by BatchTranslator:
-        //   0 <= slot_mapping[t] < kv_mgr.max_slots()
-        //   block_table entries are valid block ids or -1.
 
         const auto& cfg = model.config();
         const int V = cfg.vocab_size_;
@@ -98,23 +87,6 @@ public:
             return std::unexpected(ErrorCode::Unsupported);
         }
 
-        // BatchTranslator already built this per-item metadata; reuse it instead
-        // of copying query_start_loc/logits_indices back from device.
-        if (batch.item_token_counts.size() != static_cast<std::size_t>(B) ||
-            batch.sample_flags.size() != static_cast<std::size_t>(B)) {
-            return std::unexpected(ErrorCode::InvalidArgument);
-        }
-        for (int i = 0; i < B; ++i) {
-            const int len = batch.item_token_counts[i];
-            if (len <= 0) return std::unexpected(ErrorCode::InvalidArgument);
-            if (batch.mode == ForwardMode::Decode && len != 1)
-                return std::unexpected(ErrorCode::InvalidArgument);
-            if (batch.item_kinds[i] == WorkKind::DecodeOneToken && len != 1)
-                return std::unexpected(ErrorCode::InvalidArgument);
-            if (batch.mode == ForwardMode::Decode && !batch.sample_flags[i])
-                return std::unexpected(ErrorCode::InvalidArgument);
-        }
-
         if (batch.max_position_id < 0) {
             return std::unexpected(ErrorCode::InvalidArgument);
         }
@@ -133,14 +105,17 @@ public:
         input.batch_size_ = B;
         input.max_blocks_per_req_ = batch.max_blocks_per_req;
         input.mode_ = batch.mode;
+        input.logits_indices_host = batch.logits_rows_host;
+        input.num_logits_ = batch.num_logits;
 
         constexpr std::size_t kMax = std::numeric_limits<std::size_t>::max();
-        const std::size_t T_size = static_cast<std::size_t>(T);
         const std::size_t V_size = static_cast<std::size_t>(V);
-        if (V_size > kMax / T_size) return std::unexpected(ErrorCode::InvalidArgument);
-        const std::size_t logits_elems = T_size * V_size;
+        const int num_logits = batch.num_logits > 0 ? batch.num_logits : 1;
+        const std::size_t logits_rows = static_cast<std::size_t>(num_logits);
+        if (V_size > kMax / logits_rows) return std::unexpected(ErrorCode::InvalidArgument);
+        const std::size_t logits_elems = logits_rows * V_size;
         if (logits_elems > kMax / sizeof(float)) return std::unexpected(ErrorCode::InvalidArgument);
-        auto logits_r = Tensor::empty(backend, ccop::DType::kFloat32, {T, V});
+        auto logits_r = Tensor::empty(backend, ccop::DType::kFloat32, {num_logits, V});
         if (!logits_r) return std::unexpected(logits_r.error());
         auto tokens_r = Tensor::empty(backend, ccop::DType::kInt32, {B});
         if (!tokens_r) return std::unexpected(tokens_r.error());
@@ -170,10 +145,11 @@ public:
             wr.item_index = static_cast<int>(batch.item_indices[i]);
             wr.seq_id = batch.item_seq_ids[i];
             wr.kind = batch.item_kinds[i];
-            wr.sampled_tokens = batch.sample_flags[i] ? std::vector<int32_t>{tokens_host[i]}
-                                                      : std::vector<int32_t>{};
+            const bool sampled = batch.sample_flags[i];
+            wr.sampled_tokens = sampled ? std::vector<int32_t>{tokens_host[i]}
+                                        : std::vector<int32_t>{};
             wr.tokens_consumed = batch.item_token_counts[i];
-            wr.eos = false;
+            wr.eos = sampled && sampling.eos_token_id >= 0 && tokens_host[i] == sampling.eos_token_id;
             results.push_back(std::move(wr));
         }
 
