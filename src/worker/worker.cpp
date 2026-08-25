@@ -447,7 +447,13 @@ Result<Worker::ResolvedBatch> Worker::resolve_batch(const ScheduledBatch& batch)
         const SequenceId seq_id = work_sequence_id(item);
         auto state_it = request_states_.find(seq_id);
         if (state_it == request_states_.end()) {
-            return std::unexpected(ErrorCode::InvalidArgument);
+            WorkItemResult stale_result;
+            stale_result.item_index = static_cast<int>(original_index);
+            stale_result.seq_id = seq_id;
+            stale_result.kind = work_kind(item);
+            stale_result.stale = true;
+            resolved.stale_results.push_back(std::move(stale_result));
+            continue;
         }
         const auto& state = state_it->second;
 

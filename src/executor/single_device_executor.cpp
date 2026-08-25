@@ -108,12 +108,6 @@ Result<BatchFuture> SingleDeviceExecutor::execute_batch(ScheduledBatch batch) {
     for (const auto& item : batch.items) {
         const SequenceId seq_id = work_sequence_id(item);
         if (!seen.insert(seq_id).second) return std::unexpected(ErrorCode::InvalidArgument);
-
-        auto it = sequences_.find(seq_id);
-        if (it == sequences_.end()) return std::unexpected(ErrorCode::InvalidArgument);
-        if (it->second.status == SequenceStatus::Aborted) {
-            return std::unexpected(ErrorCode::InvalidArgument);
-        }
     }
 
     auto future = worker_->enqueue_execute_batch(std::move(batch));
@@ -130,7 +124,7 @@ asio::awaitable<Result<BatchResult>> SingleDeviceExecutor::collect_batch(BatchFu
     for (const auto& delta : result->deltas) {
         auto it = sequences_.find(delta.seq_id);
         if (it == sequences_.end() || it->second.status == SequenceStatus::Aborted) {
-            co_return std::unexpected(ErrorCode::InvalidArgument);
+            continue;
         }
 
         auto& state = it->second;
