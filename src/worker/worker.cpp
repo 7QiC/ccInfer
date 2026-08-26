@@ -99,72 +99,20 @@ Result<AdmitSequenceResult> Worker::admit_sequence_resources(
 
     SequenceState state;
     state.seq_id = seq_id;
-    state.prompt_tokens = prompt_tokens;
+    state.prompt_len = static_cast<int>(prompt_tokens.size());
     state.max_context_len = max_context_len;
     state.kv_written = prefix_tokens;
     state.prompt_processed = prefix_tokens;
     state.block_table = std::move(pr->block_table);
     state.last_token = initial_state.last_token;
     state.tokens_generated = initial_state.tokens_generated;
+    state.parent_hash = initial_state.parent_hash;
+    state.pending_tokens = std::move(initial_state.pending_tokens);
     state.max_tokens = initial_state.max_tokens;
     request_states_[seq_id] = std::move(state);
     active_sequences_++;
     sync_capacity();
     return AdmitSequenceResult{.seq_id = seq_id, .prompt_processed = prefix_tokens};
-}
-
-Result<SuspendSequenceResult> Worker::reset_sequence_resources(
-    SequenceId seq_id, const std::vector<int32_t>& prompt_tokens, int max_context_len) {
-    std::lock_guard lock(resource_mutex_);
-    if (!initialized_ || !backend_ || !kv_mgr_) {
-        return std::unexpected(ErrorCode::ServerShuttingDown);
-    }
-    auto it = request_states_.find(seq_id);
-    if (it == request_states_.end()) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-    if (prompt_tokens.empty() || max_context_len <= 0 ||
-        prompt_tokens.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
-        static_cast<int64_t>(max_context_len) < static_cast<int64_t>(prompt_tokens.size()) ||
-        static_cast<int64_t>(max_context_len) >
-            static_cast<int64_t>(max_blocks_.load()) * engine_config_.block_size) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-    if (model_ && max_context_len > model_->config().max_seq_len_) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-    const int vocab_size = model_ ? model_->config().vocab_size_ : 0;
-    for (auto tok : prompt_tokens) {
-        if (tok < 0 || (vocab_size > 0 && tok >= vocab_size))
-            return std::unexpected(ErrorCode::InvalidArgument);
-    }
-
-    if (!it->second.block_table.empty()) {
-        auto r = kv_mgr_->release_blocks(it->second.block_table);
-        if (!r) {
-            sync_capacity();
-            return std::unexpected(r.error());
-        }
-        it->second.block_table = {};
-    }
-
-    auto pr = kv_mgr_->lookup_prefix_cache(prompt_tokens, /*namespace_salt=*/0);
-    if (!pr) {
-        sync_capacity();
-        return std::unexpected(pr.error());
-    }
-
-    int64_t prefix64 = static_cast<int64_t>(pr->prefix_hit_blocks) * kv_mgr_->block_size();
-    int prefix_tokens =
-        static_cast<int>(std::min(prefix64, static_cast<int64_t>(prompt_tokens.size())));
-    it->second.prompt_tokens = prompt_tokens;
-    it->second.max_context_len = max_context_len;
-    it->second.kv_written = prefix_tokens;
-    it->second.prompt_processed = prefix_tokens;
-    it->second.block_table = std::move(pr->block_table);
-
-    sync_capacity();
-    return SuspendSequenceResult{.prompt_processed = prefix_tokens};
 }
 
 Result<void> Worker::release_sequence_resources(SequenceId seq_id) {
@@ -199,17 +147,6 @@ Result<std::shared_ptr<AdmitSequenceChannel>> Worker::enqueue_admit_sequence(
     if (!running_) return std::unexpected(ErrorCode::ServerShuttingDown);
     queue_.push_back(
         AdmitCommand{seq_id, std::move(prompt_tokens), max_context_len, initial_state, channel});
-    lock.unlock();
-    cv_.notify_one();
-    return channel;
-}
-
-Result<std::shared_ptr<SuspendSequenceChannel>> Worker::enqueue_suspend_sequence(
-    SequenceId seq_id, std::vector<int32_t> prompt_tokens, int max_context_len) {
-    auto channel = make_result_channel<SuspendSequenceChannel>(io_);
-    std::unique_lock lock(queue_mutex_);
-    if (!running_) return std::unexpected(ErrorCode::ServerShuttingDown);
-    queue_.push_back(SuspendCommand{seq_id, std::move(prompt_tokens), max_context_len, channel});
     lock.unlock();
     cv_.notify_one();
     return channel;
@@ -282,9 +219,6 @@ void Worker::process_command(PendingCommand command) {
                 if constexpr (std::is_same_v<T, AdmitCommand>) {
                     resolve(value.channel, Result<AdmitSequenceResult>(
                                                std::unexpected(ErrorCode::ServerShuttingDown)));
-                } else if constexpr (std::is_same_v<T, SuspendCommand>) {
-                    resolve(value.channel, Result<SuspendSequenceResult>(
-                                               std::unexpected(ErrorCode::ServerShuttingDown)));
                 } else if constexpr (std::is_same_v<T, ReleaseCommand> ||
                                      std::is_same_v<T, AbortCommand>) {
                     resolve(value.channel,
@@ -303,8 +237,6 @@ void Worker::process_command(PendingCommand command) {
             using T = std::decay_t<decltype(value)>;
             if constexpr (std::is_same_v<T, AdmitCommand>) {
                 process_admit(std::move(value));
-            } else if constexpr (std::is_same_v<T, SuspendCommand>) {
-                process_suspend(std::move(value));
             } else if constexpr (std::is_same_v<T, ReleaseCommand>) {
                 process_release(std::move(value));
             } else if constexpr (std::is_same_v<T, AbortCommand>) {
@@ -320,11 +252,6 @@ void Worker::process_admit(AdmitCommand command) {
     resolve(command.channel,
             admit_sequence_resources(command.seq_id, command.prompt_tokens, command.max_context_len,
                                      command.initial_state));
-}
-
-void Worker::process_suspend(SuspendCommand command) {
-    resolve(command.channel, reset_sequence_resources(command.seq_id, command.prompt_tokens,
-                                                      command.max_context_len));
 }
 
 void Worker::process_release(ReleaseCommand command) {
@@ -467,7 +394,7 @@ Result<Worker::ResolvedBatch> Worker::resolve_batch(const ScheduledBatch& batch)
                     if (!stale) work.expected_context_len = state.kv_written;
                 } else {
                     stale = state.finished ||
-                            state.prompt_processed != static_cast<int>(state.prompt_tokens.size());
+                            state.prompt_processed != state.prompt_len;
                     if (!stale && work.late_bind) {
                         stale = state.last_token < 0;
                         if (!stale) {

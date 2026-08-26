@@ -27,8 +27,6 @@ public:
     virtual asio::awaitable<Result<AdmitSequenceResult>> admit_sequence(
         std::vector<int32_t> prompt_tokens, int max_context_len,
         SequenceInitialState initial_state = {}) = 0;
-    virtual asio::awaitable<Result<SuspendSequenceResult>> suspend_sequence(
-        SequenceId seq_id, std::vector<int32_t> prompt_tokens, int max_context_len) = 0;
     virtual asio::awaitable<Result<void>> release_sequence(SequenceId seq_id) = 0;
     virtual asio::awaitable<Result<void>> abort_sequence(SequenceId seq_id) = 0;
     // Dispatch is non-blocking: the returned channel is the completion future

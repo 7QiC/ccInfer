@@ -1,6 +1,7 @@
 #include "executor/single_device_executor.h"
 
 #include <cassert>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -41,34 +42,11 @@ asio::awaitable<Result<AdmitSequenceResult>> SingleDeviceExecutor::admit_sequenc
 
     SequenceSnapshot state;
     state.seq_id = seq_id;
-    state.prompt_tokens = std::move(prompt_tokens);
+    state.prompt_len = static_cast<int>(prompt_tokens.size());
     state.max_context_len = max_context_len;
     state.kv_written = result->prompt_processed;
     state.prompt_processed = result->prompt_processed;
     sequences_[seq_id] = std::move(state);
-    co_return result;
-}
-
-asio::awaitable<Result<SuspendSequenceResult>> SingleDeviceExecutor::suspend_sequence(
-    SequenceId seq_id, std::vector<int32_t> prompt_tokens, int max_context_len) {
-    auto it = sequences_.find(seq_id);
-    if (it == sequences_.end()) co_return std::unexpected(ErrorCode::InvalidArgument);
-    if (it->second.status == SequenceStatus::Aborted) {
-        co_return std::unexpected(ErrorCode::InvalidArgument);
-    }
-
-    auto channel_r = worker_->enqueue_suspend_sequence(seq_id, prompt_tokens, max_context_len);
-    if (!channel_r) co_return std::unexpected(channel_r.error());
-    auto [ec, result] = co_await (*channel_r)->async_receive(as_tuple(deferred));
-    if (ec) co_return std::unexpected(to_error_code(ec));
-    if (!result) co_return std::unexpected(result.error());
-
-    auto& state = it->second;
-    state.prompt_tokens = std::move(prompt_tokens);
-    state.max_context_len = max_context_len;
-    state.kv_written = result->prompt_processed;
-    state.prompt_processed = result->prompt_processed;
-    state.status = SequenceStatus::Suspended;
     co_return result;
 }
 
@@ -92,7 +70,6 @@ asio::awaitable<Result<void>> SingleDeviceExecutor::abort_sequence(SequenceId se
     // Abort is terminal for this executor-side sequence. The Scheduler only
     // aborts after all in-flight leases are retired, so no queued batch can
     // apply deltas after this point; erase the executor-side state immediately.
-    it->second.status = SequenceStatus::Aborted;
     auto channel_r = worker_->enqueue_abort_sequence(seq_id);
     if (!channel_r) co_return std::unexpected(channel_r.error());
     auto [ec, result] = co_await (*channel_r)->async_receive(as_tuple(deferred));
@@ -121,9 +98,14 @@ asio::awaitable<Result<BatchResult>> SingleDeviceExecutor::collect_batch(BatchFu
     if (ec) co_return std::unexpected(to_error_code(ec));
     if (!result) co_return std::unexpected(result.error());
 
+    std::unordered_map<SequenceId, bool> eos_by_seq;
+    for (const auto& item_result : result->batch.items) {
+        if (item_result.eos) eos_by_seq[item_result.seq_id] = true;
+    }
+
     for (const auto& delta : result->deltas) {
         auto it = sequences_.find(delta.seq_id);
-        if (it == sequences_.end() || it->second.status == SequenceStatus::Aborted) {
+        if (it == sequences_.end()) {
             continue;
         }
 
@@ -132,9 +114,9 @@ asio::awaitable<Result<BatchResult>> SingleDeviceExecutor::collect_batch(BatchFu
         state.kv_written += delta.kv_tokens_committed;
         state.prompt_processed += delta.prompt_tokens_committed;
         assert(state.kv_written <= state.max_context_len);
-        assert(state.prompt_processed <= static_cast<int>(state.prompt_tokens.size()));
+        assert(state.prompt_processed <= state.prompt_len);
         assert(state.prompt_processed <= state.kv_written);
-        state.status = SequenceStatus::Active;
+        if (eos_by_seq[delta.seq_id]) state.finished = true;
     }
 
     co_return std::move(result->batch);

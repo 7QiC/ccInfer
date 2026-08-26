@@ -34,7 +34,7 @@ protected:
         // Create one sequence with a 20-token prompt.
         SequenceState seq;
         seq.seq_id = 1;
-        seq.prompt_tokens = std::vector<int32_t>(20, 1);
+        seq.prompt_len = 20;
         seq.max_context_len = 64;
         sequences_[1] = std::move(seq);
     }
@@ -49,7 +49,7 @@ protected:
 TEST_F(BatchTranslatorTest, PrefillAllocatesBlocks) {
     ScheduledBatch batch;
     batch.batch_id = 1;
-    batch.items.push_back(PrefillChunk{1, TokenSpan{0, 16}, std::nullopt});
+    batch.items.push_back(PrefillChunk{1, TokenSpan{0, 16}, std::nullopt, false, std::vector<int32_t>(16, 1)});
 
     int free_before = kv_mgr_.num_free_blocks();
 
@@ -77,7 +77,7 @@ TEST_F(BatchTranslatorTest, PrefillAllocatesBlocks) {
 TEST_F(BatchTranslatorTest, RollbackRestoresFreeBlocks) {
     ScheduledBatch batch;
     batch.batch_id = 1;
-    batch.items.push_back(PrefillChunk{1, TokenSpan{0, 16}, std::nullopt});
+    batch.items.push_back(PrefillChunk{1, TokenSpan{0, 16}, std::nullopt, false, std::vector<int32_t>(16, 1)});
 
     int free_before = kv_mgr_.num_free_blocks();
 
@@ -95,7 +95,7 @@ TEST_F(BatchTranslatorTest, RollbackRestoresFreeBlocks) {
 
 TEST_F(BatchTranslatorTest, DecodeNoNewBlock) {
     // Set up: prefill already done (8-token prompt), context fits in 1 block.
-    sequences_[1].prompt_tokens = std::vector<int32_t>(8, 1);
+    sequences_[1].prompt_len = 8;
     sequences_[1].kv_written = 8;
     sequences_[1].prompt_processed = 8;       // prefill complete
     auto alloc = kv_mgr_.allocate_blocks(1);  // 16 tokens → 1 block
@@ -129,7 +129,7 @@ TEST_F(BatchTranslatorTest, DecodeNoNewBlock) {
 TEST_F(BatchTranslatorTest, MixedBatchTranslatesDecodeAndPrefill) {
     SequenceState decode_seq;
     decode_seq.seq_id = 2;
-    decode_seq.prompt_tokens = std::vector<int32_t>(8, 1);
+    decode_seq.prompt_len = 8;
     decode_seq.kv_written = 8;
     decode_seq.prompt_processed = 8;
     decode_seq.max_context_len = 64;
@@ -141,7 +141,7 @@ TEST_F(BatchTranslatorTest, MixedBatchTranslatesDecodeAndPrefill) {
     ScheduledBatch batch;
     batch.batch_id = 5;
     batch.items.push_back(DecodeOneToken{2, 42, std::nullopt});
-    batch.items.push_back(PrefillChunk{1, TokenSpan{0, 16}, std::nullopt});
+    batch.items.push_back(PrefillChunk{1, TokenSpan{0, 16}, std::nullopt, false, std::vector<int32_t>(16, 1)});
 
     auto result = translator_->prepare(batch, sequences_);
     ASSERT_TRUE(result.has_value());
@@ -164,7 +164,7 @@ TEST_F(BatchTranslatorTest, MixedBatchTranslatesDecodeAndPrefill) {
 TEST_F(BatchTranslatorTest, PrefillSpansMultipleBlocks) {
     ScheduledBatch batch;
     batch.batch_id = 1;
-    batch.items.push_back(PrefillChunk{1, TokenSpan{0, 20}, std::nullopt});
+    batch.items.push_back(PrefillChunk{1, TokenSpan{0, 20}, std::nullopt, false, std::vector<int32_t>(20, 1)});
 
     auto result = translator_->prepare(batch, sequences_);
     ASSERT_TRUE(result.has_value());
@@ -188,7 +188,7 @@ TEST_F(BatchTranslatorTest, PartialPrefixHitOnlyRunsUncachedSuffix) {
 
     ScheduledBatch batch;
     batch.batch_id = 3;
-    batch.items.push_back(PrefillChunk{1, TokenSpan{16, 4}, std::nullopt, true});
+    batch.items.push_back(PrefillChunk{1, TokenSpan{16, 4}, std::nullopt, true, std::vector<int32_t>(4, 1)});
 
     auto result = translator_->prepare(batch, sequences_);
     ASSERT_TRUE(result.has_value());
@@ -202,7 +202,7 @@ TEST_F(BatchTranslatorTest, PartialPrefixHitOnlyRunsUncachedSuffix) {
 }
 
 TEST_F(BatchTranslatorTest, NonWritingDecodeDoesNotAllocateBlock) {
-    sequences_[1].prompt_tokens = std::vector<int32_t>(16, 1);
+    sequences_[1].prompt_len = 16;
     sequences_[1].kv_written = 16;
     sequences_[1].prompt_processed = 16;
     auto alloc = kv_mgr_.allocate_blocks(1);
@@ -211,7 +211,7 @@ TEST_F(BatchTranslatorTest, NonWritingDecodeDoesNotAllocateBlock) {
 
     ScheduledBatch batch;
     batch.batch_id = 4;
-    batch.items.push_back(DecodeOneToken{1, sequences_[1].prompt_tokens.back(), 16, false});
+    batch.items.push_back(DecodeOneToken{1, 1, 16, false});
 
     int free_before = kv_mgr_.num_free_blocks();
     auto result = translator_->prepare(batch, sequences_);
@@ -230,7 +230,7 @@ TEST_F(BatchTranslatorTest, NonWritingDecodeDoesNotAllocateBlock) {
 
 TEST_F(BatchTranslatorTest, MixedDecodeAndNonWritingDecodeIsAllowed) {
     // seq 1: fully cached prompt -> non-writing DecodeOneToken
-    sequences_[1].prompt_tokens = std::vector<int32_t>(16, 1);
+    sequences_[1].prompt_len = 16;
     sequences_[1].kv_written = 16;
     sequences_[1].prompt_processed = 16;
     auto alloc1 = kv_mgr_.allocate_blocks(1);
@@ -240,7 +240,7 @@ TEST_F(BatchTranslatorTest, MixedDecodeAndNonWritingDecodeIsAllowed) {
     // seq 2: normal decode item
     SequenceState decode_seq;
     decode_seq.seq_id = 2;
-    decode_seq.prompt_tokens = std::vector<int32_t>(8, 1);
+    decode_seq.prompt_len = 8;
     decode_seq.kv_written = 8;
     decode_seq.prompt_processed = 8;
     decode_seq.max_context_len = 64;
@@ -252,7 +252,7 @@ TEST_F(BatchTranslatorTest, MixedDecodeAndNonWritingDecodeIsAllowed) {
     ScheduledBatch batch;
     batch.batch_id = 5;
     batch.items.push_back(DecodeOneToken{2, 42, 8});
-    batch.items.push_back(DecodeOneToken{1, sequences_[1].prompt_tokens.back(), 16, false});
+    batch.items.push_back(DecodeOneToken{1, 1, 16, false});
 
     int free_before = kv_mgr_.num_free_blocks();
     auto result = translator_->prepare(batch, sequences_);
@@ -272,7 +272,7 @@ TEST_F(BatchTranslatorTest, MixedDecodeAndNonWritingDecodeIsAllowed) {
 
 TEST_F(BatchTranslatorTest, MixedPrefillAndNonWritingDecodeIsAllowed) {
     // seq 1: fully cached prompt -> non-writing DecodeOneToken
-    sequences_[1].prompt_tokens = std::vector<int32_t>(16, 1);
+    sequences_[1].prompt_len = 16;
     sequences_[1].kv_written = 16;
     sequences_[1].prompt_processed = 16;
     auto alloc1 = kv_mgr_.allocate_blocks(1);
@@ -282,14 +282,14 @@ TEST_F(BatchTranslatorTest, MixedPrefillAndNonWritingDecodeIsAllowed) {
     // seq 2: fresh prefill item
     SequenceState prefill_seq;
     prefill_seq.seq_id = 2;
-    prefill_seq.prompt_tokens = std::vector<int32_t>(20, 1);
+    prefill_seq.prompt_len = 20;
     prefill_seq.max_context_len = 64;
     sequences_[2] = std::move(prefill_seq);
 
     ScheduledBatch batch;
     batch.batch_id = 6;
-    batch.items.push_back(DecodeOneToken{1, sequences_[1].prompt_tokens.back(), 16, false});
-    batch.items.push_back(PrefillChunk{2, TokenSpan{0, 16}, std::nullopt, true});
+    batch.items.push_back(DecodeOneToken{1, 1, 16, false});
+    batch.items.push_back(PrefillChunk{2, TokenSpan{0, 16}, std::nullopt, true, std::vector<int32_t>(16, 1)});
 
     auto result = translator_->prepare(batch, sequences_);
     ASSERT_TRUE(result.has_value());

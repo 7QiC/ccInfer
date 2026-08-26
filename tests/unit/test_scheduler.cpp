@@ -50,11 +50,6 @@ public:
         co_return AdmitSequenceResult{next_id_++, static_cast<int>(prompt.size())};
     }
 
-    asio::awaitable<Result<SuspendSequenceResult>> suspend_sequence(SequenceId,
-                                                                    std::vector<int32_t>,
-                                                                    int) override {
-        co_return SuspendSequenceResult{0};
-    }
 
     asio::awaitable<Result<void>> release_sequence(SequenceId) override {
         co_return Result<void>{};

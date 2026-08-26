@@ -27,14 +27,12 @@ struct SequenceInitialState {
     int32_t last_token = -1;
     int tokens_generated = 0;
     int max_tokens = 0;
+    uint64_t parent_hash = 0;
+    std::vector<int32_t> pending_tokens;
 };
 
 struct AdmitSequenceResult {
     SequenceId seq_id = 0;
-    int prompt_processed = 0;
-};
-
-struct SuspendSequenceResult {
     int prompt_processed = 0;
 };
 
@@ -44,10 +42,6 @@ enum class WorkKind : uint8_t { PrefillChunk, DecodeOneToken };
 // Lifecycle of a request in the Scheduler. A waiting request has no executor
 // sequence yet; admission materializes that sequence in its RequestState.
 enum class RequestStatus : uint8_t { Active, Finished, Cancelled, Failed };
-
-// Lifecycle of an executor-owned logical sequence. The map entry itself is the
-// allocated state; release removes the entry and abort leaves a tombstone.
-enum class SequenceStatus : uint8_t { Active, Suspended, Aborted };
 
 struct TokenSpan {
     int start = 0;
@@ -59,6 +53,7 @@ struct PrefillChunk {
     TokenSpan prompt_span;
     std::optional<int> expected_context_len;
     bool needs_sample = false;  // only true for the final chunk
+    std::vector<int32_t> tokens;  // actual token ids for this chunk
 };
 
 struct DecodeOneToken {
@@ -112,6 +107,7 @@ struct WorkItemResult {
     int tokens_consumed = 0;
     bool eos = false;
     bool stale = false;
+    bool kv_deferred = false;
 };
 
 struct BatchResult {
@@ -123,11 +119,11 @@ struct BatchResult {
 // no physical KV block table: block ids are worker/device-local resources.
 struct SequenceSnapshot {
     SequenceId seq_id = 0;
-    std::vector<int32_t> prompt_tokens;
+    int prompt_len = 0;
     int max_context_len = 0;
     int kv_written = 0;
     int prompt_processed = 0;
-    SequenceStatus status = SequenceStatus::Active;
+    bool finished = false;
 };
 
 // Worker -> Executor logical progress delta.  Physical block-table mutations

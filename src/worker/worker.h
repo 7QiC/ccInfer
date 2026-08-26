@@ -43,8 +43,6 @@ public:
     Result<std::shared_ptr<AdmitSequenceChannel>> enqueue_admit_sequence(
         SequenceId seq_id, std::vector<int32_t> prompt_tokens, int max_context_len,
         SequenceInitialState initial_state = {});
-    Result<std::shared_ptr<SuspendSequenceChannel>> enqueue_suspend_sequence(
-        SequenceId seq_id, std::vector<int32_t> prompt_tokens, int max_context_len);
     Result<std::shared_ptr<VoidChannel>> enqueue_release_sequence(SequenceId seq_id);
     Result<std::shared_ptr<VoidChannel>> enqueue_abort_sequence(SequenceId seq_id);
     Result<BatchFuture> enqueue_execute_batch(ScheduledBatch batch);
@@ -58,13 +56,6 @@ private:
         int max_context_len;
         SequenceInitialState initial_state;
         std::shared_ptr<AdmitSequenceChannel> channel;
-    };
-
-    struct SuspendCommand {
-        SequenceId seq_id;
-        std::vector<int32_t> prompt_tokens;
-        int max_context_len;
-        std::shared_ptr<SuspendSequenceChannel> channel;
     };
 
     struct ReleaseCommand {
@@ -88,14 +79,12 @@ private:
         std::vector<WorkItemResult> stale_results;
     };
 
-    using PendingCommand =
-        std::variant<AdmitCommand, SuspendCommand, ReleaseCommand, AbortCommand, PendingBatch>;
+    using PendingCommand = std::variant<AdmitCommand, ReleaseCommand, AbortCommand, PendingBatch>;
     using SequenceRegistry = std::unordered_map<SequenceId, SequenceState>;
 
     void worker_loop();
     void process_command(PendingCommand command);
     void process_admit(AdmitCommand command);
-    void process_suspend(SuspendCommand command);
     void process_release(ReleaseCommand command);
     void process_abort(AbortCommand command);
     void process_batch(PendingBatch pending);
@@ -107,8 +96,6 @@ private:
                                                          const std::vector<int32_t>& prompt_tokens,
                                                          int max_context_len,
                                                          SequenceInitialState initial_state);
-    Result<SuspendSequenceResult> reset_sequence_resources(
-        SequenceId seq_id, const std::vector<int32_t>& prompt_tokens, int max_context_len);
     Result<void> release_sequence_resources(SequenceId seq_id);
 
     void sync_capacity();
