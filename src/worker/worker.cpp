@@ -104,10 +104,10 @@ Result<AdmitSequenceResult> Worker::admit_sequence_resources(
     state.kv_written = prefix_tokens;
     state.prompt_processed = prefix_tokens;
     state.block_table = std::move(pr->block_table);
+    state.parent_hash = pr->parent_hash;
+    state.pending_tokens = std::move(pr->pending_tokens);
     state.last_token = initial_state.last_token;
     state.tokens_generated = initial_state.tokens_generated;
-    state.parent_hash = initial_state.parent_hash;
-    state.pending_tokens = std::move(initial_state.pending_tokens);
     state.max_tokens = initial_state.max_tokens;
     request_states_[seq_id] = std::move(state);
     active_sequences_++;

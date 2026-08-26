@@ -15,7 +15,6 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/post.hpp>
 
-#include "cache/prefix_cache.h"
 #include "engine/engine_core.h"
 #include "facade/log.h"
 
@@ -294,21 +293,6 @@ asio::awaitable<bool> Scheduler::admit_one_waiting(BatchBuildContext& ctx) {
     initial_state.max_tokens = state.sampling.max_tokens;
     if (!state.generated_tokens.empty()) initial_state.last_token = state.generated_tokens.back();
 
-    const int block_size = engine_config_.block_size;
-    const int admit_prompt_len = static_cast<int>(state.prompt_tokens.size());
-    const int full_blocks = block_size > 0 ? admit_prompt_len / block_size : 0;
-    uint64_t parent_hash = 0;
-    if (full_blocks > 0) {
-        auto hashes = PrefixCache::chain_hashes(state.prompt_tokens, full_blocks * block_size,
-                                                block_size, /*namespace_salt=*/0);
-        parent_hash = hashes.back();
-    }
-    initial_state.parent_hash = parent_hash;
-    if (full_blocks * block_size < admit_prompt_len) {
-        initial_state.pending_tokens.assign(state.prompt_tokens.begin() + full_blocks * block_size,
-                                            state.prompt_tokens.end());
-    }
-
     AdmitSequenceResult result;
     while (true) {
         auto admit_r = co_await executor_.admit_sequence(state.prompt_tokens, state.max_context_len,
@@ -444,9 +428,9 @@ bool Scheduler::build_state_work(BatchBuildContext& ctx, RequestState& state) {
         const bool needs_sample = final_chunk && !(replay && !state.generated_tokens.empty());
         std::vector<int32_t> chunk_tokens(state.prompt_tokens.begin() + prompt_start,
                                           state.prompt_tokens.begin() + prompt_start + chunk_len);
-        ctx.batch.items.push_back(PrefillChunk{
-            scheduling.seq_id, TokenSpan{prompt_start, chunk_len}, std::nullopt, needs_sample,
-            std::move(chunk_tokens)});
+        ctx.batch.items.push_back(PrefillChunk{scheduling.seq_id,
+                                               TokenSpan{prompt_start, chunk_len}, std::nullopt,
+                                               needs_sample, std::move(chunk_tokens)});
         ctx.token_budget -= chunk_len;
         scheduling.reservation.reserved_prompt_tokens += chunk_len;
         if (needs_sample) ++scheduling.reservation.reserved_generation_tokens;

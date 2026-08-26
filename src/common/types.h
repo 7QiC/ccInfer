@@ -27,8 +27,6 @@ struct SequenceInitialState {
     int32_t last_token = -1;
     int tokens_generated = 0;
     int max_tokens = 0;
-    uint64_t parent_hash = 0;
-    std::vector<int32_t> pending_tokens;
 };
 
 struct AdmitSequenceResult {
@@ -52,7 +50,7 @@ struct PrefillChunk {
     SequenceId seq_id = 0;
     TokenSpan prompt_span;
     std::optional<int> expected_context_len;
-    bool needs_sample = false;  // only true for the final chunk
+    bool needs_sample = false;    // only true for the final chunk
     std::vector<int32_t> tokens;  // actual token ids for this chunk
 };
 
@@ -90,7 +88,7 @@ struct SamplingParams {
     float top_p = 1.0f;        // >= 1.0 = disabled
     float temperature = 0.0f;  // <= 0 = greedy
     uint32_t seed = 42;
-    int32_t eos_token_id = -1; // token that ends generation, -1 = disabled
+    int32_t eos_token_id = -1;  // token that ends generation, -1 = disabled
 };
 
 struct ScheduledBatch {
