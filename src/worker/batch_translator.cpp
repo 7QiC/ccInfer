@@ -23,7 +23,7 @@ bool check_seq_invariant(const SequenceState& seq, int block_size, int max_block
     if (seq.max_context_len <= 0) return false;
     if (seq.prompt_processed > seq.kv_written) return false;
     if (seq.kv_written > seq.max_context_len) return false;
-    if (static_cast<std::size_t>(seq.prompt_processed) > seq.prompt_tokens.size()) return false;
+    if (seq.prompt_processed > seq.prompt_len) return false;
     const std::size_t bt_sz = seq.block_table.size();
     const std::size_t b_sz = static_cast<std::size_t>(block_size);
     if (b_sz != 0 && bt_sz > std::numeric_limits<std::size_t>::max() / b_sz) return false;
@@ -120,6 +120,16 @@ Result<BatchTranslator::BatchExecutionPlan> BatchTranslator::prepare(
         rollback_allocations(per_item);
         return std::unexpected(ec);
     };
+    auto mark_deferred = [&](int i) {
+        per_item[i].deferred = true;
+        per_item[i].kv_tokens_to_commit = 0;
+        per_item[i].prompt_tokens_to_commit = 0;
+    };
+    auto mark_no_write = [&](int i) {
+        per_item[i].force_no_write = true;
+        per_item[i].kv_tokens_to_commit = 0;
+        per_item[i].prompt_tokens_to_commit = 0;
+    };
 
     const int max_blk = kv_mgr_.max_blocks();
 
@@ -147,8 +157,7 @@ Result<BatchTranslator::BatchExecutionPlan> BatchTranslator::prepare(
         }
 
         const auto& seq = it->second;
-        if (seq.status == SequenceStatus::Aborted ||
-            !check_seq_invariant(seq, block_size_, max_blk)) {
+        if (!check_seq_invariant(seq, block_size_, max_blk)) {
             return fail(ErrorCode::InvalidArgument);
         }
 
@@ -186,28 +195,26 @@ Result<BatchTranslator::BatchExecutionPlan> BatchTranslator::prepare(
                 return fail(ErrorCode::InvalidArgument);
             }
             if (pc.prompt_span.length > 0) {
-                const std::size_t p_size = seq.prompt_tokens.size();
-                if (static_cast<std::size_t>(pc.prompt_span.start) > p_size ||
-                    static_cast<std::size_t>(pc.prompt_span.length) >
-                        p_size - static_cast<std::size_t>(pc.prompt_span.start)) {
+                if (pc.prompt_span.start < 0 || pc.prompt_span.start > seq.prompt_len ||
+                    pc.prompt_span.length > seq.prompt_len - pc.prompt_span.start) {
                     return fail(ErrorCode::InvalidArgument);
                 }
                 if (pc.expected_context_len.has_value() &&
                     *pc.expected_context_len != seq.kv_written) {
                     return fail(ErrorCode::InvalidArgument);
                 }
-                const std::size_t chunk_end = static_cast<std::size_t>(pc.prompt_span.start) +
-                                              static_cast<std::size_t>(pc.prompt_span.length);
-                for (std::size_t t = static_cast<std::size_t>(pc.prompt_span.start); t < chunk_end;
-                     ++t) {
-                    if (seq.prompt_tokens[t] < 0) return fail(ErrorCode::InvalidArgument);
+                if (pc.tokens.size() != static_cast<std::size_t>(pc.prompt_span.length)) {
+                    return fail(ErrorCode::InvalidArgument);
+                }
+                for (int32_t token : pc.tokens) {
+                    if (token < 0) return fail(ErrorCode::InvalidArgument);
                 }
             }
         } else if (const auto* d = std::get_if<DecodeOneToken>(&item)) {
             if (d->input_token < 0) {
                 return fail(ErrorCode::InvalidArgument);
             }
-            if (static_cast<std::size_t>(seq.prompt_processed) != seq.prompt_tokens.size()) {
+            if (seq.prompt_processed != seq.prompt_len) {
                 return fail(ErrorCode::InvalidArgument);
             }
             if (d->expected_context_len.has_value() && *d->expected_context_len != seq.kv_written) {
@@ -231,16 +238,33 @@ Result<BatchTranslator::BatchExecutionPlan> BatchTranslator::prepare(
             int additional = blocks_needed - blocks_owned;
             auto alloc = kv_mgr_.allocate_blocks(additional);
             if (!alloc) {
-                return fail(alloc.error());
-            }
-
-            per_item[i].new_blocks = *alloc;
-            for (int b = 0; b < alloc->size(); ++b) {
-                merged.push_back((*alloc)[b]);
+                if (alloc.error() == ErrorCode::KVBlockExhausted) {
+                    if (std::holds_alternative<PrefillChunk>(item)) {
+                        mark_deferred(i);
+                        continue;
+                    }
+                    const auto& d = std::get<DecodeOneToken>(item);
+                    const int unwritten =
+                        seq.tokens_generated - (seq.kv_written - seq.prompt_processed);
+                    if (d.write_kv && unwritten < 2) {
+                        mark_no_write(i);
+                    } else {
+                        mark_deferred(i);
+                        continue;
+                    }
+                } else {
+                    return fail(alloc.error());
+                }
+            } else {
+                per_item[i].new_blocks = *alloc;
+                for (int b = 0; b < alloc->size(); ++b) {
+                    merged.push_back((*alloc)[b]);
+                }
             }
         }
 
-        if (!is_bootstrap) {
+        const bool no_write = is_bootstrap || per_item[i].force_no_write;
+        if (!no_write) {
             per_item[i].slot_mapping.resize(static_cast<std::size_t>(new_tokens));
             for (int t = 0; t < new_tokens; ++t) {
                 int global_pos = seq.kv_written + t;
@@ -280,7 +304,11 @@ Result<BatchTranslator::BatchExecutionPlan> BatchTranslator::prepare(
     int max_position_id = 0;
 
     int offset = 0;
+    int phys = 0;
+    std::vector<std::size_t> included_indices;
     for (int i = 0; i < num_items; ++i) {
+        if (per_item[i].deferred) continue;
+
         const auto& item = batch.items[i];
 
         SequenceId seq_id = 0;
@@ -289,17 +317,17 @@ Result<BatchTranslator::BatchExecutionPlan> BatchTranslator::prepare(
 
         const bool is_bootstrap = std::holds_alternative<DecodeOneToken>(item) &&
                                   !std::get<DecodeOneToken>(item).write_kv;
-        const int new_tokens = is_bootstrap ? 1 : static_cast<int>(per_item[i].slot_mapping.size());
-        item_token_counts[static_cast<std::size_t>(i)] = new_tokens;
+        const bool force_no_write = per_item[i].force_no_write;
+        const bool no_write = is_bootstrap || force_no_write;
+        const int new_tokens = no_write ? 1 : static_cast<int>(per_item[i].slot_mapping.size());
+        item_token_counts[static_cast<std::size_t>(phys)] = new_tokens;
 
         std::visit(
             [&](const auto& w) {
                 using T = std::decay_t<decltype(w)>;
                 if constexpr (std::is_same_v<T, PrefillChunk>) {
-                    int start = w.prompt_span.start;
                     for (int t = 0; t < new_tokens; ++t) {
-                        token_ids_host[static_cast<std::size_t>(offset + t)] =
-                            seq.prompt_tokens[static_cast<std::size_t>(start + t)];
+                        token_ids_host[static_cast<std::size_t>(offset + t)] = w.tokens[static_cast<std::size_t>(t)];
                     }
                 } else {
                     token_ids_host[static_cast<std::size_t>(offset)] = w.input_token;
@@ -309,6 +337,11 @@ Result<BatchTranslator::BatchExecutionPlan> BatchTranslator::prepare(
 
         if (is_bootstrap) {
             const int pos = seq.kv_written - 1;
+            positions_host[static_cast<std::size_t>(offset)] = pos;
+            slot_mapping_host[static_cast<std::size_t>(offset)] = -1;  // unused
+            max_position_id = std::max(max_position_id, pos);
+        } else if (force_no_write) {
+            const int pos = seq.kv_written;
             positions_host[static_cast<std::size_t>(offset)] = pos;
             slot_mapping_host[static_cast<std::size_t>(offset)] = -1;  // unused
             max_position_id = std::max(max_position_id, pos);
@@ -327,24 +360,27 @@ Result<BatchTranslator::BatchExecutionPlan> BatchTranslator::prepare(
             merged.push_back(per_item[i].new_blocks[b]);
         }
         for (int b = 0; b < merged.size(); ++b) {
-            block_table_host[static_cast<std::size_t>(i) * MBPR_sz + static_cast<std::size_t>(b)] =
-                merged[b];
+            block_table_host[static_cast<std::size_t>(phys) * MBPR_sz +
+                             static_cast<std::size_t>(b)] = merged[b];
         }
 
-        query_start_loc[static_cast<std::size_t>(i)] = offset;
-        context_lens[static_cast<std::size_t>(i)] =
-            is_bootstrap ? seq.kv_written : seq.kv_written + new_tokens;
+        query_start_loc[static_cast<std::size_t>(phys)] = offset;
+        context_lens[static_cast<std::size_t>(phys)] =
+            no_write ? seq.kv_written : seq.kv_written + new_tokens;
+        included_indices.push_back(static_cast<std::size_t>(i));
         offset += new_tokens;
+        ++phys;
     }
     query_start_loc[B_sz] = offset;
 
     std::vector<int32_t> logits_rows_host;
     int num_logits = 0;
     for (int i = 0; i < batch_size; ++i) {
+        const std::size_t original_index = included_indices[static_cast<std::size_t>(i)];
         const int last_token_index = query_start_loc[static_cast<std::size_t>(i) + 1] - 1;
         const bool sample =
-            std::holds_alternative<PrefillChunk>(batch.items[i])
-                ? std::get<PrefillChunk>(batch.items[i]).needs_sample
+            std::holds_alternative<PrefillChunk>(batch.items[original_index])
+                ? std::get<PrefillChunk>(batch.items[original_index]).needs_sample
                 : true;
         if (sample) {
             logits_indices[static_cast<std::size_t>(i)] = num_logits++;
@@ -369,7 +405,8 @@ Result<BatchTranslator::BatchExecutionPlan> BatchTranslator::prepare(
     // DecodeOneToken with write_kv=false is decode-shaped but never writes KV.
     bool has_prefill = false;
     bool has_decode = false;
-    for (const auto& item : batch.items) {
+    for (const std::size_t original_index : included_indices) {
+        const auto& item = batch.items[original_index];
         if (std::holds_alternative<PrefillChunk>(item))
             has_prefill = true;
         else
@@ -386,7 +423,8 @@ Result<BatchTranslator::BatchExecutionPlan> BatchTranslator::prepare(
     pb.item_seq_ids.resize(B_sz);
     pb.item_kinds.resize(B_sz);
     for (int i = 0; i < batch_size; ++i) {
-        pb.item_indices[static_cast<std::size_t>(i)] = static_cast<std::size_t>(i);
+        const std::size_t original_index = included_indices[static_cast<std::size_t>(i)];
+        pb.item_indices[static_cast<std::size_t>(i)] = original_index;
         std::visit(
             [&](const auto& w) {
                 pb.item_seq_ids[static_cast<std::size_t>(i)] = w.seq_id;
@@ -397,7 +435,22 @@ Result<BatchTranslator::BatchExecutionPlan> BatchTranslator::prepare(
                     pb.item_kinds[static_cast<std::size_t>(i)] = WorkKind::DecodeOneToken;
                 }
             },
-            batch.items[i]);
+            batch.items[original_index]);
+    }
+
+    std::vector<std::size_t> deferred_indices;
+    std::vector<bool> no_write_flags(static_cast<std::size_t>(num_items), false);
+    for (int i = 0; i < num_items; ++i) {
+        if (per_item[i].deferred) deferred_indices.push_back(static_cast<std::size_t>(i));
+        if (per_item[i].force_no_write) no_write_flags[static_cast<std::size_t>(i)] = true;
+    }
+
+    if (batch_size == 0) {
+        BatchExecutionPlan plan(this, batch, &sequences, std::move(physical_batch),
+                                std::move(per_item));
+        plan.deferred_indices = std::move(deferred_indices);
+        plan.no_write_flags = std::move(no_write_flags);
+        return plan;
     }
 
     if (T_sz > kMax / sizeof(int32_t)) return fail(ErrorCode::InvalidArgument);
@@ -439,8 +492,11 @@ Result<BatchTranslator::BatchExecutionPlan> BatchTranslator::prepare(
     auto sync_r = backend_.synchronize();
     if (!sync_r) return fail(sync_r.error());
 
-    return BatchExecutionPlan(this, batch, &sequences, std::move(physical_batch),
-                              std::move(per_item));
+    BatchExecutionPlan plan(this, batch, &sequences, std::move(physical_batch),
+                            std::move(per_item));
+    plan.deferred_indices = std::move(deferred_indices);
+    plan.no_write_flags = std::move(no_write_flags);
+    return plan;
 }
 
 Result<void> BatchTranslator::commit_plan(const ScheduledBatch& batch,
@@ -459,7 +515,6 @@ Result<void> BatchTranslator::commit_plan(const ScheduledBatch& batch,
         auto it = sequences.find(seq_id);
         assert(it != sequences.end() && "commit_plan called with unknown sequence");
         auto& seq = it->second;
-        assert(seq.status != SequenceStatus::Aborted && "commit_plan called on aborted sequence");
 
         seq.kv_written += per_item[i].kv_tokens_to_commit;
         seq.prompt_processed += per_item[i].prompt_tokens_to_commit;

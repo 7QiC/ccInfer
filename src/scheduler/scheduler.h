@@ -40,6 +40,7 @@ struct SequenceScheduleCursor {
     GenerationPhase phase = GenerationPhase::Prefill;
     int prefill_cursor = 0;
     int generated_tokens_in_prompt = 0;
+    bool wait_pending = false;
 };
 
 struct SequenceSchedulingState {
@@ -125,6 +126,7 @@ private:
     static bool is_schedulable_state(const RequestState& state) noexcept;
     static bool is_prefill_phase(GenerationPhase phase) noexcept;
     static bool is_decode_phase(GenerationPhase phase) noexcept;
+    static void prepare_for_wait(RequestState& state);
 
     asio::awaitable<void> update_from_output(const ScheduledBatch& batch,
                                              const BatchResult& result);
@@ -132,6 +134,7 @@ private:
     asio::awaitable<void> cleanup_terminal_requests();
     asio::awaitable<void> fail_batch(const ScheduledBatch& batch, ErrorCode err);
     asio::awaitable<void> preempt_one_for_admission();
+    asio::awaitable<void> release_and_move_to_wait(const RequestPtr& request);
     void fail_all_waiting(ErrorCode err);
     asio::awaitable<void> cleanup_all_running(ErrorCode shutdown_err);
     asio::awaitable<void> wait_for_work();

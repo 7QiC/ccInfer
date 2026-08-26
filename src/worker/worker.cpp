@@ -515,21 +515,39 @@ void Worker::process_batch(PendingBatch pending) {
 
     sync_capacity();  // reflect allocated blocks before forward.
 
-    auto& phys_batch = plan.physical_batch;
-
-    auto exec_r = ModelRunner::inference<BF16RunnerTraits>(*model_, phys_batch, *backend_,
-                                                           *kv_mgr_, execution_batch.sampling);
-
-    if (!exec_r) {
-        plan.rollback();
-        sync_capacity();
-        resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(exec_r.error())));
-        return;
-    }
-
     BatchResult result;
     result.batch_id = pending.batch.batch_id;
-    result.items = std::move(*exec_r);
+
+    if (plan.physical_batch.num_tokens > 0) {
+        auto& phys_batch = plan.physical_batch;
+        auto exec_r = ModelRunner::inference<BF16RunnerTraits>(*model_, phys_batch, *backend_,
+                                                               *kv_mgr_, execution_batch.sampling);
+        if (!exec_r) {
+            plan.rollback();
+            sync_capacity();
+            resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(exec_r.error())));
+            return;
+        }
+        result.items = std::move(*exec_r);
+        for (auto& wr : result.items) {
+            if (wr.item_index >= 0 &&
+                static_cast<std::size_t>(wr.item_index) < plan.no_write_flags.size() &&
+                plan.no_write_flags[static_cast<std::size_t>(wr.item_index)]) {
+                wr.kv_deferred = true;
+            }
+        }
+    }
+
+    for (const std::size_t deferred_index : plan.deferred_indices) {
+        WorkItemResult wr;
+        wr.item_index = static_cast<int>(deferred_index);
+        wr.seq_id = work_sequence_id(execution_batch.items[deferred_index]);
+        wr.kind = work_kind(execution_batch.items[deferred_index]);
+        wr.tokens_consumed = 0;
+        wr.kv_deferred = true;
+        result.items.push_back(std::move(wr));
+    }
+
     for (auto& wr : result.items) {
         if (wr.item_index < 0 ||
             static_cast<std::size_t>(wr.item_index) >= execution_batch.items.size()) {
@@ -542,7 +560,7 @@ void Worker::process_batch(PendingBatch pending) {
 
         const auto& requested_item = execution_batch.items[static_cast<std::size_t>(wr.item_index)];
         if (wr.kind != work_kind(requested_item) ||
-            wr.tokens_consumed != work_token_count(requested_item)) {
+            (!wr.kv_deferred && wr.tokens_consumed != work_token_count(requested_item))) {
             plan.rollback();
             sync_capacity();
             resolve(pending.chan,

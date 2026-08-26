@@ -246,7 +246,8 @@ asio::awaitable<bool> Scheduler::evict_one_skipped() {
         co_return true;
     }
 
-    auto result = co_await executor_.abort_sequence(request->scheduling->seq_id);
+    prepare_for_wait(*request);
+    auto result = co_await executor_.release_sequence(request->scheduling->seq_id);
     if (!result) {
         ccLog::warn("evict skipped sequence failed seq={} err={}", request->scheduling->seq_id,
                     static_cast<int>(result.error()));
@@ -333,6 +334,9 @@ asio::awaitable<bool> Scheduler::admit_one_waiting(BatchBuildContext& ctx) {
     state.scheduling.emplace();
     auto& scheduling = *state.scheduling;
     scheduling.seq_id = result.seq_id;
+    if (!state.generated_tokens.empty()) {
+        scheduling.cursor.generated_tokens_in_prompt = generated_token_count(state) - 1;
+    }
 
     const int prompt_len = static_cast<int>(state.prompt_tokens.size());
     if (result.prompt_processed > 0 && result.prompt_processed < prompt_len) {
@@ -422,8 +426,11 @@ bool Scheduler::build_state_work(BatchBuildContext& ctx, RequestState& state) {
         const bool final_chunk = prompt_start + chunk_len >= prompt_len;
         const bool replay = scheduling.cursor.phase == GenerationPhase::ReplayPrefill;
         const bool needs_sample = final_chunk && !(replay && !state.generated_tokens.empty());
+        std::vector<int32_t> chunk_tokens(state.prompt_tokens.begin() + prompt_start,
+                                          state.prompt_tokens.begin() + prompt_start + chunk_len);
         ctx.batch.items.push_back(PrefillChunk{
-            scheduling.seq_id, TokenSpan{prompt_start, chunk_len}, std::nullopt, needs_sample});
+            scheduling.seq_id, TokenSpan{prompt_start, chunk_len}, std::nullopt, needs_sample,
+            std::move(chunk_tokens)});
         ctx.token_budget -= chunk_len;
         scheduling.reservation.reserved_prompt_tokens += chunk_len;
         if (needs_sample) ++scheduling.reservation.reserved_generation_tokens;
@@ -507,6 +514,38 @@ bool Scheduler::is_decode_phase(GenerationPhase phase) noexcept {
     return phase == GenerationPhase::Bootstrap || phase == GenerationPhase::Decode;
 }
 
+void Scheduler::prepare_for_wait(RequestState& state) {
+    if (state.generated_tokens.empty()) return;
+    state.prompt_tokens = state.initial_prompt_tokens;
+    state.prompt_tokens.insert(state.prompt_tokens.end(), state.generated_tokens.begin(),
+                               state.generated_tokens.end() - 1);
+}
+
+asio::awaitable<void> Scheduler::release_and_move_to_wait(const RequestPtr& request) {
+    auto& state = *request;
+    if (!state.scheduling) co_return;
+
+    prepare_for_wait(state);
+    const SequenceId seq_id = state.scheduling->seq_id;
+    auto release_r = co_await executor_.release_sequence(seq_id);
+    if (!release_r) {
+        ccLog::warn("release to wait failed seq={} err={}", seq_id,
+                    static_cast<int>(release_r.error()));
+        send_error_event(state, release_r.error());
+        co_return;
+    }
+
+    by_seq_id_.erase(seq_id);
+    state.scheduling.reset();
+    for (auto rit = running_.begin(); rit != running_.end(); ++rit) {
+        if (rit->get() == request.get()) {
+            running_.erase(rit);
+            break;
+        }
+    }
+    waiting_.push_front(request);
+}
+
 void Scheduler::retire_reservation(RequestState& state, const WorkItem& item) {
     if (!state.scheduling) return;
     auto& reservation = state.scheduling->reservation;
@@ -573,6 +612,10 @@ asio::awaitable<void> Scheduler::update_from_output(const ScheduledBatch& batch,
         bool final_prefill = false;
         if (work_result.kind == WorkKind::PrefillChunk) {
             const auto& chunk = std::get<PrefillChunk>(original);
+            if (work_result.kv_deferred) {
+                scheduling.cursor.wait_pending = true;
+                continue;
+            }
             const int prompt_len = static_cast<int>(state.prompt_tokens.size());
             const bool replay_prefill = scheduling.cursor.phase == GenerationPhase::ReplayPrefill;
             if (work_result.tokens_consumed != chunk.prompt_span.length ||
@@ -600,6 +643,9 @@ asio::awaitable<void> Scheduler::update_from_output(const ScheduledBatch& batch,
                 send_error_event(state, ErrorCode::BatchTranslationFailed);
                 continue;
             }
+        } else if (work_result.kv_deferred && work_result.tokens_consumed == 0) {
+            scheduling.cursor.wait_pending = true;
+            continue;
         } else if (work_result.tokens_consumed != 1) {
             send_error_event(state, ErrorCode::BatchTranslationFailed);
             continue;
@@ -622,6 +668,21 @@ asio::awaitable<void> Scheduler::update_from_output(const ScheduledBatch& batch,
         }
     }
 
+    std::vector<RequestPtr> to_wait;
+    for (auto request_it : running_) {
+        auto& state = *request_it;
+        if (!state.scheduling) continue;
+        auto& scheduling = *state.scheduling;
+        if (!scheduling.cursor.wait_pending || scheduling.reservation.execution_leases != 0 ||
+            !is_schedulable_state(state))
+            continue;
+        scheduling.cursor.wait_pending = false;
+        to_wait.push_back(request_it);
+    }
+
+    for (auto& request : to_wait) {
+        co_await release_and_move_to_wait(request);
+    }
 }
 
 void Scheduler::mark_dispatch_failed(const ScheduledBatch& batch, ErrorCode err) {
@@ -744,25 +805,7 @@ asio::awaitable<void> Scheduler::handle_batch_error(const ScheduledBatch& batch,
     }
 
     for (auto& request : to_wait) {
-        auto& state = *request;
-        if (!state.scheduling) continue;
-        const SequenceId seq_id = state.scheduling->seq_id;
-        auto abort_r = co_await executor_.abort_sequence(seq_id);
-        if (!abort_r) {
-            ccLog::warn("KVBlockExhausted abort failed seq={} err={}", seq_id,
-                        static_cast<int>(abort_r.error()));
-            send_error_event(state, abort_r.error());
-            continue;
-        }
-        by_seq_id_.erase(seq_id);
-        state.scheduling.reset();
-        for (auto rit = running_.begin(); rit != running_.end(); ++rit) {
-            if (rit->get() == request.get()) {
-                running_.erase(rit);
-                break;
-            }
-        }
-        waiting_.push_front(std::move(request));
+        co_await release_and_move_to_wait(request);
     }
     co_return;
 }

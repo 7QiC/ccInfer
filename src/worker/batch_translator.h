@@ -31,6 +31,8 @@ public:
         std::vector<int32_t> slot_mapping;  // per-token physical slot [new_tokens]
         int kv_tokens_to_commit = 0;
         int prompt_tokens_to_commit = 0;
+        bool deferred = false;              // item excluded from this physical batch
+        bool force_no_write = false;        // decode ran but did not write KV
     };
 
     class BatchExecutionPlan {
@@ -42,6 +44,14 @@ public:
         ~BatchExecutionPlan();
 
         PhysicalBatch physical_batch;
+
+        // Original item indices that were excluded because no KV block was
+        // available. The caller must synthesize deferred WorkItemResults for
+        // these items.
+        std::vector<std::size_t> deferred_indices;
+
+        // Per original item: true when a decode was executed without writing KV.
+        std::vector<bool> no_write_flags;
 
         // Makes the logical SequenceState changes visible after a successful
         // model execution. A plan that is not committed rolls back its newly
