@@ -64,12 +64,9 @@ Result<std::unique_ptr<Backend>> Backend::create(int device_id) {
         return std::unexpected(r.error());
     }
     if (auto r = cuda_check(cudaStreamCreate(&impl->stream_)); !r) {
-        cublasDestroy(impl->cublas_handle_);
         return std::unexpected(r.error());
     }
     if (auto r = cublas_check(cublasSetStream(impl->cublas_handle_, impl->stream_)); !r) {
-        cudaStreamDestroy(impl->stream_);
-        cublasDestroy(impl->cublas_handle_);
         return std::unexpected(r.error());
     }
 
