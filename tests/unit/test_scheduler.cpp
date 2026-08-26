@@ -54,7 +54,6 @@ public:
     asio::awaitable<Result<void>> release_sequence(SequenceId) override {
         co_return Result<void>{};
     }
-    asio::awaitable<Result<void>> abort_sequence(SequenceId) override { co_return Result<void>{}; }
 
     Result<BatchFuture> execute_batch(ScheduledBatch batch) override {
         ++execute_calls_;

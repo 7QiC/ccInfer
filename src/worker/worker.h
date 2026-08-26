@@ -44,7 +44,6 @@ public:
         SequenceId seq_id, std::vector<int32_t> prompt_tokens, int max_context_len,
         SequenceInitialState initial_state = {});
     Result<std::shared_ptr<VoidChannel>> enqueue_release_sequence(SequenceId seq_id);
-    Result<std::shared_ptr<VoidChannel>> enqueue_abort_sequence(SequenceId seq_id);
     Result<BatchFuture> enqueue_execute_batch(ScheduledBatch batch);
 
     Capacity capacity() const;
@@ -63,11 +62,6 @@ private:
         std::shared_ptr<VoidChannel> channel;
     };
 
-    struct AbortCommand {
-        SequenceId seq_id;
-        std::shared_ptr<VoidChannel> channel;
-    };
-
     struct PendingBatch {
         ScheduledBatch batch;
         std::shared_ptr<BatchChannel> chan;
@@ -79,14 +73,13 @@ private:
         std::vector<WorkItemResult> stale_results;
     };
 
-    using PendingCommand = std::variant<AdmitCommand, ReleaseCommand, AbortCommand, PendingBatch>;
+    using PendingCommand = std::variant<AdmitCommand, ReleaseCommand, PendingBatch>;
     using SequenceRegistry = std::unordered_map<SequenceId, SequenceState>;
 
     void worker_loop();
     void process_command(PendingCommand command);
     void process_admit(AdmitCommand command);
     void process_release(ReleaseCommand command);
-    void process_abort(AbortCommand command);
     void process_batch(PendingBatch pending);
 
     Result<void> init_resources(const Config& config);

@@ -162,16 +162,6 @@ Result<std::shared_ptr<VoidChannel>> Worker::enqueue_release_sequence(SequenceId
     return channel;
 }
 
-Result<std::shared_ptr<VoidChannel>> Worker::enqueue_abort_sequence(SequenceId seq_id) {
-    auto channel = make_result_channel<VoidChannel>(io_);
-    std::unique_lock lock(queue_mutex_);
-    if (!running_) return std::unexpected(ErrorCode::ServerShuttingDown);
-    queue_.push_back(AbortCommand{seq_id, channel});
-    lock.unlock();
-    cv_.notify_one();
-    return channel;
-}
-
 Result<BatchFuture> Worker::enqueue_execute_batch(ScheduledBatch batch) {
     auto channel = make_result_channel<BatchChannel>(io_);
     std::unique_lock lock(queue_mutex_);
@@ -219,8 +209,7 @@ void Worker::process_command(PendingCommand command) {
                 if constexpr (std::is_same_v<T, AdmitCommand>) {
                     resolve(value.channel, Result<AdmitSequenceResult>(
                                                std::unexpected(ErrorCode::ServerShuttingDown)));
-                } else if constexpr (std::is_same_v<T, ReleaseCommand> ||
-                                     std::is_same_v<T, AbortCommand>) {
+                } else if constexpr (std::is_same_v<T, ReleaseCommand>) {
                     resolve(value.channel,
                             Result<void>(std::unexpected(ErrorCode::ServerShuttingDown)));
                 } else {
@@ -239,8 +228,6 @@ void Worker::process_command(PendingCommand command) {
                 process_admit(std::move(value));
             } else if constexpr (std::is_same_v<T, ReleaseCommand>) {
                 process_release(std::move(value));
-            } else if constexpr (std::is_same_v<T, AbortCommand>) {
-                process_abort(std::move(value));
             } else {
                 process_batch(std::move(value));
             }
@@ -255,10 +242,6 @@ void Worker::process_admit(AdmitCommand command) {
 }
 
 void Worker::process_release(ReleaseCommand command) {
-    resolve(command.channel, release_sequence_resources(command.seq_id));
-}
-
-void Worker::process_abort(AbortCommand command) {
     resolve(command.channel, release_sequence_resources(command.seq_id));
 }
 

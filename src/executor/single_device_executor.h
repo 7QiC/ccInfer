@@ -22,7 +22,6 @@ public:
         std::vector<int32_t> prompt_tokens, int max_context_len,
         SequenceInitialState initial_state = {}) override;
     asio::awaitable<Result<void>> release_sequence(SequenceId seq_id) override;
-    asio::awaitable<Result<void>> abort_sequence(SequenceId seq_id) override;
     Result<BatchFuture> execute_batch(ScheduledBatch batch) override;
     asio::awaitable<Result<BatchResult>> collect_batch(BatchFuture future) override;
 

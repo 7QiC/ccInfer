@@ -121,7 +121,7 @@ void Scheduler::cancel_on_scheduler_thread(const std::string& request_id) {
             state.status = RequestStatus::Cancelled;
             if (state.scheduling) {
                 const SequenceId seq_id = state.scheduling->seq_id;
-                asio::co_spawn(io_, executor_.abort_sequence(seq_id), asio::detached);
+                asio::co_spawn(io_, executor_.release_sequence(seq_id), asio::detached);
                 state.scheduling.reset();
             }
         }
@@ -192,14 +192,14 @@ asio::awaitable<bool> Scheduler::admit_one_skipped(BatchBuildContext& ctx) {
     skip_.pop_front();
     auto& state = *request;
     if (state.status == RequestStatus::Cancelled) {
-        if (state.scheduling) co_await executor_.abort_sequence(state.scheduling->seq_id);
+        if (state.scheduling) co_await executor_.release_sequence(state.scheduling->seq_id);
         send_event(state.sink, std::unexpected(ErrorCode::RequestCancelled));
         erase_request(request);
         co_return true;
     }
 
     if (state.sampling.max_tokens <= 0) {
-        if (state.scheduling) co_await executor_.abort_sequence(state.scheduling->seq_id);
+        if (state.scheduling) co_await executor_.release_sequence(state.scheduling->seq_id);
         send_event(state.sink, GeneratedToken{.has_token = false, .finished = true});
         erase_request(request);
         co_return true;
@@ -211,21 +211,21 @@ asio::awaitable<bool> Scheduler::admit_one_skipped(BatchBuildContext& ctx) {
     }
 
     if (!accepting_.load()) {
-        co_await executor_.abort_sequence(state.scheduling->seq_id);
+        co_await executor_.release_sequence(state.scheduling->seq_id);
         send_event(state.sink, std::unexpected(ErrorCode::ServerShuttingDown));
         erase_request(request);
         co_return true;
     }
 
     if (state.status == RequestStatus::Cancelled) {
-        co_await executor_.abort_sequence(state.scheduling->seq_id);
+        co_await executor_.release_sequence(state.scheduling->seq_id);
         send_event(state.sink, std::unexpected(ErrorCode::RequestCancelled));
         erase_request(request);
         co_return true;
     }
 
     if (generated_token_count(state) >= state.sampling.max_tokens) {
-        co_await executor_.abort_sequence(state.scheduling->seq_id);
+        co_await executor_.release_sequence(state.scheduling->seq_id);
         send_terminal_event(state);
         erase_request(request);
         co_return true;
@@ -285,7 +285,7 @@ asio::awaitable<bool> Scheduler::admit_one_waiting(BatchBuildContext& ctx) {
     if (state.scheduling) {
         // Defensive: a scheduled request should not be in waiting under the
         // skip/wait model. Release it and re-admit as a fresh sequence.
-        co_await executor_.abort_sequence(state.scheduling->seq_id);
+        co_await executor_.release_sequence(state.scheduling->seq_id);
         state.scheduling.reset();
     }
 
@@ -341,7 +341,7 @@ asio::awaitable<bool> Scheduler::admit_one_waiting(BatchBuildContext& ctx) {
     }
 
     if (state.status == RequestStatus::Cancelled) {
-        co_await executor_.abort_sequence(result.seq_id);
+        co_await executor_.release_sequence(result.seq_id);
         send_event(state.sink, std::unexpected(ErrorCode::RequestCancelled));
         erase_request(request);
         co_return true;
@@ -730,9 +730,7 @@ asio::awaitable<void> Scheduler::cleanup_terminal_requests() {
         auto request_it = *running_it;
         auto& state = *request_it;
         const SequenceId seq_id = state.scheduling->seq_id;
-        const bool cancelled = state.status == RequestStatus::Cancelled || state.sink_disconnected;
-        auto result = cancelled ? co_await executor_.abort_sequence(seq_id)
-                                : co_await executor_.release_sequence(seq_id);
+        auto result = co_await executor_.release_sequence(seq_id);
         if (!result) {
             ccLog::warn("sequence cleanup failed seq={} err={}", seq_id,
                         static_cast<int>(result.error()));
@@ -749,7 +747,7 @@ asio::awaitable<void> Scheduler::cleanup_terminal_requests() {
     for (auto it : skip_to_release) {
         auto request = *it;
         if (request->scheduling) {
-            auto result = co_await executor_.abort_sequence(request->scheduling->seq_id);
+            auto result = co_await executor_.release_sequence(request->scheduling->seq_id);
             if (!result) {
                 ccLog::warn("skip cleanup failed seq={} err={}", request->scheduling->seq_id,
                             static_cast<int>(result.error()));
@@ -768,7 +766,7 @@ asio::awaitable<void> Scheduler::cleanup_terminal_requests() {
     for (auto it : wait_to_release) {
         auto request = *it;
         if (request->scheduling) {
-            auto result = co_await executor_.abort_sequence(request->scheduling->seq_id);
+            auto result = co_await executor_.release_sequence(request->scheduling->seq_id);
             if (!result) {
                 ccLog::warn("wait cleanup failed seq={} err={}", request->scheduling->seq_id,
                             static_cast<int>(result.error()));
@@ -845,7 +843,7 @@ void Scheduler::fail_all_waiting(ErrorCode err) {
     auto fail_one = [&](const RequestPtr& request_it) {
         if (request_it->scheduling) {
             const SequenceId seq_id = request_it->scheduling->seq_id;
-            asio::co_spawn(io_, executor_.abort_sequence(seq_id), asio::detached);
+            asio::co_spawn(io_, executor_.release_sequence(seq_id), asio::detached);
             request_it->scheduling.reset();
         }
         send_event(request_it->sink, std::unexpected(err));
@@ -876,9 +874,7 @@ asio::awaitable<void> Scheduler::cleanup_all_running(ErrorCode shutdown_err) {
         const SequenceId seq_id = state.scheduling->seq_id;
         if (state.status == RequestStatus::Active) send_error_event(state, shutdown_err);
 
-        auto result = (state.status == RequestStatus::Cancelled || state.sink_disconnected)
-                          ? co_await executor_.abort_sequence(seq_id)
-                          : co_await executor_.release_sequence(seq_id);
+        auto result = co_await executor_.release_sequence(seq_id);
         if (!result) {
             ccLog::warn("shutdown cleanup failed seq={} err={}", seq_id,
                         static_cast<int>(result.error()));

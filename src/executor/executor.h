@@ -28,7 +28,6 @@ public:
         std::vector<int32_t> prompt_tokens, int max_context_len,
         SequenceInitialState initial_state = {}) = 0;
     virtual asio::awaitable<Result<void>> release_sequence(SequenceId seq_id) = 0;
-    virtual asio::awaitable<Result<void>> abort_sequence(SequenceId seq_id) = 0;
     // Dispatch is non-blocking: the returned channel is the completion future
     // for this batch. EngineCore owns the in-flight bookkeeping and decides
     // when to await the future.

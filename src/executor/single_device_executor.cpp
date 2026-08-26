@@ -63,22 +63,6 @@ asio::awaitable<Result<void>> SingleDeviceExecutor::release_sequence(SequenceId 
     co_return result;
 }
 
-asio::awaitable<Result<void>> SingleDeviceExecutor::abort_sequence(SequenceId seq_id) {
-    auto it = sequences_.find(seq_id);
-    if (it == sequences_.end()) co_return Result<void>{};
-
-    // Abort is terminal for this executor-side sequence. The Scheduler only
-    // aborts after all in-flight leases are retired, so no queued batch can
-    // apply deltas after this point; erase the executor-side state immediately.
-    auto channel_r = worker_->enqueue_abort_sequence(seq_id);
-    if (!channel_r) co_return std::unexpected(channel_r.error());
-    auto [ec, result] = co_await (*channel_r)->async_receive(as_tuple(deferred));
-    if (ec) co_return std::unexpected(to_error_code(ec));
-    if (!result) co_return std::unexpected(result.error());
-    sequences_.erase(it);
-    co_return result;
-}
-
 Result<BatchFuture> SingleDeviceExecutor::execute_batch(ScheduledBatch batch) {
     std::unordered_set<SequenceId> seen;
 
