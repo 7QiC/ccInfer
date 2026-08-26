@@ -577,21 +577,54 @@ void Worker::process_batch(PendingBatch pending) {
         return;
     }
 
-    // Cache full blocks into prefix cache for prefill items.
-    for (const auto& item : execution_batch.items) {
-        if (std::holds_alternative<PrefillChunk>(item)) {
-            const auto& pc = std::get<PrefillChunk>(item);
-            auto it = sequences.find(pc.seq_id);
-            if (it != sequences.end()) {
-                const auto& seq = it->second;
-                auto cf_r = kv_mgr_->cache_full_blocks(seq.block_table, seq.prompt_tokens,
-                                                       seq.kv_written,
-                                                       /*namespace_salt=*/0);
-                if (!cf_r) {
-                    ccLog::error("cache_full_blocks failed seq={} err={}", seq.seq_id,
-                                 static_cast<int>(cf_r.error()));
-                }
+    // Cache full blocks into prefix cache for every item that actually wrote KV.
+    const int block_size = kv_mgr_->block_size();
+    for (std::size_t i = 0; i < execution_batch.items.size(); ++i) {
+        if (std::find(plan.deferred_indices.begin(), plan.deferred_indices.end(), i) !=
+            plan.deferred_indices.end()) {
+            continue;
+        }
+        if (i < plan.no_write_flags.size() && plan.no_write_flags[i]) {
+            continue;
+        }
+
+        const auto& item = execution_batch.items[i];
+        const SequenceId seq_id = work_sequence_id(item);
+        auto it = sequences.find(seq_id);
+        if (it == sequences.end()) continue;
+        auto& seq = it->second;
+
+        std::vector<int32_t> written_tokens;
+        if (const auto* pc = std::get_if<PrefillChunk>(&item)) {
+            written_tokens = pc->tokens;
+        } else if (const auto* d = std::get_if<DecodeOneToken>(&item)) {
+            if (d->write_kv) written_tokens.push_back(d->input_token);
+        }
+
+        const int write_start = seq.kv_written - static_cast<int>(written_tokens.size());
+        std::vector<int32_t> block_ids;
+        for (std::size_t j = 0; j < written_tokens.size(); ++j) {
+            seq.pending_tokens.push_back(written_tokens[j]);
+            if (seq.pending_tokens.size() % static_cast<std::size_t>(block_size) == 0) {
+                const int global_pos = write_start + static_cast<int>(j);
+                const int block_index = global_pos / block_size;
+                block_ids.push_back(seq.block_table[static_cast<std::size_t>(block_index)]);
             }
+        }
+
+        if (!block_ids.empty()) {
+            auto new_hash_r =
+                kv_mgr_->cache_rolling_blocks(seq.parent_hash, seq.pending_tokens, block_ids);
+            if (!new_hash_r) {
+                ccLog::error("cache_rolling_blocks failed seq={} blocks={} err={}", seq.seq_id,
+                             block_ids.size(), static_cast<int>(new_hash_r.error()));
+                continue;
+            }
+            seq.parent_hash = *new_hash_r;
+            seq.pending_tokens.erase(
+                seq.pending_tokens.begin(),
+                seq.pending_tokens.begin() +
+                    static_cast<std::ptrdiff_t>(block_ids.size() * static_cast<std::size_t>(block_size)));
         }
     }
 

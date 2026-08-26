@@ -15,6 +15,7 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/post.hpp>
 
+#include "cache/prefix_cache.h"
 #include "engine/engine_core.h"
 #include "facade/log.h"
 
@@ -292,6 +293,21 @@ asio::awaitable<bool> Scheduler::admit_one_waiting(BatchBuildContext& ctx) {
     initial_state.tokens_generated = generated_token_count(state);
     initial_state.max_tokens = state.sampling.max_tokens;
     if (!state.generated_tokens.empty()) initial_state.last_token = state.generated_tokens.back();
+
+    const int block_size = engine_config_.block_size;
+    const int admit_prompt_len = static_cast<int>(state.prompt_tokens.size());
+    const int full_blocks = block_size > 0 ? admit_prompt_len / block_size : 0;
+    uint64_t parent_hash = 0;
+    if (full_blocks > 0) {
+        auto hashes = PrefixCache::chain_hashes(state.prompt_tokens, full_blocks * block_size,
+                                                block_size, /*namespace_salt=*/0);
+        parent_hash = hashes.back();
+    }
+    initial_state.parent_hash = parent_hash;
+    if (full_blocks * block_size < admit_prompt_len) {
+        initial_state.pending_tokens.assign(state.prompt_tokens.begin() + full_blocks * block_size,
+                                            state.prompt_tokens.end());
+    }
 
     AdmitSequenceResult result;
     while (true) {

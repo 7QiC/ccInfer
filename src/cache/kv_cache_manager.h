@@ -45,6 +45,9 @@ public:
                                               uint64_t namespace_salt = 0);
     Result<void> cache_full_blocks(const BlockTable& table, const std::vector<int32_t>& tokens,
                                    int committed_tokens, uint64_t namespace_salt = 0);
+    Result<uint64_t> cache_rolling_blocks(uint64_t parent_hash,
+                                          const std::vector<int32_t>& pending_tokens,
+                                          const std::vector<int32_t>& block_ids);
 
     Result<void> release_blocks(const BlockTable& table);
 
@@ -55,6 +58,7 @@ public:
     PrefixCacheStats prefix_stats() const;
 
 private:
+    Result<void> cache_block_hash(int32_t block_id, uint64_t hash);
     bool evict_one();
     void rollback_prefix_hits(const BlockTable& table, int count);
 

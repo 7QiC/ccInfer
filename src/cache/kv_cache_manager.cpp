@@ -186,6 +186,50 @@ Result<void> KVCacheManager::cache_full_blocks(const BlockTable& table,
     return {};
 }
 
+Result<uint64_t> KVCacheManager::cache_rolling_blocks(uint64_t parent_hash,
+                                                       const std::vector<int32_t>& pending_tokens,
+                                                       const std::vector<int32_t>& block_ids) {
+    assert(block_ids.size() * static_cast<std::size_t>(block_size_) <= pending_tokens.size());
+
+    auto hashes = PrefixCache::chain_hashes(pending_tokens,
+                                            static_cast<int>(pending_tokens.size()), block_size_,
+                                            parent_hash, /*seed=*/0);
+    assert(hashes.size() >= block_ids.size());
+
+    uint64_t hash = parent_hash;
+    for (std::size_t i = 0; i < block_ids.size(); ++i) {
+        hash = hashes[i];
+        auto r = cache_block_hash(block_ids[i], hash);
+        if (!r) return std::unexpected(r.error());
+    }
+    return hash;
+}
+
+Result<void> KVCacheManager::cache_block_hash(int32_t block_id, uint64_t hash) {
+    if (block_id < 0 || block_id >= max_blocks_) {
+        return std::unexpected(ErrorCode::KVInvalidBlockTable);
+    }
+    auto& block = metadata_[block_id];
+    if (block.ref_count <= 0 || block.is_free() || block.is_in_lru()) {
+        return std::unexpected(ErrorCode::InternalError);
+    }
+
+    if (block.is_cached()) {
+        if (block.block_hash != hash) {
+            return std::unexpected(ErrorCode::KVBlockHashCollision);
+        }
+        return {};
+    }
+
+    auto r = prefix_cache_->insert(hash, block_id);
+    if (!r) return std::unexpected(r.error());
+
+    block.set_flag(BlockFlags::kCached);
+    block.block_hash = hash;
+    ccLog::debug("prefix insert block={} hash={:x}", block_id, hash);
+    return {};
+}
+
 Result<void> KVCacheManager::release_blocks(const BlockTable& table) {
     std::unordered_set<int32_t> seen;
     for (int i = 0; i < table.size(); ++i) {

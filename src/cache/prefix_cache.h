@@ -23,6 +23,9 @@ public:
     static std::vector<uint64_t> chain_hashes(const std::vector<int32_t>& tokens, int token_count,
                                               int block_size, uint64_t namespace_salt);
 
+    static std::vector<uint64_t> chain_hashes(const std::vector<int32_t>& tokens, int token_count,
+                                              int block_size, uint64_t parent_hash, uint64_t seed);
+
     std::optional<int32_t> lookup(uint64_t hash) const;
 
     Result<void> insert(uint64_t hash, int32_t block_id);
