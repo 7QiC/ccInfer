@@ -407,22 +407,23 @@ Result<Worker::ResolvedBatch> Worker::resolve_batch(const ScheduledBatch& batch)
     return resolved;
 }
 
-Result<std::vector<SequenceDelta>> Worker::build_deltas(const SequenceRegistry& before,
-                                                        const SequenceRegistry& after) {
+std::vector<SequenceDelta> Worker::build_deltas(const SequenceRegistry& before,
+                                                const SequenceRegistry& after) {
     std::vector<SequenceDelta> deltas;
     deltas.reserve(after.size());
     for (const auto& [seq_id, state] : after) {
         auto before_it = before.find(seq_id);
-        if (before_it == before.end() || request_states_.find(seq_id) == request_states_.end()) {
-            return std::unexpected(ErrorCode::InvalidArgument);
-        }
+        // Internal invariant: every sequence copied into a batch snapshot must
+        // still exist in the canonical worker registry and in the before copy.
+        assert(before_it != before.end());
+        assert(request_states_.find(seq_id) != request_states_.end());
+
         SequenceDelta delta;
         delta.seq_id = seq_id;
         delta.kv_tokens_committed = state.kv_written - before_it->second.kv_written;
         delta.prompt_tokens_committed = state.prompt_processed - before_it->second.prompt_processed;
-        if (delta.kv_tokens_committed < 0 || delta.prompt_tokens_committed < 0) {
-            return std::unexpected(ErrorCode::InternalError);
-        }
+        assert(delta.kv_tokens_committed >= 0);
+        assert(delta.prompt_tokens_committed >= 0);
         if (delta.kv_tokens_committed > 0 || delta.prompt_tokens_committed > 0) {
             deltas.push_back(delta);
         }
@@ -431,10 +432,12 @@ Result<std::vector<SequenceDelta>> Worker::build_deltas(const SequenceRegistry& 
     return deltas;
 }
 
-Result<void> Worker::apply_sampled_progress(SequenceRegistry& states, const BatchResult& batch) {
+void Worker::apply_sampled_progress(SequenceRegistry& states, const BatchResult& batch) {
     for (const auto& work_result : batch.items) {
         auto it = states.find(work_result.seq_id);
-        if (it == states.end()) return std::unexpected(ErrorCode::InvalidArgument);
+        // Internal invariant: WorkItemResults are produced from the same batch
+        // items that were used to build this SequenceRegistry snapshot.
+        assert(it != states.end());
         auto& state = it->second;
         if (!work_result.sampled_tokens.empty()) {
             state.last_token = work_result.sampled_tokens.front();
@@ -443,7 +446,6 @@ Result<void> Worker::apply_sampled_progress(SequenceRegistry& states, const Batc
         state.finished =
             work_result.eos || (state.max_tokens > 0 && state.tokens_generated >= state.max_tokens);
     }
-    return {};
 }
 
 void Worker::process_batch(PendingBatch pending) {
@@ -607,30 +609,21 @@ void Worker::process_batch(PendingBatch pending) {
             seq.pending_tokens.erase(
                 seq.pending_tokens.begin(),
                 seq.pending_tokens.begin() +
-                    static_cast<std::ptrdiff_t>(block_ids.size() * static_cast<std::size_t>(block_size)));
+                    static_cast<std::ptrdiff_t>(block_ids.size() *
+                                                static_cast<std::size_t>(block_size)));
         }
     }
 
     sync_capacity();
 
-    auto progress_r = apply_sampled_progress(sequences, result);
-    if (!progress_r) {
-        resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(progress_r.error())));
-        return;
-    }
-
-    auto deltas_r = build_deltas(before, sequences);
-    if (!deltas_r) {
-        resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(deltas_r.error())));
-        return;
-    }
-    auto deltas = std::move(*deltas_r);
+    apply_sampled_progress(sequences, result);
+    auto deltas = build_deltas(before, sequences);
 
     WorkerBatchResult worker_result;
     worker_result.batch = std::move(result);
     for (auto& wr : worker_result.batch.items) {
-        wr.item_index = static_cast<int>(
-            resolved.original_indices[static_cast<std::size_t>(wr.item_index)]);
+        wr.item_index =
+            static_cast<int>(resolved.original_indices[static_cast<std::size_t>(wr.item_index)]);
     }
     worker_result.batch.items.insert(worker_result.batch.items.end(),
                                      std::make_move_iterator(resolved.stale_results.begin()),

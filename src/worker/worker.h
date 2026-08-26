@@ -19,8 +19,8 @@
 #include "common/error_code.h"
 #include "common/types.h"
 #include "config/config.h"
-#include "worker/sequence_state.h"
 #include "facade/log.h"
+#include "worker/sequence_state.h"
 
 namespace ccinfer {
 
@@ -95,9 +95,9 @@ private:
 
     SequenceRegistry build_sequence_states(const ScheduledBatch& batch) const;
     Result<ResolvedBatch> resolve_batch(const ScheduledBatch& batch) const;
-    Result<std::vector<SequenceDelta>> build_deltas(const SequenceRegistry& before,
-                                                    const SequenceRegistry& after);
-    static Result<void> apply_sampled_progress(SequenceRegistry& states, const BatchResult& batch);
+    std::vector<SequenceDelta> build_deltas(const SequenceRegistry& before,
+                                            const SequenceRegistry& after);
+    static void apply_sampled_progress(SequenceRegistry& states, const BatchResult& batch);
 
     template <typename ChanPtr, typename T>
     void resolve(ChanPtr& chan_ptr, Result<T> result);
