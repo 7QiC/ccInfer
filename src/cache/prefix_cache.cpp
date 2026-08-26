@@ -50,6 +50,14 @@ std::optional<int32_t> PrefixCache::lookup(uint64_t hash) const {
     return it->second;
 }
 
+bool PrefixCache::would_insert_conflict(uint64_t hash, int32_t block_id) const {
+    auto rev = block_to_hash_.find(block_id);
+    if (rev != block_to_hash_.end() && rev->second != hash) return true;
+
+    auto it = hash_to_block_.find(hash);
+    return it != hash_to_block_.end() && it->second != block_id;
+}
+
 Result<void> PrefixCache::insert(uint64_t hash, int32_t block_id) {
     // Consistency check: block_id must not already map to a different hash.
     auto rev = block_to_hash_.find(block_id);

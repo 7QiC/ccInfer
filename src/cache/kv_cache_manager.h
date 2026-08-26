@@ -40,14 +40,16 @@ public:
     struct PrepareResult {
         BlockTable block_table;
         int prefix_hit_blocks = 0;
+        // Hash of the last full prompt block and the trailing partial-block
+        // tokens, computed once from the same hash chain used for prefix lookup.
+        uint64_t parent_hash = 0;
+        std::vector<int32_t> pending_tokens;
     };
     Result<PrepareResult> lookup_prefix_cache(const std::vector<int32_t>& tokens,
                                               uint64_t namespace_salt = 0);
-    Result<void> cache_full_blocks(const BlockTable& table, const std::vector<int32_t>& tokens,
-                                   int committed_tokens, uint64_t namespace_salt = 0);
     Result<uint64_t> cache_rolling_blocks(uint64_t parent_hash,
                                           const std::vector<int32_t>& pending_tokens,
-                                          const std::vector<int32_t>& block_ids);
+                                          const std::vector<int32_t>& block_ids, uint64_t seed = 0);
 
     Result<void> release_blocks(const BlockTable& table);
 
@@ -58,7 +60,6 @@ public:
     PrefixCacheStats prefix_stats() const;
 
 private:
-    Result<void> cache_block_hash(int32_t block_id, uint64_t hash);
     bool evict_one();
     void rollback_prefix_hits(const BlockTable& table, int count);
 

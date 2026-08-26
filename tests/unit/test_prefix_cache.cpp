@@ -96,6 +96,19 @@ TEST(PrefixCacheTest, InsertSameHashDifferentBlockCollision) {
     EXPECT_EQ(r.error(), ErrorCode::KVBlockHashCollision);
 }
 
+TEST(PrefixCacheTest, WouldInsertConflictPreflight) {
+    PrefixCache cache;
+    ASSERT_TRUE(cache.insert(0xAAAA, 7).has_value());
+
+    // Same mapping is idempotent and therefore not a conflict.
+    EXPECT_FALSE(cache.would_insert_conflict(0xAAAA, 7));
+    // New absent pair is not a conflict.
+    EXPECT_FALSE(cache.would_insert_conflict(0xBBBB, 8));
+    // Cross-mapped pairs are conflicts.
+    EXPECT_TRUE(cache.would_insert_conflict(0xBBBB, 7));
+    EXPECT_TRUE(cache.would_insert_conflict(0xAAAA, 8));
+}
+
 TEST(PrefixCacheTest, RemoveByBlock) {
     PrefixCache cache;
     cache.insert(0xABCD, 5);

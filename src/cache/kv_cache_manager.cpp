@@ -114,6 +114,13 @@ Result<KVCacheManager::PrepareResult> KVCacheManager::lookup_prefix_cache(
     if (total_blocks_needed > max_blocks_) return std::unexpected(ErrorCode::KVBlockExhausted);
 
     auto hashes = PrefixCache::chain_hashes(tokens, block_size_, namespace_salt);
+    if (!hashes.empty()) result.parent_hash = hashes.back();
+    const std::size_t full_tokens =
+        static_cast<std::size_t>(tokens.size() / static_cast<std::size_t>(block_size_)) *
+        static_cast<std::size_t>(block_size_);
+    result.pending_tokens.assign(tokens.begin() + static_cast<std::ptrdiff_t>(full_tokens),
+                                 tokens.end());
+
     for (std::size_t i = 0; i < hashes.size(); ++i) {
         auto opt_id = prefix_cache_->lookup(hashes[i]);
         if (!opt_id) break;
@@ -150,89 +157,57 @@ Result<KVCacheManager::PrepareResult> KVCacheManager::lookup_prefix_cache(
     return result;
 }
 
-Result<void> KVCacheManager::cache_full_blocks(const BlockTable& table,
-                                               const std::vector<int32_t>& tokens,
-                                               int committed_tokens, uint64_t namespace_salt) {
-    // Only hash tokens whose KV has been written.
-    if (committed_tokens < 0) return std::unexpected(ErrorCode::InvalidArgument);
-    if (tokens.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
-        return std::unexpected(ErrorCode::InvalidArgument);
-    if (committed_tokens > static_cast<int>(tokens.size()))
-        return std::unexpected(ErrorCode::InvalidArgument);
-    int64_t capacity = table.token_capacity(block_size_);
-    if (committed_tokens > capacity) return std::unexpected(ErrorCode::InvalidArgument);
+Result<uint64_t> KVCacheManager::cache_rolling_blocks(uint64_t parent_hash,
+                                                      const std::vector<int32_t>& pending_tokens,
+                                                      const std::vector<int32_t>& block_ids,
+                                                      uint64_t seed) {
+    assert(block_ids.size() * static_cast<std::size_t>(block_size_) <= pending_tokens.size());
 
-    auto hashes = PrefixCache::chain_hashes(tokens, committed_tokens, block_size_, namespace_salt);
-    int num_full = std::min(static_cast<int>(hashes.size()), table.size());
+    auto hashes = PrefixCache::chain_hashes(pending_tokens, static_cast<int>(pending_tokens.size()),
+                                            block_size_, parent_hash, seed);
+    assert(hashes.size() >= block_ids.size());
 
-    for (int i = table.shared_count(); i < num_full; ++i) {
-        int32_t block_id = table[i];
-        if (block_id < 0 || block_id >= max_blocks_)
+    // Pass 1: validate all pairs before mutating the prefix cache.
+    for (std::size_t i = 0; i < block_ids.size(); ++i) {
+        const uint64_t hash = hashes[i];
+        int32_t block_id = block_ids[i];
+        if (block_id < 0 || block_id >= max_blocks_) {
             return std::unexpected(ErrorCode::KVInvalidBlockTable);
+        }
 
         auto& block = metadata_[block_id];
-        if (block.ref_count <= 0) return std::unexpected(ErrorCode::InternalError);
-        if (block.is_free()) return std::unexpected(ErrorCode::InternalError);
-        if (block.is_in_lru()) return std::unexpected(ErrorCode::InternalError);
+        if (block.ref_count <= 0 || block.is_free() || block.is_in_lru()) {
+            return std::unexpected(ErrorCode::InternalError);
+        }
 
         if (block.is_cached()) {
-            // Already cached — verify hash consistency.
-            if (block.block_hash != hashes[i]) return std::unexpected(ErrorCode::InternalError);
+            if (block.block_hash != hash) {
+                return std::unexpected(ErrorCode::KVBlockHashCollision);
+            }
             continue;
         }
 
-        auto r = prefix_cache_->insert(hashes[i], block_id);
-        if (!r) return std::unexpected(r.error());
-
-        block.set_flag(BlockFlags::kCached);
-        block.block_hash = hashes[i];
-        ccLog::info("prefix insert block={} hash={:x}", block_id, hashes[i]);
+        if (prefix_cache_->would_insert_conflict(hash, block_id)) {
+            return std::unexpected(ErrorCode::KVBlockHashCollision);
+        }
     }
-    return {};
-}
 
-Result<uint64_t> KVCacheManager::cache_rolling_blocks(uint64_t parent_hash,
-                                                       const std::vector<int32_t>& pending_tokens,
-                                                       const std::vector<int32_t>& block_ids) {
-    assert(block_ids.size() * static_cast<std::size_t>(block_size_) <= pending_tokens.size());
-
-    auto hashes = PrefixCache::chain_hashes(pending_tokens,
-                                            static_cast<int>(pending_tokens.size()), block_size_,
-                                            parent_hash, /*seed=*/0);
-    assert(hashes.size() >= block_ids.size());
-
+    // Pass 2: apply.  Pass 1 guarantees these inserts cannot conflict.
     uint64_t hash = parent_hash;
     for (std::size_t i = 0; i < block_ids.size(); ++i) {
         hash = hashes[i];
-        auto r = cache_block_hash(block_ids[i], hash);
+
+        auto& block = metadata_[block_ids[i]];
+        if (block.is_cached()) continue;
+
+        auto r = prefix_cache_->insert(hash, block_ids[i]);
         if (!r) return std::unexpected(r.error());
+
+        block.set_flag(BlockFlags::kCached);
+        block.block_hash = hash;
+        ccLog::debug("prefix insert block={} hash={:x}", block_ids[i], hash);
     }
     return hash;
-}
-
-Result<void> KVCacheManager::cache_block_hash(int32_t block_id, uint64_t hash) {
-    if (block_id < 0 || block_id >= max_blocks_) {
-        return std::unexpected(ErrorCode::KVInvalidBlockTable);
-    }
-    auto& block = metadata_[block_id];
-    if (block.ref_count <= 0 || block.is_free() || block.is_in_lru()) {
-        return std::unexpected(ErrorCode::InternalError);
-    }
-
-    if (block.is_cached()) {
-        if (block.block_hash != hash) {
-            return std::unexpected(ErrorCode::KVBlockHashCollision);
-        }
-        return {};
-    }
-
-    auto r = prefix_cache_->insert(hash, block_id);
-    if (!r) return std::unexpected(r.error());
-
-    block.set_flag(BlockFlags::kCached);
-    block.block_hash = hash;
-    ccLog::debug("prefix insert block={} hash={:x}", block_id, hash);
-    return {};
 }
 
 Result<void> KVCacheManager::release_blocks(const BlockTable& table) {

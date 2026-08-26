@@ -108,7 +108,7 @@ TEST_F(KVCacheManagerTest, LookupAndAllocateWithPrefixHit) {
     }
 
     // Cache them.
-    auto cf = mgr_.cache_full_blocks(pr1->block_table, tokens, 32);
+    auto cf = mgr_.cache_rolling_blocks(0, tokens, pr1->block_table.ids());
     ASSERT_TRUE(cf.has_value());
 
     // Release → blocks become CACHED_IDLE (in LRU, not free).
@@ -143,7 +143,7 @@ TEST_F(KVCacheManagerTest, LookupPrefixCacheDoesNotAllocateSuffixBlocks) {
         ASSERT_TRUE(alloc1.has_value());
         for (int b = 0; b < alloc1->size(); ++b) pr1->block_table.push_back((*alloc1)[b]);
     }
-    ASSERT_TRUE(mgr_.cache_full_blocks(pr1->block_table, cached_prefix, 16).has_value());
+    ASSERT_TRUE(mgr_.cache_rolling_blocks(0, cached_prefix, pr1->block_table.ids()).has_value());
     ASSERT_TRUE(mgr_.release_blocks(pr1->block_table).has_value());
 
     int free_before = mgr_.num_free_blocks();
@@ -169,7 +169,7 @@ TEST_F(KVCacheManagerTest, PrefixHitRefCountBumped) {
         ASSERT_TRUE(alloc1.has_value());
         for (int b = 0; b < alloc1->size(); ++b) pr1->block_table.push_back((*alloc1)[b]);
     }
-    mgr_.cache_full_blocks(pr1->block_table, tokens, 16);
+    mgr_.cache_rolling_blocks(0, tokens, pr1->block_table.ids());
     mgr_.release_blocks(pr1->block_table);
 
     // Second request: hit.
@@ -201,7 +201,7 @@ TEST_F(KVCacheManagerTest, LruEvictionWhenFreeListEmpty) {
         auto alloc = mgr_.allocate_blocks(1 - pr->block_table.size());
         ASSERT_TRUE(alloc.has_value());
         for (int b = 0; b < alloc->size(); ++b) pr->block_table.push_back((*alloc)[b]);
-        mgr_.cache_full_blocks(pr->block_table, tokens, 16);
+        mgr_.cache_rolling_blocks(0, tokens, pr->block_table.ids());
         mgr_.release_blocks(pr->block_table);
     }
     EXPECT_EQ(mgr_.num_free_blocks(), 0);
@@ -215,7 +215,7 @@ TEST_F(KVCacheManagerTest, LruEvictionWhenFreeListEmpty) {
     EXPECT_GT(s.prefix.evictions, 0);
 }
 
-TEST_F(KVCacheManagerTest, CacheFullBlocksRejectsUncommitted) {
+TEST_F(KVCacheManagerTest, CacheRollingBlocksCachesOnlyCommittedBlock) {
     // 32 tokens = 2 blocks. Only commit 16 (1 block).
     std::vector<int32_t> tokens(32, 1);
     auto pr = mgr_.lookup_prefix_cache(tokens);
@@ -224,8 +224,9 @@ TEST_F(KVCacheManagerTest, CacheFullBlocksRejectsUncommitted) {
     ASSERT_TRUE(alloc.has_value());
     for (int b = 0; b < alloc->size(); ++b) pr->block_table.push_back((*alloc)[b]);
 
-    // Cache only first 16 tokens (1 block committed).
-    auto cf = mgr_.cache_full_blocks(pr->block_table, tokens, 16);
+    // Cache only the first full block (the committed one).
+    const std::vector<int32_t> committed_block_ids{pr->block_table[0]};
+    auto cf = mgr_.cache_rolling_blocks(0, tokens, committed_block_ids);
     ASSERT_TRUE(cf.has_value());
 
     // Only 1 block should be cached (the committed one).
@@ -260,7 +261,7 @@ TEST_F(KVCacheManagerTest, PrefixStatsReflectsCache) {
     auto alloc = mgr_.allocate_blocks(1 - pr->block_table.size());
     ASSERT_TRUE(alloc.has_value());
     for (int b = 0; b < alloc->size(); ++b) pr->block_table.push_back((*alloc)[b]);
-    mgr_.cache_full_blocks(pr->block_table, tokens, 16);
+    mgr_.cache_rolling_blocks(0, tokens, pr->block_table.ids());
 
     ps = mgr_.prefix_stats();
     EXPECT_EQ(ps.cached_blocks, 1);

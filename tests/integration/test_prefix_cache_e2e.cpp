@@ -13,7 +13,7 @@
 namespace ccinfer {
 namespace {
 
-// Full lifecycle: lookup/allocate → cache_full_blocks → release →
+// Full lifecycle: lookup/allocate → cache_rolling_blocks → release →
 // lookup (hit) → verify shared blocks produce correct attention output.
 TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
     constexpr int kNumTokens = 32;
@@ -50,7 +50,7 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
     ASSERT_EQ(pr1->prefix_hit_blocks, 0);
     int free_before_cache = mgr.num_free_blocks();
 
-    auto cf1 = mgr.cache_full_blocks(pr1->block_table, tokens, kNumTokens);
+    auto cf1 = mgr.cache_rolling_blocks(0, tokens, pr1->block_table.ids());
     ASSERT_TRUE(cf1.has_value());
 
     // 3. Write KV data into the blocks, then release.
@@ -151,7 +151,7 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
             mgr.allocate_blocks(static_cast<int>(t.size()) / block_size - px->block_table.size());
         ASSERT_TRUE(alloc_px.has_value());
         for (int b = 0; b < alloc_px->size(); ++b) px->block_table.push_back((*alloc_px)[b]);
-        mgr.cache_full_blocks(px->block_table, t, 32);
+        mgr.cache_rolling_blocks(0, t, px->block_table.ids());
         mgr.release_blocks(px->block_table);
         // Some may collide with previous hashes; count actual cached blocks.
         cached_count =

@@ -28,6 +28,10 @@ public:
 
     std::optional<int32_t> lookup(uint64_t hash) const;
 
+    // Non-mutating preflight for insert(): true when the existing hash/block
+    // mappings contradict this pair.
+    bool would_insert_conflict(uint64_t hash, int32_t block_id) const;
+
     Result<void> insert(uint64_t hash, int32_t block_id);
 
     void remove_by_block(int32_t block_id);
