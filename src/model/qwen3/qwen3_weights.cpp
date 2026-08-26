@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <cuda_bf16.h>
 
@@ -61,24 +62,23 @@ Result<Qwen3Weights> Qwen3Weights::load(Backend& backend, const ModelConfig& con
 
     Qwen3Weights w;
 
-    {
-        auto r =
-            loader.load_tensor<__nv_bfloat16>(backend, "model.embed_tokens.weight", {vocab, D});
+    auto load_tensor = [&](const std::string& name, std::vector<int64_t> shape) -> Result<Tensor> {
+        auto r = loader.load_tensor<__nv_bfloat16>(backend, name, std::move(shape));
         if (!r) return std::unexpected(r.error());
-        w.embed = std::move(*r);
-    }
+        return std::move(*r);
+    };
 
-    {
-        auto r = loader.load_tensor<__nv_bfloat16>(backend, "lm_head.weight", {vocab, D});
-        if (!r) return std::unexpected(r.error());
-        w.lm_head = std::move(*r);
-    }
+    auto embed = load_tensor("model.embed_tokens.weight", {vocab, D});
+    if (!embed) return std::unexpected(embed.error());
+    w.embed = std::move(*embed);
 
-    {
-        auto r = loader.load_tensor<__nv_bfloat16>(backend, "model.norm.weight", {D});
-        if (!r) return std::unexpected(r.error());
-        w.rms_final = std::move(*r);
-    }
+    auto lm_head = load_tensor("lm_head.weight", {vocab, D});
+    if (!lm_head) return std::unexpected(lm_head.error());
+    w.lm_head = std::move(*lm_head);
+
+    auto rms_final = load_tensor("model.norm.weight", {D});
+    if (!rms_final) return std::unexpected(rms_final.error());
+    w.rms_final = std::move(*rms_final);
 
     w.layers_.reserve(static_cast<std::size_t>(n_layers));
 
@@ -87,50 +87,35 @@ Result<Qwen3Weights> Qwen3Weights::load(Backend& backend, const ModelConfig& con
 
         Qwen3LayerWeights lw;
 
-        {
-            auto r = loader.load_tensor<__nv_bfloat16>(backend, p + ".self_attn.o_proj.weight",
-                                                       {D, nq * hd});
-            if (!r) return std::unexpected(r.error());
-            lw.o = std::move(*r);
-        }
-        {
-            auto r =
-                loader.load_tensor<__nv_bfloat16>(backend, p + ".mlp.gate_proj.weight", {d_ff, D});
-            if (!r) return std::unexpected(r.error());
-            lw.gate = std::move(*r);
-        }
-        {
-            auto r =
-                loader.load_tensor<__nv_bfloat16>(backend, p + ".mlp.up_proj.weight", {d_ff, D});
-            if (!r) return std::unexpected(r.error());
-            lw.up = std::move(*r);
-        }
-        {
-            auto r =
-                loader.load_tensor<__nv_bfloat16>(backend, p + ".mlp.down_proj.weight", {D, d_ff});
-            if (!r) return std::unexpected(r.error());
-            lw.down = std::move(*r);
-        }
-        {
-            auto r = loader.load_tensor<__nv_bfloat16>(backend, p + ".input_layernorm.weight", {D});
-            if (!r) return std::unexpected(r.error());
-            lw.rms_attn = std::move(*r);
-        }
-        {
-            auto r = loader.load_tensor<__nv_bfloat16>(backend,
-                                                       p + ".post_attention_layernorm.weight", {D});
-            if (!r) return std::unexpected(r.error());
-            lw.rms_ffn = std::move(*r);
-        }
+        auto o = load_tensor(p + ".self_attn.o_proj.weight", {D, nq * hd});
+        if (!o) return std::unexpected(o.error());
+        lw.o = std::move(*o);
 
-        auto q = loader.load_tensor<__nv_bfloat16>(backend, p + ".self_attn.q_proj.weight",
-                                                   {nq * hd, D});
+        auto gate = load_tensor(p + ".mlp.gate_proj.weight", {d_ff, D});
+        if (!gate) return std::unexpected(gate.error());
+        lw.gate = std::move(*gate);
+
+        auto up = load_tensor(p + ".mlp.up_proj.weight", {d_ff, D});
+        if (!up) return std::unexpected(up.error());
+        lw.up = std::move(*up);
+
+        auto down = load_tensor(p + ".mlp.down_proj.weight", {D, d_ff});
+        if (!down) return std::unexpected(down.error());
+        lw.down = std::move(*down);
+
+        auto rms_attn = load_tensor(p + ".input_layernorm.weight", {D});
+        if (!rms_attn) return std::unexpected(rms_attn.error());
+        lw.rms_attn = std::move(*rms_attn);
+
+        auto rms_ffn = load_tensor(p + ".post_attention_layernorm.weight", {D});
+        if (!rms_ffn) return std::unexpected(rms_ffn.error());
+        lw.rms_ffn = std::move(*rms_ffn);
+
+        auto q = load_tensor(p + ".self_attn.q_proj.weight", {nq * hd, D});
         if (!q) return std::unexpected(q.error());
-        auto k = loader.load_tensor<__nv_bfloat16>(backend, p + ".self_attn.k_proj.weight",
-                                                   {nkv * hd, D});
+        auto k = load_tensor(p + ".self_attn.k_proj.weight", {nkv * hd, D});
         if (!k) return std::unexpected(k.error());
-        auto v = loader.load_tensor<__nv_bfloat16>(backend, p + ".self_attn.v_proj.weight",
-                                                   {nkv * hd, D});
+        auto v = load_tensor(p + ".self_attn.v_proj.weight", {nkv * hd, D});
         if (!v) return std::unexpected(v.error());
 
         auto mqkv = merge_qkv(lw.qkv, *q, *k, *v, qkv_dim, D, backend);
@@ -138,15 +123,13 @@ Result<Qwen3Weights> Qwen3Weights::load(Backend& backend, const ModelConfig& con
 
         // QK norm (Qwen3-specific).
         if (loader.has(p + ".self_attn.q_norm.weight")) {
-            auto qn =
-                loader.load_tensor<__nv_bfloat16>(backend, p + ".self_attn.q_norm.weight", {hd});
+            auto qn = load_tensor(p + ".self_attn.q_norm.weight", {hd});
             if (!qn) return std::unexpected(qn.error());
             lw.q_norm = std::move(*qn);
         }
 
         if (loader.has(p + ".self_attn.k_norm.weight")) {
-            auto kn =
-                loader.load_tensor<__nv_bfloat16>(backend, p + ".self_attn.k_norm.weight", {hd});
+            auto kn = load_tensor(p + ".self_attn.k_norm.weight", {hd});
             if (!kn) return std::unexpected(kn.error());
             lw.k_norm = std::move(*kn);
         }

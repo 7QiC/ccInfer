@@ -54,14 +54,6 @@ struct ModelConfig {
             return std::unexpected(ErrorCode::ModelUnsupportedArch);
         }
 
-        if (!j.contains("hidden_size") || !j["hidden_size"].is_number_integer() ||
-            !j.contains("num_attention_heads") || !j["num_attention_heads"].is_number_integer() ||
-            !j.contains("num_hidden_layers") || !j["num_hidden_layers"].is_number_integer() ||
-            !j.contains("intermediate_size") || !j["intermediate_size"].is_number_integer() ||
-            !j.contains("vocab_size") || !j["vocab_size"].is_number_integer()) {
-            return std::unexpected(ErrorCode::ModelConfigInvalid);
-        }
-
         auto to_int = [](int64_t v) -> Result<int> {
             if (v < static_cast<int64_t>(std::numeric_limits<int>::min()) ||
                 v > static_cast<int64_t>(std::numeric_limits<int>::max())) {
@@ -70,25 +62,52 @@ struct ModelConfig {
             return static_cast<int>(v);
         };
 
-        auto r = to_int(j["hidden_size"].get<int64_t>());
-        if (!r) return std::unexpected(r.error());
-        cfg.d_model_ = *r;
+        auto get_required_int = [&](const char* key) -> Result<int> {
+            if (!j.contains(key) || !j[key].is_number_integer()) {
+                return std::unexpected(ErrorCode::ModelConfigInvalid);
+            }
+            return to_int(j[key].get<int64_t>());
+        };
 
-        r = to_int(j["num_attention_heads"].get<int64_t>());
-        if (!r) return std::unexpected(r.error());
-        cfg.n_q_heads_ = *r;
+        auto get_optional_int = [&](const char* key, int& out) -> Result<void> {
+            if (!j.contains(key)) return {};
+            if (!j[key].is_number_integer()) {
+                return std::unexpected(ErrorCode::ModelConfigInvalid);
+            }
+            auto r = to_int(j[key].get<int64_t>());
+            if (!r) return std::unexpected(r.error());
+            out = *r;
+            return {};
+        };
 
-        r = to_int(j["num_hidden_layers"].get<int64_t>());
-        if (!r) return std::unexpected(r.error());
-        cfg.n_layers_ = *r;
+        auto get_optional_float = [&](const char* key, float& out) -> Result<void> {
+            if (!j.contains(key)) return {};
+            if (!j[key].is_number()) {
+                return std::unexpected(ErrorCode::ModelConfigInvalid);
+            }
+            out = j[key].get<float>();
+            return {};
+        };
 
-        r = to_int(j["intermediate_size"].get<int64_t>());
-        if (!r) return std::unexpected(r.error());
-        cfg.d_ff_ = *r;
+        auto d_model = get_required_int("hidden_size");
+        if (!d_model) return std::unexpected(d_model.error());
+        cfg.d_model_ = *d_model;
 
-        r = to_int(j["vocab_size"].get<int64_t>());
-        if (!r) return std::unexpected(r.error());
-        cfg.vocab_size_ = *r;
+        auto n_q_heads = get_required_int("num_attention_heads");
+        if (!n_q_heads) return std::unexpected(n_q_heads.error());
+        cfg.n_q_heads_ = *n_q_heads;
+
+        auto n_layers = get_required_int("num_hidden_layers");
+        if (!n_layers) return std::unexpected(n_layers.error());
+        cfg.n_layers_ = *n_layers;
+
+        auto d_ff = get_required_int("intermediate_size");
+        if (!d_ff) return std::unexpected(d_ff.error());
+        cfg.d_ff_ = *d_ff;
+
+        auto vocab_size = get_required_int("vocab_size");
+        if (!vocab_size) return std::unexpected(vocab_size.error());
+        cfg.vocab_size_ = *vocab_size;
 
         if (cfg.d_model_ <= 0 || cfg.n_q_heads_ <= 0 || cfg.n_layers_ <= 0 || cfg.d_ff_ <= 0 ||
             cfg.vocab_size_ <= 0) {
@@ -100,40 +119,25 @@ struct ModelConfig {
         }
         int default_head_dim = cfg.d_model_ / cfg.n_q_heads_;
         cfg.n_kv_heads_ = cfg.n_q_heads_;
-        if (j.contains("num_key_value_heads")) {
-            if (!j["num_key_value_heads"].is_number_integer())
-                return std::unexpected(ErrorCode::ModelConfigInvalid);
-            auto r = to_int(j["num_key_value_heads"].get<int64_t>());
-            if (!r) return std::unexpected(r.error());
-            cfg.n_kv_heads_ = *r;
+        if (auto r = get_optional_int("num_key_value_heads", cfg.n_kv_heads_); !r) {
+            return std::unexpected(r.error());
         }
 
         cfg.head_dim_ = default_head_dim;
-        if (j.contains("head_dim")) {
-            if (!j["head_dim"].is_number_integer())
-                return std::unexpected(ErrorCode::ModelConfigInvalid);
-            auto r = to_int(j["head_dim"].get<int64_t>());
-            if (!r) return std::unexpected(r.error());
-            cfg.head_dim_ = *r;
+        if (auto r = get_optional_int("head_dim", cfg.head_dim_); !r) {
+            return std::unexpected(r.error());
         }
 
         cfg.max_seq_len_ = 2048;
-        if (j.contains("max_position_embeddings")) {
-            if (!j["max_position_embeddings"].is_number_integer())
-                return std::unexpected(ErrorCode::ModelConfigInvalid);
-            auto r = to_int(j["max_position_embeddings"].get<int64_t>());
-            if (!r) return std::unexpected(r.error());
-            cfg.max_seq_len_ = *r;
+        if (auto r = get_optional_int("max_position_embeddings", cfg.max_seq_len_); !r) {
+            return std::unexpected(r.error());
         }
 
-        if (j.contains("rope_theta")) {
-            if (!j["rope_theta"].is_number()) return std::unexpected(ErrorCode::ModelConfigInvalid);
-            cfg.rope_theta_ = j["rope_theta"].get<float>();
+        if (auto r = get_optional_float("rope_theta", cfg.rope_theta_); !r) {
+            return std::unexpected(r.error());
         }
-        if (j.contains("rms_norm_eps")) {
-            if (!j["rms_norm_eps"].is_number())
-                return std::unexpected(ErrorCode::ModelConfigInvalid);
-            cfg.rms_norm_eps_ = j["rms_norm_eps"].get<float>();
+        if (auto r = get_optional_float("rms_norm_eps", cfg.rms_norm_eps_); !r) {
+            return std::unexpected(r.error());
         }
 
         if (j.contains("torch_dtype") && j["torch_dtype"].is_string()) {
