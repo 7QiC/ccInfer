@@ -16,9 +16,9 @@
 #include "core/traits.h"
 #include "facade/log.h"
 #include "model/loader.h"
-#include "worker/model_runner.h"
 #include "model/registry.h"
 #include "worker/batch_translator.h"
+#include "worker/model_runner.h"
 
 namespace ccinfer {
 
@@ -376,8 +376,7 @@ Result<Worker::ResolvedBatch> Worker::resolve_batch(const ScheduledBatch& batch)
                     stale = state.finished || state.prompt_processed != work.prompt_span.start;
                     if (!stale) work.expected_context_len = state.kv_written;
                 } else {
-                    stale = state.finished ||
-                            state.prompt_processed != state.prompt_len;
+                    stale = state.finished || state.prompt_processed != state.prompt_len;
                     if (!stale && work.late_bind) {
                         stale = state.last_token < 0;
                         if (!stale) {
@@ -562,11 +561,13 @@ void Worker::process_batch(PendingBatch pending) {
         return;
     }
 
-    // Cache full blocks into prefix cache for every item that actually wrote KV.
+    // Cache newly completed blocks into prefix cache for every item that wrote KV.
     const int block_size = kv_mgr_->block_size();
+    std::vector<uint8_t> deferred(execution_batch.items.size(), 0);
+    for (const std::size_t idx : plan.deferred_indices) deferred[idx] = 1;
+
     for (std::size_t i = 0; i < execution_batch.items.size(); ++i) {
-        if (std::find(plan.deferred_indices.begin(), plan.deferred_indices.end(), i) !=
-            plan.deferred_indices.end()) {
+        if (deferred[i]) {
             continue;
         }
         if (i < plan.no_write_flags.size() && plan.no_write_flags[i]) {
