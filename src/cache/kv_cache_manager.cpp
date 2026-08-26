@@ -70,6 +70,11 @@ Result<BlockTable> KVCacheManager::allocate_blocks(int num_blocks) {
     if (num_blocks <= 0) return std::unexpected(ErrorCode::InvalidArgument);
     if (num_blocks > max_blocks_) return std::unexpected(ErrorCode::KVBlockExhausted);
 
+    // Only evict when the remaining free + cacheable LRU blocks can satisfy the
+    // request.  Avoids destroying prefix-cache entries on a failed allocation.
+    const int available = static_cast<int>(free_list_.size()) + static_cast<int>(lru_list_.size());
+    if (available < num_blocks) return std::unexpected(ErrorCode::KVBlockExhausted);
+
     while (static_cast<int>(free_list_.size()) < num_blocks) {
         if (!evict_one()) return std::unexpected(ErrorCode::KVBlockExhausted);
     }
