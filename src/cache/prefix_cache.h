@@ -28,6 +28,9 @@ public:
 
     std::optional<int32_t> lookup(uint64_t hash) const;
 
+    // Like lookup(), but does not update lookup hit/miss statistics.
+    std::optional<int32_t> find(uint64_t hash) const;
+
     // Non-mutating preflight for insert(): true when the existing hash/block
     // mappings contradict this pair.
     bool would_insert_conflict(uint64_t hash, int32_t block_id) const;

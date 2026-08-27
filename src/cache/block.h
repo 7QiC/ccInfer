@@ -1,8 +1,9 @@
 #pragma once
 
-#include <boost/intrusive/list.hpp>
 #include <cstdint>
 #include <vector>
+
+#include <boost/intrusive/list.hpp>
 
 namespace ccinfer {
 
@@ -73,6 +74,7 @@ public:
     void set_shared_count(int32_t n) { shared_count_ = n; }
 
     int32_t operator[](int i) const { return block_ids_[i]; }
+    void set(int i, int32_t block_id) { block_ids_[i] = block_id; }
     int32_t size() const { return static_cast<int32_t>(block_ids_.size()); }
     bool empty() const { return block_ids_.empty(); }
     void clear() {

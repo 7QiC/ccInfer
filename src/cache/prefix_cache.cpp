@@ -40,6 +40,12 @@ std::vector<uint64_t> PrefixCache::chain_hashes(const std::vector<int32_t>& toke
     return hashes;
 }
 
+std::optional<int32_t> PrefixCache::find(uint64_t hash) const {
+    auto it = hash_to_block_.find(hash);
+    if (it == hash_to_block_.end()) return std::nullopt;
+    return it->second;
+}
+
 std::optional<int32_t> PrefixCache::lookup(uint64_t hash) const {
     auto it = hash_to_block_.find(hash);
     if (it == hash_to_block_.end()) {

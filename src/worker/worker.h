@@ -94,10 +94,17 @@ private:
     void sync_capacity();
 
     SequenceRegistry build_sequence_states(const ScheduledBatch& batch) const;
-    Result<ResolvedBatch> resolve_batch(const ScheduledBatch& batch) const;
+    ResolvedBatch resolve_batch(const ScheduledBatch& batch) const;
     std::vector<SequenceDelta> build_deltas(const SequenceRegistry& before,
                                             const SequenceRegistry& after);
     static void apply_sampled_progress(SequenceRegistry& states, const BatchResult& batch);
+    static void append_deferred_results(const ScheduledBatch& batch,
+                                        const std::vector<std::size_t>& deferred_indices,
+                                        BatchResult& result);
+    void cache_committed_blocks(const ScheduledBatch& batch,
+                                const std::vector<std::size_t>& deferred_indices,
+                                const std::vector<bool>& no_write_flags,
+                                SequenceRegistry& sequences);
 
     template <typename ChanPtr, typename T>
     void resolve(ChanPtr& chan_ptr, Result<T> result);

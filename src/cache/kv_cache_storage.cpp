@@ -77,10 +77,8 @@ Result<void> KVCacheStorage::init(Backend& backend, int num_layers, int max_bloc
         head_dim <= 0 || dtype == ccop::DType::kUnknown) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
+    assert(!k_data_ && !v_data_);
     const std::size_t elem_size = ccop::dtype_size(dtype);
-    if (k_data_ || v_data_) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
 
     std::size_t max_slots;
     if (!checked_mul(static_cast<std::size_t>(max_blocks), static_cast<std::size_t>(block_size),

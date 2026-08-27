@@ -13,6 +13,12 @@
 namespace ccinfer {
 namespace {
 
+std::vector<int32_t> table_indices(int n) {
+    std::vector<int32_t> idx(static_cast<std::size_t>(n));
+    for (int i = 0; i < n; ++i) idx[static_cast<std::size_t>(i)] = i;
+    return idx;
+}
+
 // Full lifecycle: lookup/allocate → cache_rolling_blocks → release →
 // lookup (hit) → verify shared blocks produce correct attention output.
 TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
@@ -42,16 +48,15 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
     for (int i = 0; i < kNumTokens; ++i) tokens[i] = i + 1;
 
     auto pr1 = mgr.lookup_prefix_cache(tokens);
-    ASSERT_TRUE(pr1.has_value());
-    auto alloc1 = mgr.allocate_blocks(kNumTokens / block_size - pr1->block_table.size());
+    auto alloc1 = mgr.allocate_blocks(kNumTokens / block_size - pr1.block_table.size());
     ASSERT_TRUE(alloc1.has_value());
-    for (int b = 0; b < alloc1->size(); ++b) pr1->block_table.push_back((*alloc1)[b]);
-    ASSERT_EQ(pr1->block_table.size(), 2);
-    ASSERT_EQ(pr1->prefix_hit_blocks, 0);
+    for (int b = 0; b < alloc1->size(); ++b) pr1.block_table.push_back((*alloc1)[b]);
+    ASSERT_EQ(pr1.block_table.size(), 2);
+    ASSERT_EQ(pr1.prefix_hit_blocks, 0);
     int free_before_cache = mgr.num_free_blocks();
 
-    auto cf1 = mgr.cache_rolling_blocks(0, tokens, pr1->block_table.ids());
-    ASSERT_TRUE(cf1.has_value());
+    mgr.cache_rolling_blocks(0, tokens, pr1.block_table.ids(),
+                             table_indices(pr1.block_table.size()), pr1.block_table);
 
     // 3. Write KV data into the blocks, then release.
     cudaStream_t stream;
@@ -70,7 +75,7 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
     cudaMemcpyAsync(mgr.v_cache(0).data(), h_v.data(), kv_elems * sizeof(__nv_bfloat16),
                     cudaMemcpyHostToDevice, stream);
 
-    mgr.release_blocks(pr1->block_table);
+    mgr.release_blocks(pr1.block_table);
 
     // 4. Verify blocks went to LRU (CACHED_IDLE).
     auto stats1 = mgr.stats();
@@ -80,10 +85,9 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
 
     // 5. Request 2: same tokens → prefix hit.
     auto pr2 = mgr.lookup_prefix_cache(tokens);
-    ASSERT_TRUE(pr2.has_value());
-    EXPECT_EQ(pr2->block_table.size(), 2);
-    EXPECT_EQ(pr2->prefix_hit_blocks, 2);
-    EXPECT_EQ(pr2->block_table.shared_count(), 2);
+    EXPECT_EQ(pr2.block_table.size(), 2);
+    EXPECT_EQ(pr2.prefix_hit_blocks, 2);
+    EXPECT_EQ(pr2.block_table.shared_count(), 2);
     // No new blocks allocated.
     EXPECT_EQ(mgr.num_free_blocks(), free_before_cache);
 
@@ -102,7 +106,7 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
     std::vector<int32_t> h_query_start_loc = {0, kNumTokens};
     std::vector<int32_t> h_context_lens = {kNumTokens};
     std::vector<int32_t> h_block_table(1 * (kMaxBlocks), -1);
-    for (int b = 0; b < pr2->block_table.size(); ++b) h_block_table[b] = pr2->block_table[b];
+    for (int b = 0; b < pr2.block_table.size(); ++b) h_block_table[b] = pr2.block_table[b];
 
     int32_t *d_qsl, *d_ctx, *d_bt;
     cudaMalloc(&d_qsl, 2 * sizeof(int32_t));
@@ -138,7 +142,7 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
     }
 
     // 7. Release second request.
-    mgr.release_blocks(pr2->block_table);
+    mgr.release_blocks(pr2.block_table);
     EXPECT_EQ(mgr.stats().block_cached_idle, 2);
 
     // 8. LRU eviction: fill cache with distinct tokens, then verify eviction.
@@ -146,13 +150,13 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
     for (int i = 0; cached_count < kMaxBlocks; ++i) {
         std::vector<int32_t> t(32, 100 + i);
         auto px = mgr.lookup_prefix_cache(t);
-        ASSERT_TRUE(px.has_value());
         auto alloc_px =
-            mgr.allocate_blocks(static_cast<int>(t.size()) / block_size - px->block_table.size());
+            mgr.allocate_blocks(static_cast<int>(t.size()) / block_size - px.block_table.size());
         ASSERT_TRUE(alloc_px.has_value());
-        for (int b = 0; b < alloc_px->size(); ++b) px->block_table.push_back((*alloc_px)[b]);
-        mgr.cache_rolling_blocks(0, t, px->block_table.ids());
-        mgr.release_blocks(px->block_table);
+        for (int b = 0; b < alloc_px->size(); ++b) px.block_table.push_back((*alloc_px)[b]);
+        mgr.cache_rolling_blocks(0, t, px.block_table.ids(), table_indices(px.block_table.size()),
+                                 px.block_table);
+        mgr.release_blocks(px.block_table);
         // Some may collide with previous hashes; count actual cached blocks.
         cached_count =
             mgr.stats().block_cached_idle + mgr.stats().block_active + mgr.stats().block_free;

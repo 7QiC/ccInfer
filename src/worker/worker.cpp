@@ -88,12 +88,8 @@ Result<AdmitSequenceResult> Worker::admit_sequence_resources(
     }
 
     auto pr = kv_mgr_->lookup_prefix_cache(prompt_tokens, /*namespace_salt=*/0);
-    if (!pr) {
-        sync_capacity();
-        return std::unexpected(pr.error());
-    }
 
-    int64_t prefix64 = static_cast<int64_t>(pr->prefix_hit_blocks) * kv_mgr_->block_size();
+    int64_t prefix64 = static_cast<int64_t>(pr.prefix_hit_blocks) * kv_mgr_->block_size();
     int prefix_tokens =
         static_cast<int>(std::min(prefix64, static_cast<int64_t>(prompt_tokens.size())));
 
@@ -103,9 +99,9 @@ Result<AdmitSequenceResult> Worker::admit_sequence_resources(
     state.max_context_len = max_context_len;
     state.kv_written = prefix_tokens;
     state.prompt_processed = prefix_tokens;
-    state.block_table = std::move(pr->block_table);
-    state.parent_hash = pr->parent_hash;
-    state.pending_tokens = std::move(pr->pending_tokens);
+    state.block_table = std::move(pr.block_table);
+    state.parent_hash = pr.parent_hash;
+    state.pending_tokens = std::move(pr.pending_tokens);
     state.last_token = initial_state.last_token;
     state.tokens_generated = initial_state.tokens_generated;
     state.max_tokens = initial_state.max_tokens;
@@ -345,7 +341,7 @@ Worker::SequenceRegistry Worker::build_sequence_states(const ScheduledBatch& bat
     return sequences;
 }
 
-Result<Worker::ResolvedBatch> Worker::resolve_batch(const ScheduledBatch& batch) const {
+Worker::ResolvedBatch Worker::resolve_batch(const ScheduledBatch& batch) const {
     ResolvedBatch resolved;
     resolved.batch.batch_id = batch.batch_id;
     resolved.batch.sampling = batch.sampling;
@@ -447,6 +443,69 @@ void Worker::apply_sampled_progress(SequenceRegistry& states, const BatchResult&
     }
 }
 
+void Worker::append_deferred_results(const ScheduledBatch& batch,
+                                     const std::vector<std::size_t>& deferred_indices,
+                                     BatchResult& result) {
+    for (const std::size_t deferred_index : deferred_indices) {
+        WorkItemResult wr;
+        wr.item_index = static_cast<int>(deferred_index);
+        wr.seq_id = work_sequence_id(batch.items[deferred_index]);
+        wr.kind = work_kind(batch.items[deferred_index]);
+        wr.tokens_consumed = 0;
+        wr.kv_deferred = true;
+        result.items.push_back(std::move(wr));
+    }
+}
+
+void Worker::cache_committed_blocks(const ScheduledBatch& batch,
+                                    const std::vector<std::size_t>& deferred_indices,
+                                    const std::vector<bool>& no_write_flags,
+                                    SequenceRegistry& sequences) {
+    const int block_size = kv_mgr_->block_size();
+    std::vector<uint8_t> deferred(batch.items.size(), 0);
+    for (const std::size_t idx : deferred_indices) deferred[idx] = 1;
+
+    for (std::size_t i = 0; i < batch.items.size(); ++i) {
+        if (deferred[i]) continue;
+        if (i < no_write_flags.size() && no_write_flags[i]) continue;
+
+        const auto& item = batch.items[i];
+        const SequenceId seq_id = work_sequence_id(item);
+        auto it = sequences.find(seq_id);
+        if (it == sequences.end()) continue;
+        SequenceState& seq = it->second;
+
+        std::vector<int32_t> written_tokens;
+        if (const auto* pc = std::get_if<PrefillChunk>(&item)) {
+            written_tokens = pc->tokens;
+        } else if (const auto* d = std::get_if<DecodeOneToken>(&item)) {
+            if (d->write_kv) written_tokens.push_back(d->input_token);
+        }
+
+        const int write_start = seq.kv_written - static_cast<int>(written_tokens.size());
+        std::vector<int32_t> block_ids;
+        std::vector<int32_t> table_indices;
+        for (std::size_t j = 0; j < written_tokens.size(); ++j) {
+            seq.pending_tokens.push_back(written_tokens[j]);
+            if (seq.pending_tokens.size() % static_cast<std::size_t>(block_size) == 0) {
+                const int global_pos = write_start + static_cast<int>(j);
+                const int block_index = global_pos / block_size;
+                block_ids.push_back(seq.block_table[static_cast<std::size_t>(block_index)]);
+                table_indices.push_back(block_index);
+            }
+        }
+
+        if (block_ids.empty()) continue;
+
+        seq.parent_hash = kv_mgr_->cache_rolling_blocks(seq.parent_hash, seq.pending_tokens,
+                                                        block_ids, table_indices, seq.block_table);
+        seq.pending_tokens.erase(seq.pending_tokens.begin(),
+                                 seq.pending_tokens.begin() +
+                                     static_cast<std::ptrdiff_t>(
+                                         block_ids.size() * static_cast<std::size_t>(block_size)));
+    }
+}
+
 void Worker::process_batch(PendingBatch pending) {
     std::lock_guard resource_lock(resource_mutex_);
 
@@ -456,18 +515,9 @@ void Worker::process_batch(PendingBatch pending) {
         return;
     }
 
-    if (pending.batch.items.empty()) {
-        resolve(pending.chan,
-                Result<WorkerBatchResult>(std::unexpected(ErrorCode::InvalidArgument)));
-        return;
-    }
+    assert(!pending.batch.items.empty());
 
-    auto resolved_r = resolve_batch(pending.batch);
-    if (!resolved_r) {
-        resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(resolved_r.error())));
-        return;
-    }
-    auto resolved = std::move(*resolved_r);
+    auto resolved = resolve_batch(pending.batch);
     if (resolved.batch.items.empty()) {
         WorkerBatchResult worker_result;
         worker_result.batch.batch_id = pending.batch.batch_id;
@@ -479,11 +529,7 @@ void Worker::process_batch(PendingBatch pending) {
     auto& execution_batch = resolved.batch;
 
     auto before = build_sequence_states(execution_batch);
-    if (before.size() != execution_batch.items.size()) {
-        resolve(pending.chan,
-                Result<WorkerBatchResult>(std::unexpected(ErrorCode::InvalidArgument)));
-        return;
-    }
+    assert(before.size() == execution_batch.items.size());
     auto sequences = before;
 
     assert(model_ && "Worker initialized without a model");
@@ -522,98 +568,19 @@ void Worker::process_batch(PendingBatch pending) {
         }
     }
 
-    for (const std::size_t deferred_index : plan.deferred_indices) {
-        WorkItemResult wr;
-        wr.item_index = static_cast<int>(deferred_index);
-        wr.seq_id = work_sequence_id(execution_batch.items[deferred_index]);
-        wr.kind = work_kind(execution_batch.items[deferred_index]);
-        wr.tokens_consumed = 0;
-        wr.kv_deferred = true;
-        result.items.push_back(std::move(wr));
-    }
+    append_deferred_results(execution_batch, plan.deferred_indices, result);
 
-    for (auto& wr : result.items) {
-        if (wr.item_index < 0 ||
-            static_cast<std::size_t>(wr.item_index) >= execution_batch.items.size()) {
-            plan.rollback();
-            sync_capacity();
-            resolve(pending.chan,
-                    Result<WorkerBatchResult>(std::unexpected(ErrorCode::BatchTranslationFailed)));
-            return;
-        }
-
+    for (const auto& wr : result.items) {
+        assert(wr.item_index >= 0 &&
+               static_cast<std::size_t>(wr.item_index) < execution_batch.items.size());
         const auto& requested_item = execution_batch.items[static_cast<std::size_t>(wr.item_index)];
-        if (wr.kind != work_kind(requested_item) ||
-            (!wr.kv_deferred && wr.tokens_consumed != work_token_count(requested_item))) {
-            plan.rollback();
-            sync_capacity();
-            resolve(pending.chan,
-                    Result<WorkerBatchResult>(std::unexpected(ErrorCode::BatchTranslationFailed)));
-            return;
-        }
+        assert(wr.kind == work_kind(requested_item));
+        assert(wr.kv_deferred || wr.tokens_consumed == work_token_count(requested_item));
     }
 
-    auto commit_r = plan.commit();
-    if (!commit_r) {
-        plan.rollback();
-        sync_capacity();
-        resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(commit_r.error())));
-        return;
-    }
+    plan.commit();
 
-    // Cache newly completed blocks into prefix cache for every item that wrote KV.
-    const int block_size = kv_mgr_->block_size();
-    std::vector<uint8_t> deferred(execution_batch.items.size(), 0);
-    for (const std::size_t idx : plan.deferred_indices) deferred[idx] = 1;
-
-    for (std::size_t i = 0; i < execution_batch.items.size(); ++i) {
-        if (deferred[i]) {
-            continue;
-        }
-        if (i < plan.no_write_flags.size() && plan.no_write_flags[i]) {
-            continue;
-        }
-
-        const auto& item = execution_batch.items[i];
-        const SequenceId seq_id = work_sequence_id(item);
-        auto it = sequences.find(seq_id);
-        if (it == sequences.end()) continue;
-        auto& seq = it->second;
-
-        std::vector<int32_t> written_tokens;
-        if (const auto* pc = std::get_if<PrefillChunk>(&item)) {
-            written_tokens = pc->tokens;
-        } else if (const auto* d = std::get_if<DecodeOneToken>(&item)) {
-            if (d->write_kv) written_tokens.push_back(d->input_token);
-        }
-
-        const int write_start = seq.kv_written - static_cast<int>(written_tokens.size());
-        std::vector<int32_t> block_ids;
-        for (std::size_t j = 0; j < written_tokens.size(); ++j) {
-            seq.pending_tokens.push_back(written_tokens[j]);
-            if (seq.pending_tokens.size() % static_cast<std::size_t>(block_size) == 0) {
-                const int global_pos = write_start + static_cast<int>(j);
-                const int block_index = global_pos / block_size;
-                block_ids.push_back(seq.block_table[static_cast<std::size_t>(block_index)]);
-            }
-        }
-
-        if (!block_ids.empty()) {
-            auto new_hash_r =
-                kv_mgr_->cache_rolling_blocks(seq.parent_hash, seq.pending_tokens, block_ids);
-            if (!new_hash_r) {
-                ccLog::error("cache_rolling_blocks failed seq={} blocks={} err={}", seq.seq_id,
-                             block_ids.size(), static_cast<int>(new_hash_r.error()));
-                continue;
-            }
-            seq.parent_hash = *new_hash_r;
-            seq.pending_tokens.erase(
-                seq.pending_tokens.begin(),
-                seq.pending_tokens.begin() +
-                    static_cast<std::ptrdiff_t>(block_ids.size() *
-                                                static_cast<std::size_t>(block_size)));
-        }
-    }
+    cache_committed_blocks(execution_batch, plan.deferred_indices, plan.no_write_flags, sequences);
 
     sync_capacity();
 

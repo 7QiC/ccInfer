@@ -95,23 +95,17 @@ Result<BlockTable> KVCacheManager::allocate_blocks(int num_blocks) {
     return result;
 }
 
-Result<KVCacheManager::PrepareResult> KVCacheManager::lookup_prefix_cache(
+KVCacheManager::PrepareResult KVCacheManager::lookup_prefix_cache(
     const std::vector<int32_t>& tokens, uint64_t namespace_salt) {
-    if (tokens.empty()) return std::unexpected(ErrorCode::InvalidArgument);
+    assert(!tokens.empty());
+    assert(block_size_ > 0);
+
+    const int64_t total_tokens = static_cast<int64_t>(tokens.size());
+    const int64_t blocks_needed = (total_tokens + block_size_ - 1) / block_size_;
+    assert(blocks_needed <= max_blocks_);
 
     PrepareResult result;
     auto& table = result.block_table;
-
-    if (tokens.size() > static_cast<std::size_t>(std::numeric_limits<int64_t>::max()))
-        return std::unexpected(ErrorCode::InvalidArgument);
-    int64_t total_tokens = static_cast<int64_t>(tokens.size());
-    int64_t blocks64 = (total_tokens + block_size_ - 1) / block_size_;
-    if (blocks64 > static_cast<int64_t>(max_blocks_))
-        return std::unexpected(ErrorCode::KVBlockExhausted);
-    if (blocks64 > static_cast<int64_t>(std::numeric_limits<int>::max()))
-        return std::unexpected(ErrorCode::InvalidArgument);
-    int total_blocks_needed = static_cast<int>(blocks64);
-    if (total_blocks_needed > max_blocks_) return std::unexpected(ErrorCode::KVBlockExhausted);
 
     auto hashes = PrefixCache::chain_hashes(tokens, block_size_, namespace_salt);
     if (!hashes.empty()) result.parent_hash = hashes.back();
@@ -125,29 +119,21 @@ Result<KVCacheManager::PrepareResult> KVCacheManager::lookup_prefix_cache(
         auto opt_id = prefix_cache_->lookup(hashes[i]);
         if (!opt_id) break;
 
-        int32_t block_id = *opt_id;
-        if (block_id < 0 || block_id >= max_blocks_) {
-            rollback_prefix_hits(table, result.prefix_hit_blocks);
-            return std::unexpected(ErrorCode::KVInvalidBlockTable);
-        }
+        const int32_t block_id = *opt_id;
+        assert(block_id >= 0 && block_id < max_blocks_);
 
         auto& block = metadata_[block_id];
-        if (!block.is_cached() || block.is_free() || block.block_hash != hashes[i]) {
-            rollback_prefix_hits(table, result.prefix_hit_blocks);
-            return std::unexpected(ErrorCode::InternalError);
-        }
+        assert(block.is_cached() && !block.is_free() && block.block_hash == hashes[i]);
 
         if (block.is_cached_idle()) {
             // CACHED_IDLE → ACTIVE_CACHED: remove from LRU, bump ref.
             lru_list_.erase(LruList::s_iterator_to(block));
             block.clear_flag(BlockFlags::kInLRU);
             block.ref_count = 1;
-        } else if (!block.is_in_lru() && block.ref_count > 0) {
+        } else {
+            assert(!block.is_in_lru() && block.ref_count > 0);
             // ACTIVE_CACHED — already referenced, just bump ref.
             block.ref_count++;
-        } else {
-            rollback_prefix_hits(table, result.prefix_hit_blocks);
-            return std::unexpected(ErrorCode::InternalError);
         }
         table.push_back(block_id);
         result.prefix_hit_blocks++;
@@ -157,55 +143,72 @@ Result<KVCacheManager::PrepareResult> KVCacheManager::lookup_prefix_cache(
     return result;
 }
 
-Result<uint64_t> KVCacheManager::cache_rolling_blocks(uint64_t parent_hash,
-                                                      const std::vector<int32_t>& pending_tokens,
-                                                      const std::vector<int32_t>& block_ids,
-                                                      uint64_t seed) {
+uint64_t KVCacheManager::cache_rolling_blocks(uint64_t parent_hash,
+                                              const std::vector<int32_t>& pending_tokens,
+                                              const std::vector<int32_t>& block_ids,
+                                              const std::vector<int32_t>& table_indices,
+                                              BlockTable& table, uint64_t seed) {
+    assert(block_size_ > 0);
+    assert(block_ids.size() == table_indices.size());
     assert(block_ids.size() * static_cast<std::size_t>(block_size_) <= pending_tokens.size());
 
     auto hashes = PrefixCache::chain_hashes(pending_tokens, static_cast<int>(pending_tokens.size()),
                                             block_size_, parent_hash, seed);
     assert(hashes.size() >= block_ids.size());
 
-    // Pass 1: validate all pairs before mutating the prefix cache.
-    for (std::size_t i = 0; i < block_ids.size(); ++i) {
-        const uint64_t hash = hashes[i];
-        int32_t block_id = block_ids[i];
-        if (block_id < 0 || block_id >= max_blocks_) {
-            return std::unexpected(ErrorCode::KVInvalidBlockTable);
-        }
-
-        auto& block = metadata_[block_id];
-        if (block.ref_count <= 0 || block.is_free() || block.is_in_lru()) {
-            return std::unexpected(ErrorCode::InternalError);
-        }
-
-        if (block.is_cached()) {
-            if (block.block_hash != hash) {
-                return std::unexpected(ErrorCode::KVBlockHashCollision);
-            }
-            continue;
-        }
-
-        if (prefix_cache_->would_insert_conflict(hash, block_id)) {
-            return std::unexpected(ErrorCode::KVBlockHashCollision);
-        }
-    }
-
-    // Pass 2: apply.  Pass 1 guarantees these inserts cannot conflict.
     uint64_t hash = parent_hash;
     for (std::size_t i = 0; i < block_ids.size(); ++i) {
         hash = hashes[i];
+        const int32_t block_id = block_ids[i];
+        const int32_t table_index = table_indices[i];
+        assert(block_id >= 0 && block_id < max_blocks_);
+        assert(table_index >= 0 && table_index < table.size());
+        assert(table[table_index] == block_id);
 
-        auto& block = metadata_[block_ids[i]];
-        if (block.is_cached()) continue;
+        auto& block = metadata_[block_id];
+        assert(block.ref_count > 0 && !block.is_free() && !block.is_in_lru());
 
-        auto r = prefix_cache_->insert(hash, block_ids[i]);
-        if (!r) return std::unexpected(r.error());
+        if (block.is_cached()) {
+            assert(block.block_hash == hash);
+            continue;
+        }
+
+        auto existing = prefix_cache_->find(hash);
+        if (existing.has_value()) {
+            // Same content is already cached: treat this full block as a late
+            // cache hit. Release the duplicate block and point this sequence's
+            // block table at the canonical cached block.
+            const int32_t canonical = *existing;
+            assert(canonical >= 0 && canonical < max_blocks_);
+            assert(canonical != block_id && "cached hash must not point at an uncached block");
+
+            auto& canonical_block = metadata_[canonical];
+            assert(canonical_block.is_cached() && canonical_block.block_hash == hash);
+            if (canonical_block.is_cached_idle()) {
+                lru_list_.erase(LruList::s_iterator_to(canonical_block));
+                canonical_block.clear_flag(BlockFlags::kInLRU);
+                canonical_block.ref_count = 1;
+            } else {
+                assert(!canonical_block.is_in_lru() && canonical_block.ref_count > 0);
+                canonical_block.ref_count++;
+            }
+
+            block.ref_count--;
+            if (block.ref_count == 0) {
+                block.flags = static_cast<uint32_t>(BlockFlags::kInFreeList);
+                block.block_hash = 0;
+                free_list_.push_back(block);
+            }
+            table.set(table_index, canonical);
+            continue;
+        }
+
+        auto insert_r = prefix_cache_->insert(hash, block_id);
+        assert(insert_r);
 
         block.set_flag(BlockFlags::kCached);
         block.block_hash = hash;
-        ccLog::debug("prefix insert block={} hash={:x}", block_ids[i], hash);
+        ccLog::debug("prefix insert block={} hash={:x}", block_id, hash);
     }
     return hash;
 }
@@ -221,8 +224,8 @@ Result<void> KVCacheManager::release_blocks(const BlockTable& table) {
             return std::unexpected(ErrorCode::KVInvalidBlockTable);
         }
         auto& block = metadata_[block_id];
+        assert(!block.is_in_lru());
         if (block.is_free()) return std::unexpected(ErrorCode::KVBlockDoubleFree);
-        if (block.is_in_lru()) return std::unexpected(ErrorCode::InternalError);
         if (block.ref_count <= 0) return std::unexpected(ErrorCode::KVBlockDoubleFree);
     }
 

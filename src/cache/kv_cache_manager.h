@@ -45,11 +45,12 @@ public:
         uint64_t parent_hash = 0;
         std::vector<int32_t> pending_tokens;
     };
-    Result<PrepareResult> lookup_prefix_cache(const std::vector<int32_t>& tokens,
-                                              uint64_t namespace_salt = 0);
-    Result<uint64_t> cache_rolling_blocks(uint64_t parent_hash,
-                                          const std::vector<int32_t>& pending_tokens,
-                                          const std::vector<int32_t>& block_ids, uint64_t seed = 0);
+    PrepareResult lookup_prefix_cache(const std::vector<int32_t>& tokens,
+                                      uint64_t namespace_salt = 0);
+    uint64_t cache_rolling_blocks(uint64_t parent_hash, const std::vector<int32_t>& pending_tokens,
+                                  const std::vector<int32_t>& block_ids,
+                                  const std::vector<int32_t>& table_indices, BlockTable& table,
+                                  uint64_t seed = 0);
 
     Result<void> release_blocks(const BlockTable& table);
 
