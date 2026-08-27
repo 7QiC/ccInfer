@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <vector>
 
-#include "cache/block.h"
 #include "common/types.h"
 #include "core/tensor.h"
 

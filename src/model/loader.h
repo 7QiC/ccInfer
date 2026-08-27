@@ -143,7 +143,7 @@ Result<std::shared_ptr<Buffer>> WeightLoader::load(
     auto sync_r = backend.synchronize();
     if (!sync_r) return std::unexpected(sync_r.error());
 
-    return std::move(buf);
+    return buf;
 }
 
 template <typename T>

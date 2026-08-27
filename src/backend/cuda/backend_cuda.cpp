@@ -1,3 +1,4 @@
+#include <cassert>
 #include <cstddef>
 #include <cublas_v2.h>
 #include <memory>
@@ -80,21 +81,19 @@ Backend::Backend(Backend&&) noexcept = default;
 Backend& Backend::operator=(Backend&&) noexcept = default;
 
 Result<std::shared_ptr<Buffer>> Backend::allocate_buffer(std::size_t bytes) {
-    if (bytes == 0) return std::unexpected(ErrorCode::InvalidArgument);
+    assert(bytes > 0);
     auto buf = CudaBuffer::create(bytes, ccop::Device{ccop::DeviceType::kCUDA, impl_->device_id_});
     if (!buf) return std::unexpected(buf.error());
     return std::move(*buf);
 }
 
 Result<void> Backend::memcpy_h2d(void* dst, const void* src, std::size_t count) {
-    if (count == 0) return {};
-    if (dst == nullptr || src == nullptr) return std::unexpected(ErrorCode::InvalidArgument);
+    assert(dst != nullptr && src != nullptr && count > 0);
     return cuda_check(cudaMemcpyAsync(dst, src, count, cudaMemcpyHostToDevice, impl_->stream_));
 }
 
 Result<void> Backend::memcpy_d2h(void* dst, const void* src, std::size_t count) {
-    if (count == 0) return {};
-    if (dst == nullptr || src == nullptr) return std::unexpected(ErrorCode::InvalidArgument);
+    assert(dst != nullptr && src != nullptr && count > 0);
     if (auto r =
             cuda_check(cudaMemcpyAsync(dst, src, count, cudaMemcpyDeviceToHost, impl_->stream_));
         !r)
@@ -103,8 +102,7 @@ Result<void> Backend::memcpy_d2h(void* dst, const void* src, std::size_t count) 
 }
 
 Result<void> Backend::memcpy_d2d(void* dst, const void* src, std::size_t count) {
-    if (count == 0) return {};
-    if (dst == nullptr || src == nullptr) return std::unexpected(ErrorCode::InvalidArgument);
+    assert(dst != nullptr && src != nullptr && count > 0);
     return cuda_check(cudaMemcpyAsync(dst, src, count, cudaMemcpyDeviceToDevice, impl_->stream_));
 }
 

@@ -123,7 +123,6 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
     const float eps = config_.rms_norm_eps_;
     const int qkv_dim = (nq + 2 * nkv) * hd;
     const int attn_dim = nq * hd;
-    constexpr ccop::Device kCuda0{ccop::DeviceType::kCUDA, 0};
     const ccop::ExecutionContext ctx{stream_, backend_->context().blas_handle};
 
     auto embed =
