@@ -132,6 +132,7 @@ private:
                                              const BatchResult& result);
     asio::awaitable<void> handle_batch_error(const ScheduledBatch& batch, ErrorCode err);
     asio::awaitable<void> cleanup_terminal_requests();
+    asio::awaitable<void> cleanup_terminal_queue(std::deque<RequestPtr>& queue);
     asio::awaitable<void> fail_batch(const ScheduledBatch& batch, ErrorCode err);
     asio::awaitable<void> preempt_one_for_admission();
     asio::awaitable<void> release_and_move_to_wait(const RequestPtr& request);

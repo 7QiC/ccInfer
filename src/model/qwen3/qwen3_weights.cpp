@@ -19,9 +19,8 @@ Result<void> merge_qkv(Tensor& qkv, const Tensor& q, const Tensor& k, const Tens
     const std::size_t k_bytes = k.nbytes();
     const std::size_t v_bytes = v.nbytes();
     const std::size_t kMax = std::numeric_limits<std::size_t>::max();
-    if (q_bytes > kMax - k_bytes || v_bytes > kMax - q_bytes - k_bytes) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
+    assert(q_bytes <= kMax - k_bytes);
+    assert(v_bytes <= kMax - q_bytes - k_bytes);
     const std::size_t total_bytes = q_bytes + k_bytes + v_bytes;
 
     auto qkv_r = backend.allocate_buffer(total_bytes);

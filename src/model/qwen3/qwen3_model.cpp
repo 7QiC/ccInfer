@@ -5,7 +5,6 @@
 #include <utility>
 #include <vector>
 
-
 #include "backend/backend.h"
 #include "cache/kv_cache_manager.h"
 
@@ -32,21 +31,12 @@ Qwen3Model::Qwen3Model(ModelConfig config, Qwen3Weights weights, RopeCache rope_
 
 Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& output,
                                  Backend& backend) {
-    if (!output.logits.valid()) return std::unexpected(ErrorCode::InvalidArgument);
-    if (input.num_tokens_ <= 0) return std::unexpected(ErrorCode::InvalidArgument);
-
+    assert(output.logits.valid());
+    assert(input.num_tokens_ > 0);
     // Exactly one of token_ids / input_embeds must be valid.
-    if (input.token_ids.valid() == input.input_embeds.valid()) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-
-    if (input.kv_mgr_ == nullptr) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-
-    if (input.max_position_id_ < 0 || input.max_position_id_ >= rope_cache_.max_position()) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
+    assert(input.token_ids.valid() != input.input_embeds.valid());
+    assert(input.kv_mgr_ != nullptr);
+    assert(input.max_position_id_ >= 0 && input.max_position_id_ < rope_cache_.max_position());
 
     const int T = input.num_tokens_;
     const int D = config_.d_model_;
@@ -139,8 +129,7 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
         }
 
         {
-            auto r =
-                map_result(ccop::gemm(&qkv_out, normed, lw.qkv, false, true, 1.0f, 0.0f, ctx));
+            auto r = map_result(ccop::gemm(&qkv_out, normed, lw.qkv, false, true, 1.0f, 0.0f, ctx));
             if (!r) return std::unexpected(r.error());
         }
 
@@ -159,8 +148,7 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
         }
 
         {
-            auto r =
-                map_result(ccop::rope(&q, &k, input.positions, rope_cache_.tensor(), hd, ctx));
+            auto r = map_result(ccop::rope(&q, &k, input.positions, rope_cache_.tensor(), hd, ctx));
             if (!r) return std::unexpected(r.error());
         }
 
@@ -169,8 +157,8 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
             // write_kv=false uses -1 slots, so the operator skips them.
             auto k_cache = input.kv_mgr_->k_cache(l);
             auto v_cache = input.kv_mgr_->v_cache(l);
-            auto r = map_result(
-                ccop::write_kv_cache(k, v, &k_cache, &v_cache, input.slot_mapping, ctx));
+            auto r =
+                map_result(ccop::write_kv_cache(k, v, &k_cache, &v_cache, input.slot_mapping, ctx));
             if (!r) return std::unexpected(r.error());
         }
 
@@ -178,9 +166,9 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
             auto k_blocks = input.kv_mgr_->k_cache_blocks(l);
             auto v_blocks = input.kv_mgr_->v_cache_blocks(l);
             if (input.mode_ == ForwardMode::Decode) {
-                auto r = map_result(
-                    ccop::decode_attention(q, k_blocks, v_blocks, input.block_table,
-                                          input.context_lens, &attn_out_3d, attn_scale, ctx));
+                auto r = map_result(ccop::decode_attention(q, k_blocks, v_blocks, input.block_table,
+                                                           input.context_lens, &attn_out_3d,
+                                                           attn_scale, ctx));
                 if (!r) return std::unexpected(r.error());
             } else {
                 auto r = map_result(ccop::prefill_attention(
@@ -191,8 +179,8 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
         }
 
         {
-            auto r = map_result(
-                ccop::gemm(&next_hidden, attn_out, lw.o, false, true, 1.0f, 0.0f, ctx));
+            auto r =
+                map_result(ccop::gemm(&next_hidden, attn_out, lw.o, false, true, 1.0f, 0.0f, ctx));
             if (!r) return std::unexpected(r.error());
         }
 
@@ -209,8 +197,7 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
         }
 
         {
-            auto r =
-                map_result(ccop::gemm(&gate, normed, lw.gate, false, true, 1.0f, 0.0f, ctx));
+            auto r = map_result(ccop::gemm(&gate, normed, lw.gate, false, true, 1.0f, 0.0f, ctx));
             if (!r) return std::unexpected(r.error());
         }
 
@@ -244,16 +231,14 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
     }
 
     if (input.num_logits_ > 0) {
-        if (input.logits_indices_host.size() != static_cast<std::size_t>(input.num_logits_)) {
-            return std::unexpected(ErrorCode::InvalidArgument);
-        }
+        assert(input.logits_indices_host.size() == static_cast<std::size_t>(input.num_logits_));
         for (int i = 0; i < input.num_logits_; ++i) {
             const int row = input.logits_indices_host[static_cast<std::size_t>(i)];
-            if (row < 0 || row >= T) return std::unexpected(ErrorCode::InvalidArgument);
+            assert(row >= 0 && row < T);
             auto normed_row = normed.slice(0, row, row + 1);
             auto logits_row = output.logits.slice(0, i, i + 1);
-            auto r = map_result(
-                ccop::gemm(&logits_row, normed_row, weights_.lm_head, false, true, 1.0f, 0.0f, ctx));
+            auto r = map_result(ccop::gemm(&logits_row, normed_row, weights_.lm_head, false, true,
+                                           1.0f, 0.0f, ctx));
             if (!r) return std::unexpected(r.error());
         }
     }

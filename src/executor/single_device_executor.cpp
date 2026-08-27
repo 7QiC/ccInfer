@@ -38,7 +38,7 @@ asio::awaitable<Result<AdmitSequenceResult>> SingleDeviceExecutor::admit_sequenc
     auto [ec, result] = co_await (*channel_r)->async_receive(as_tuple(deferred));
     if (ec) co_return std::unexpected(to_error_code(ec));
     if (!result) co_return std::unexpected(result.error());
-    if (result->seq_id != seq_id) co_return std::unexpected(ErrorCode::InternalError);
+    assert(result->seq_id == seq_id);
 
     SequenceSnapshot state;
     state.seq_id = seq_id;
@@ -64,12 +64,12 @@ asio::awaitable<Result<void>> SingleDeviceExecutor::release_sequence(SequenceId 
 }
 
 Result<BatchFuture> SingleDeviceExecutor::execute_batch(ScheduledBatch batch) {
+#ifndef NDEBUG
     std::unordered_set<SequenceId> seen;
-
     for (const auto& item : batch.items) {
-        const SequenceId seq_id = work_sequence_id(item);
-        if (!seen.insert(seq_id).second) return std::unexpected(ErrorCode::InvalidArgument);
+        assert(seen.insert(work_sequence_id(item)).second);
     }
+#endif
 
     auto future = worker_->enqueue_execute_batch(std::move(batch));
     if (!future) return std::unexpected(future.error());
@@ -77,7 +77,7 @@ Result<BatchFuture> SingleDeviceExecutor::execute_batch(ScheduledBatch batch) {
 }
 
 asio::awaitable<Result<BatchResult>> SingleDeviceExecutor::collect_batch(BatchFuture future) {
-    if (!future) co_return std::unexpected(ErrorCode::InvalidArgument);
+    assert(future);
     auto [ec, result] = co_await future->async_receive(as_tuple(deferred));
     if (ec) co_return std::unexpected(to_error_code(ec));
     if (!result) co_return std::unexpected(result.error());

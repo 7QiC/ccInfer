@@ -11,8 +11,8 @@
 #include "backend/backend.h"
 #include "cache/kv_cache_manager.h"
 #include "common/error_code.h"
-#include "core/traits.h"
 #include "common/physical_batch.h"
+#include "core/traits.h"
 #include "model/config.h"
 #include "model/model.h"
 
@@ -35,60 +35,34 @@ public:
             return std::unexpected(ErrorCode::Unsupported);
         }
 
-        // Validate physical batch.
-        if (!batch.token_ids.valid() || !batch.positions.valid() || !batch.slot_mapping.valid() ||
-            !batch.block_table.valid() || !batch.query_start_loc.valid() ||
-            !batch.context_lens.valid() || !batch.logits_indices.valid()) {
-            return std::unexpected(ErrorCode::InvalidArgument);
-        }
-
         const int T = batch.num_tokens;
         const int B = batch.batch_size;
-        if (T <= 0 || B <= 0 || batch.max_blocks_per_req <= 0) {
-            return std::unexpected(ErrorCode::InvalidArgument);
-        }
-
-        if (batch.item_indices.size() != static_cast<std::size_t>(B) ||
-            batch.item_seq_ids.size() != static_cast<std::size_t>(B) ||
-            batch.item_kinds.size() != static_cast<std::size_t>(B)) {
-            return std::unexpected(ErrorCode::InvalidArgument);
-        }
-
-        if (batch.mode != ForwardMode::Prefill && batch.mode != ForwardMode::Decode &&
-            batch.mode != ForwardMode::Mixed) {
-            return std::unexpected(ErrorCode::InvalidArgument);
-        }
-        if (batch.mode == ForwardMode::Decode && T != B) {
-            return std::unexpected(ErrorCode::ModelShapeMismatch);
-        }
-        if (batch.item_token_counts.size() != static_cast<std::size_t>(B) ||
-            batch.sample_flags.size() != static_cast<std::size_t>(B) ||
-            batch.logits_rows_host.size() != static_cast<std::size_t>(batch.num_logits)) {
-            return std::unexpected(ErrorCode::InvalidArgument);
-        }
+        assert(batch.token_ids.valid() && batch.positions.valid() && batch.slot_mapping.valid() &&
+               batch.block_table.valid() && batch.query_start_loc.valid() &&
+               batch.context_lens.valid() && batch.logits_indices.valid());
+        assert(T > 0 && B > 0 && batch.max_blocks_per_req > 0);
+        assert(batch.item_indices.size() == static_cast<std::size_t>(B));
+        assert(batch.item_seq_ids.size() == static_cast<std::size_t>(B));
+        assert(batch.item_kinds.size() == static_cast<std::size_t>(B));
+        assert(batch.mode == ForwardMode::Prefill || batch.mode == ForwardMode::Decode ||
+               batch.mode == ForwardMode::Mixed);
+        assert(batch.mode != ForwardMode::Decode || T == B);
+        assert(batch.item_token_counts.size() == static_cast<std::size_t>(B));
+        assert(batch.sample_flags.size() == static_cast<std::size_t>(B));
+        assert(batch.logits_rows_host.size() == static_cast<std::size_t>(batch.num_logits));
+        assert(batch.max_position_id >= 0);
 
         const auto& cfg = model.config();
         const int V = cfg.vocab_size_;
-        if (V <= 0) return std::unexpected(ErrorCode::ModelConfigInvalid);
+        assert(V > 0);
+        assert(sampling.top_k >= 0 && sampling.top_k <= V);
+        assert(std::isfinite(sampling.top_p) && sampling.top_p > 0.0f);
+        assert(std::isfinite(sampling.temperature) && sampling.temperature >= 0.0f);
 
-        // Validate sampling params.
-        if (sampling.top_k < 0 || sampling.top_k > V) {
-            return std::unexpected(ErrorCode::InvalidArgument);
-        }
-        if (!std::isfinite(sampling.top_p) || sampling.top_p <= 0.0f) {
-            return std::unexpected(ErrorCode::InvalidArgument);
-        }
-        if (!std::isfinite(sampling.temperature) || sampling.temperature < 0.0f) {
-            return std::unexpected(ErrorCode::InvalidArgument);
-        }
         const bool greedy =
             (sampling.top_k == 0 && sampling.top_p >= 1.0f && sampling.temperature <= 0.0f);
         if (!greedy) {
             return std::unexpected(ErrorCode::Unsupported);
-        }
-
-        if (batch.max_position_id < 0) {
-            return std::unexpected(ErrorCode::InvalidArgument);
         }
 
         // Build ForwardInput.
@@ -112,9 +86,9 @@ public:
         const std::size_t V_size = static_cast<std::size_t>(V);
         const int num_logits = batch.num_logits > 0 ? batch.num_logits : 1;
         const std::size_t logits_rows = static_cast<std::size_t>(num_logits);
-        if (V_size > kMax / logits_rows) return std::unexpected(ErrorCode::InvalidArgument);
+        assert(V_size <= kMax / logits_rows);
         const std::size_t logits_elems = logits_rows * V_size;
-        if (logits_elems > kMax / sizeof(float)) return std::unexpected(ErrorCode::InvalidArgument);
+        assert(logits_elems <= kMax / sizeof(float));
         auto logits_r = Tensor::empty(backend, ccop::DType::kFloat32, {num_logits, V});
         if (!logits_r) return std::unexpected(logits_r.error());
         auto tokens_r = Tensor::empty(backend, ccop::DType::kInt32, {B});
@@ -146,10 +120,11 @@ public:
             wr.seq_id = batch.item_seq_ids[i];
             wr.kind = batch.item_kinds[i];
             const bool sampled = batch.sample_flags[i];
-            wr.sampled_tokens = sampled ? std::vector<int32_t>{tokens_host[i]}
-                                        : std::vector<int32_t>{};
+            wr.sampled_tokens =
+                sampled ? std::vector<int32_t>{tokens_host[i]} : std::vector<int32_t>{};
             wr.tokens_consumed = batch.item_token_counts[i];
-            wr.eos = sampled && sampling.eos_token_id >= 0 && tokens_host[i] == sampling.eos_token_id;
+            wr.eos =
+                sampled && sampling.eos_token_id >= 0 && tokens_host[i] == sampling.eos_token_id;
             results.push_back(std::move(wr));
         }
 

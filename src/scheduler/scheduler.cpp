@@ -400,7 +400,6 @@ bool Scheduler::build_state_work(BatchBuildContext& ctx, RequestState& state) {
             ctx.batch.sampling = state.sampling;
             ctx.sampling_set = true;
         }
-        return true;
     };
 
     if (ctx.token_budget <= 0 || !is_schedulable_state(state)) return false;
@@ -421,7 +420,8 @@ bool Scheduler::build_state_work(BatchBuildContext& ctx, RequestState& state) {
             chunk_len = std::min(chunk_len, engine_config_.max_seq_prefill_tokens);
         }
         chunk_len = std::min(chunk_len, ctx.token_budget);
-        if (chunk_len <= 0 || !select_sampling(state)) return false;
+        if (chunk_len <= 0) return false;
+        select_sampling(state);
 
         const bool final_chunk = prompt_start + chunk_len >= prompt_len;
         const bool replay = scheduling.cursor.phase == GenerationPhase::ReplayPrefill;
@@ -438,7 +438,8 @@ bool Scheduler::build_state_work(BatchBuildContext& ctx, RequestState& state) {
         return true;
     }
 
-    if (!is_decode_phase(scheduling.cursor.phase) || !select_sampling(state)) return false;
+    if (!is_decode_phase(scheduling.cursor.phase)) return false;
+    select_sampling(state);
     if (generated_token_count(state) + scheduling.reservation.reserved_generation_tokens >=
         state.sampling.max_tokens)
         return false;
@@ -569,29 +570,15 @@ void Scheduler::retire_reservation(RequestState& state, const WorkItem& item) {
 
 asio::awaitable<void> Scheduler::update_from_output(const ScheduledBatch& batch,
                                                     const BatchResult& result) {
-    if (result.batch_id != batch.batch_id || result.items.size() != batch.items.size()) {
-        co_await fail_batch(batch, ErrorCode::BatchTranslationFailed);
-        co_return;
-    }
+    assert(result.batch_id == batch.batch_id);
+    assert(result.items.size() == batch.items.size());
 
-    std::unordered_set<int> seen_item_indices;
     for (const auto& work_result : result.items) {
-        if (work_result.item_index < 0 ||
-            static_cast<std::size_t>(work_result.item_index) >= batch.items.size()) {
-            co_await fail_batch(batch, ErrorCode::BatchTranslationFailed);
-            co_return;
-        }
-        if (!seen_item_indices.insert(work_result.item_index).second) {
-            co_await fail_batch(batch, ErrorCode::BatchTranslationFailed);
-            co_return;
-        }
-
+        assert(work_result.item_index >= 0 &&
+               static_cast<std::size_t>(work_result.item_index) < batch.items.size());
         const auto& original = batch.items[work_result.item_index];
-        if (work_sequence_id(original) != work_result.seq_id ||
-            work_kind(original) != work_result.kind) {
-            co_await fail_batch(batch, ErrorCode::BatchTranslationFailed);
-            co_return;
-        }
+        assert(work_sequence_id(original) == work_result.seq_id);
+        assert(work_kind(original) == work_result.kind);
     }
 
     for (const auto& work_result : result.items) {
@@ -724,40 +711,27 @@ asio::awaitable<void> Scheduler::cleanup_terminal_requests() {
         erase_request(request_it);
     }
 
-    std::vector<std::deque<RequestPtr>::iterator> skip_to_release;
-    for (auto it = skip_.begin(); it != skip_.end(); ++it) {
-        if ((*it)->status != RequestStatus::Active) skip_to_release.push_back(it);
+    co_await cleanup_terminal_queue(skip_);
+    co_await cleanup_terminal_queue(waiting_);
+}
+
+asio::awaitable<void> Scheduler::cleanup_terminal_queue(std::deque<RequestPtr>& queue) {
+    std::vector<std::deque<RequestPtr>::iterator> to_release;
+    for (auto it = queue.begin(); it != queue.end(); ++it) {
+        if ((*it)->status != RequestStatus::Active) to_release.push_back(it);
     }
-    for (auto it : skip_to_release) {
+    for (auto it : to_release) {
         auto request = *it;
         if (request->scheduling) {
             auto result = co_await executor_.release_sequence(request->scheduling->seq_id);
             if (!result) {
-                ccLog::warn("skip cleanup failed seq={} err={}", request->scheduling->seq_id,
+                ccLog::warn("queue cleanup failed seq={} err={}", request->scheduling->seq_id,
                             static_cast<int>(result.error()));
             }
             by_seq_id_.erase(request->scheduling->seq_id);
             request->scheduling.reset();
         }
-        skip_.erase(it);
-        erase_request(request);
-    }
-
-    std::vector<std::deque<RequestPtr>::iterator> wait_to_release;
-    for (auto it = waiting_.begin(); it != waiting_.end(); ++it) {
-        if ((*it)->status != RequestStatus::Active) wait_to_release.push_back(it);
-    }
-    for (auto it : wait_to_release) {
-        auto request = *it;
-        if (request->scheduling) {
-            auto result = co_await executor_.release_sequence(request->scheduling->seq_id);
-            if (!result) {
-                ccLog::warn("wait cleanup failed seq={} err={}", request->scheduling->seq_id,
-                            static_cast<int>(result.error()));
-            }
-            request->scheduling.reset();
-        }
-        waiting_.erase(it);
+        queue.erase(it);
         erase_request(request);
     }
 }
