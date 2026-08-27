@@ -1,6 +1,7 @@
 #include "tokenizer/byte_level_bpe_tokenizer.h"
 
 #include <algorithm>
+#include <cassert>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -109,30 +110,18 @@ void ByteLevelBpeTokenizer::build_byte_maps() {
 
 Result<void> ByteLevelBpeTokenizer::load(const std::string& path) {
     const std::string data = read_file(path);
-    if (data.empty()) {
-        return std::unexpected(ErrorCode::ModelLoadFailed);
-    }
+    if (data.empty()) return std::unexpected(ErrorCode::ModelLoadFailed);
 
     auto j = nlohmann::json::parse(data, nullptr, false);
-    if (j.is_discarded() || !j.is_object()) {
-        return std::unexpected(ErrorCode::ModelLoadFailed);
-    }
-
+    if (j.is_discarded() || !j.is_object()) return std::unexpected(ErrorCode::ModelLoadFailed);
     if (!j.contains("model") || !j["model"].is_object()) {
         return std::unexpected(ErrorCode::ModelLoadFailed);
     }
 
     const auto& model = j["model"];
-
-    if (model.contains("type") && model["type"].is_string()) {
-        const std::string type = model["type"].get<std::string>();
-        if (type != "BPE") {
-            return std::unexpected(ErrorCode::ModelUnsupportedArch);
-        }
-    }
-
-    if (!model.contains("vocab") || !model["vocab"].is_object()) {
-        return std::unexpected(ErrorCode::ModelLoadFailed);
+    if (model.contains("type") && model["type"].is_string() &&
+        model["type"].get<std::string>() != "BPE") {
+        return std::unexpected(ErrorCode::ModelUnsupportedArch);
     }
 
     vocab_.clear();
@@ -145,6 +134,24 @@ Result<void> ByteLevelBpeTokenizer::load(const std::string& path) {
     eos_token_id_ = -1;
     pad_token_id_ = -1;
     unk_token_id_ = -1;
+
+    auto r = parse_vocab(model);
+    if (!r) return r;
+    r = parse_merges(model);
+    if (!r) return r;
+    parse_added_tokens(j);
+    resolve_special_tokens();
+
+    build_byte_maps();
+
+    if (vocab_.empty()) return std::unexpected(ErrorCode::ModelLoadFailed);
+    return {};
+}
+
+Result<void> ByteLevelBpeTokenizer::parse_vocab(const nlohmann::json& model) {
+    if (!model.contains("vocab") || !model["vocab"].is_object()) {
+        return std::unexpected(ErrorCode::ModelLoadFailed);
+    }
 
     for (const auto& [token, id_val] : model["vocab"].items()) {
         if (!id_val.is_number_integer()) {
@@ -160,113 +167,93 @@ Result<void> ByteLevelBpeTokenizer::load(const std::string& path) {
         id_to_token_[id] = token;
         if (id > max_token_id_) max_token_id_ = id;
     }
+    return {};
+}
 
-    if (model.contains("merges") && model["merges"].is_array()) {
-        int32_t rank = 0;
+Result<void> ByteLevelBpeTokenizer::parse_merges(const nlohmann::json& model) {
+    if (!model.contains("merges") || !model["merges"].is_array()) return {};
 
-        for (const auto& merge_item : model["merges"]) {
-            std::string a;
-            std::string b;
+    int32_t rank = 0;
+    for (const auto& merge_item : model["merges"]) {
+        std::string a;
+        std::string b;
 
-            if (merge_item.is_string()) {
-                const std::string merge = merge_item.get<std::string>();
-                const auto pos = merge.find(' ');
-                if (pos == std::string::npos) {
-                    continue;
-                }
+        if (merge_item.is_string()) {
+            const std::string merge = merge_item.get<std::string>();
+            const auto pos = merge.find(' ');
+            if (pos == std::string::npos) continue;
+            a = merge.substr(0, pos);
+            b = merge.substr(pos + 1);
+        } else if (merge_item.is_array() && merge_item.size() == 2 && merge_item[0].is_string() &&
+                   merge_item[1].is_string()) {
+            a = merge_item[0].get<std::string>();
+            b = merge_item[1].get<std::string>();
+        } else {
+            return std::unexpected(ErrorCode::ModelLoadFailed);
+        }
 
-                a = merge.substr(0, pos);
-                b = merge.substr(pos + 1);
-            } else if (merge_item.is_array() && merge_item.size() == 2 &&
-                       merge_item[0].is_string() && merge_item[1].is_string()) {
-                a = merge_item[0].get<std::string>();
-                b = merge_item[1].get<std::string>();
-            } else {
-                return std::unexpected(ErrorCode::ModelLoadFailed);
-            }
+        merge_rank_[Pair{std::move(a), std::move(b)}] = rank++;
+    }
+    return {};
+}
 
-            merge_rank_[Pair{std::move(a), std::move(b)}] = rank++;
+void ByteLevelBpeTokenizer::parse_added_tokens(const nlohmann::json& j) {
+    if (!j.contains("added_tokens") || !j["added_tokens"].is_array()) return;
+
+    for (const auto& tok : j["added_tokens"]) {
+        if (!tok.is_object() || !tok.contains("content") || !tok.contains("id")) continue;
+        if (!tok["content"].is_string() || !tok["id"].is_number_integer()) continue;
+
+        const std::string content = tok["content"].get<std::string>();
+        const int64_t raw = tok["id"].get<int64_t>();
+        if (raw < 0 || raw >= static_cast<int64_t>(std::numeric_limits<int32_t>::max())) {
+            continue;
+        }
+        const int32_t id = static_cast<int32_t>(raw);
+
+        vocab_[content] = id;
+        id_to_token_[id] = content;
+        if (id > max_token_id_) max_token_id_ = id;
+
+        bool is_special = false;
+        if (tok.contains("special") && tok["special"].is_boolean()) {
+            is_special = tok["special"].get<bool>();
+        }
+        if (is_special) {
+            special_token_to_id_[content] = id;
+            id_to_special_token_[id] = content;
+        }
+
+        if (content == "<s>" || content == "<|begin_of_text|>") {
+            bos_token_id_ = id;
+        } else if (content == "</s>" || content == "<|end_of_text|>" ||
+                   content == "<|endoftext|>" || content == "<|im_end|>") {
+            eos_token_id_ = id;
+        } else if (content == "<pad>" || content == "[PAD]") {
+            pad_token_id_ = id;
+        } else if (content == "<unk>" || content == "[UNK]") {
+            unk_token_id_ = id;
         }
     }
+}
 
-    // Parse added/special tokens from tokenizer.json.
-    // Only tokens with "special":true are added to the special-token maps.
-    if (j.contains("added_tokens") && j["added_tokens"].is_array()) {
-        for (const auto& tok : j["added_tokens"]) {
-            if (!tok.is_object()) {
-                continue;
-            }
-
-            if (!tok.contains("content") || !tok.contains("id")) {
-                continue;
-            }
-
-            if (!tok["content"].is_string() || !tok["id"].is_number_integer()) {
-                continue;
-            }
-
-            const std::string content = tok["content"].get<std::string>();
-            const int64_t raw = tok["id"].get<int64_t>();
-            if (raw < 0 || raw >= static_cast<int64_t>(std::numeric_limits<int32_t>::max())) {
-                continue;
-            }
-            const int32_t id = static_cast<int32_t>(raw);
-
-            vocab_[content] = id;
-            id_to_token_[id] = content;
-            if (id > max_token_id_) max_token_id_ = id;
-
-            bool is_special = false;
-            if (tok.contains("special") && tok["special"].is_boolean()) {
-                is_special = tok["special"].get<bool>();
-            }
-            if (is_special) {
-                special_token_to_id_[content] = id;
-                id_to_special_token_[id] = content;
-            }
-
-            if (content == "<s>" || content == "<|begin_of_text|>") {
-                bos_token_id_ = id;
-            } else if (content == "</s>" || content == "<|end_of_text|>" ||
-                       content == "<|endoftext|>" || content == "<|im_end|>") {
-                eos_token_id_ = id;
-            } else if (content == "<pad>" || content == "[PAD]") {
-                pad_token_id_ = id;
-            } else if (content == "<unk>" || content == "[UNK]") {
-                unk_token_id_ = id;
-            }
-        }
-    }
-
+void ByteLevelBpeTokenizer::resolve_special_tokens() {
     // Some tokenizer.json files store special token strings only through vocab.
     auto set_if_exists = [&](const std::string& token, int32_t* dst) {
         auto it = vocab_.find(token);
-        if (it != vocab_.end() && *dst < 0) {
-            *dst = it->second;
-        }
+        if (it != vocab_.end() && *dst < 0) *dst = it->second;
     };
 
     set_if_exists("<s>", &bos_token_id_);
     set_if_exists("<|begin_of_text|>", &bos_token_id_);
-
     set_if_exists("</s>", &eos_token_id_);
     set_if_exists("<|end_of_text|>", &eos_token_id_);
     set_if_exists("<|endoftext|>", &eos_token_id_);
     set_if_exists("<|im_end|>", &eos_token_id_);
-
     set_if_exists("<pad>", &pad_token_id_);
     set_if_exists("[PAD]", &pad_token_id_);
-
     set_if_exists("<unk>", &unk_token_id_);
     set_if_exists("[UNK]", &unk_token_id_);
-
-    build_byte_maps();
-
-    if (vocab_.empty()) {
-        return std::unexpected(ErrorCode::ModelLoadFailed);
-    }
-
-    return {};
 }
 
 Result<std::vector<std::string>> ByteLevelBpeTokenizer::byte_encode_segment(
@@ -275,21 +262,16 @@ Result<std::vector<std::string>> ByteLevelBpeTokenizer::byte_encode_segment(
     symbols.reserve(text.size());
 
     const auto* bytes = reinterpret_cast<const uint8_t*>(text.data());
-
     for (size_t i = 0; i < text.size(); ++i) {
         auto it = byte_to_str_.find(bytes[i]);
-        if (it == byte_to_str_.end()) {
-            return std::unexpected(ErrorCode::ModelLoadFailed);
-        }
-
+        assert(it != byte_to_str_.end());
         symbols.push_back(it->second);
     }
 
     return symbols;
 }
 
-Result<std::vector<std::string>> ByteLevelBpeTokenizer::apply_bpe(
-    std::vector<std::string> symbols) const {
+std::vector<std::string> ByteLevelBpeTokenizer::apply_bpe(std::vector<std::string> symbols) const {
     if (symbols.empty()) {
         return symbols;
     }
@@ -344,13 +326,7 @@ Result<std::vector<int32_t>> ByteLevelBpeTokenizer::encode_normal_segment(
     if (!symbols_result) {
         return std::unexpected(symbols_result.error());
     }
-
-    auto bpe_result = apply_bpe(std::move(*symbols_result));
-    if (!bpe_result) {
-        return std::unexpected(bpe_result.error());
-    }
-
-    const std::vector<std::string>& symbols = *bpe_result;
+    std::vector<std::string> symbols = apply_bpe(std::move(*symbols_result));
 
     std::vector<int32_t> ids;
     ids.reserve(symbols.size());

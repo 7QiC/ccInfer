@@ -9,6 +9,8 @@
 #include <utility>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "tokenizer/tokenizer.h"
 
 namespace ccinfer {
@@ -50,8 +52,13 @@ private:
 
     void build_byte_maps();
 
+    Result<void> parse_vocab(const nlohmann::json& model);
+    Result<void> parse_merges(const nlohmann::json& model);
+    void parse_added_tokens(const nlohmann::json& j);
+    void resolve_special_tokens();
+
     Result<std::vector<std::string>> byte_encode_segment(std::string_view text) const;
-    Result<std::vector<std::string>> apply_bpe(std::vector<std::string> symbols) const;
+    std::vector<std::string> apply_bpe(std::vector<std::string> symbols) const;
     Result<std::vector<int32_t>> encode_normal_segment(std::string_view text) const;
 
     bool try_match_special(std::string_view text, size_t pos, std::string* matched_token,
