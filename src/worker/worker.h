@@ -75,9 +75,7 @@ private:
     void reset_resources();
 
     ResolvedBatch resolve_batch(const ScheduledBatch& batch) const;
-
-    template <typename ChanPtr, typename T>
-    void resolve(ChanPtr& chan_ptr, Result<T> result);
+    void resolve(const std::shared_ptr<BatchChannel>& channel, Result<BatchResult> result);
 
     asio::io_context& io_;
 
@@ -98,17 +96,5 @@ private:
     std::unique_ptr<Model> model_;
     std::unique_ptr<BlockStorage> block_storage_;
 };
-
-template <typename ChanPtr, typename T>
-void Worker::resolve(ChanPtr& chan_ptr, Result<T> result) {
-    asio::post(io_, [chan_ptr, result = std::move(result)]() mutable {
-        chan_ptr->async_send(
-            boost::system::error_code{}, std::move(result), [](boost::system::error_code ec) {
-                if (ec) {
-                    ccLog::warn("worker completion channel failed ec={}", ec.value());
-                }
-            });
-    });
-}
 
 }  // namespace ccinfer

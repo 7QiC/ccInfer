@@ -192,6 +192,17 @@ Result<BatchFuture> Worker::enqueue_execute_batch(ScheduledBatch batch) {
     return channel;
 }
 
+void Worker::resolve(const std::shared_ptr<BatchChannel>& channel, Result<BatchResult> result) {
+    asio::post(io_, [channel, result = std::move(result)]() mutable {
+        channel->async_send(
+            boost::system::error_code{}, std::move(result), [](boost::system::error_code ec) {
+                if (ec) {
+                    ccLog::warn("worker completion channel failed ec={}", ec.value());
+                }
+            });
+    });
+}
+
 void Worker::worker_loop() {
     while (true) {
         std::deque<PendingBatch> local_queue;
@@ -230,11 +241,12 @@ Worker::ResolvedBatch Worker::resolve_batch(const ScheduledBatch& batch) const {
             [&](auto& work) {
                 if constexpr (std::is_same_v<std::decay_t<decltype(work)>, DecodeOneToken>) {
                     if (stale || !work.late_bind) return;
+                    // latest_tokens_ persists across batches and preemption:
+                    // the token may come from any earlier completed batch,
+                    // not necessarily the immediately preceding one.
                     auto token = latest_tokens_.find(seq_id);
-                    if (token == latest_tokens_.end()) {
-                        stale = true;
-                        return;
-                    }
+                    assert(token != latest_tokens_.end() &&
+                           "late-bound token must have been produced by an earlier batch");
                     work.input_token = token->second;
                     work.late_bind = false;
                 }
@@ -256,10 +268,7 @@ Worker::ResolvedBatch Worker::resolve_batch(const ScheduledBatch& batch) const {
 }
 
 void Worker::process_batch(PendingBatch pending) {
-    if (!initialized_ || !backend_ || !block_storage_) {
-        resolve(pending.chan, Result<BatchResult>(std::unexpected(ErrorCode::ServerShuttingDown)));
-        return;
-    }
+    assert(initialized_ && backend_ && block_storage_);
     assert(!pending.batch.items.empty());
     auto resolved = resolve_batch(pending.batch);
     if (resolved.batch.items.empty()) {
