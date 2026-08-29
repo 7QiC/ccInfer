@@ -1,8 +1,8 @@
 #include "http/http_server.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <optional>
@@ -551,6 +551,12 @@ Result<ParsedChatRequest> parse_chat_request(const std::string& body, Tokenizer&
     if (parsed.sampling.max_tokens < 0 || parsed.sampling.temperature < 0.0f ||
         parsed.sampling.top_p <= 0.0f || parsed.sampling.top_p > 1.0f ||
         parsed.sampling.top_k < 0) {
+        return std::unexpected(ErrorCode::InvalidArgument);
+    }
+    // The current engine only implements greedy sampling; reject unsupported
+    // sampling configurations at the HTTP boundary instead of failing mid-stream.
+    if (parsed.sampling.temperature > 0.0f || parsed.sampling.top_p < 1.0f ||
+        parsed.sampling.top_k > 0) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
     parsed.sampling.eos_token_id = tokenizer.eos_token_id();
