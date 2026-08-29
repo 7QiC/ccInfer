@@ -32,7 +32,6 @@ public:
         BlockTable block_table;
         int prefix_hit_blocks = 0;
         uint64_t parent_hash = 0;
-        std::vector<int32_t> pending_tokens;
     };
 
     PrefixLookup lookup_prefix_cache(const std::vector<int32_t>& tokens,

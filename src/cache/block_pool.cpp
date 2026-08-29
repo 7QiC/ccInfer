@@ -91,7 +91,6 @@ BlockPool::PrefixLookup BlockPool::lookup_prefix_cache(const std::vector<int32_t
     assert(!tokens.empty() && block_size_ > 0);
     PrefixLookup result;
     const auto hashes = PrefixCache::chain_hashes(tokens, block_size_, namespace_salt);
-    std::size_t hit_tokens = 0;
     for (std::size_t i = 0; i < hashes.size(); ++i) {
         auto id = prefix_cache_.lookup(hashes[i]);
         if (!id) break;
@@ -109,11 +108,8 @@ BlockPool::PrefixLookup BlockPool::lookup_prefix_cache(const std::vector<int32_t
         result.block_table.push_back(*id);
         result.parent_hash = hashes[i];
         ++result.prefix_hit_blocks;
-        hit_tokens += static_cast<std::size_t>(block_size_);
     }
     result.block_table.set_shared_count(result.prefix_hit_blocks);
-    result.pending_tokens.assign(tokens.begin() + static_cast<std::ptrdiff_t>(hit_tokens),
-                                 tokens.end());
     return result;
 }
 

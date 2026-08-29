@@ -330,7 +330,6 @@ asio::awaitable<bool> Scheduler::admit_one_waiting(BatchBuildContext& ctx) {
     scheduling.block_table = std::move(lookup.block_table);
     scheduling.executed_frontier = lookup.prefix_hit_blocks * block_pool_.block_size();
     scheduling.parent_hash = lookup.parent_hash;
-    scheduling.pending_hash_tokens = std::move(lookup.pending_tokens);
     if (!state.generated_tokens.empty()) {
         scheduling.cursor.generated_tokens_in_prompt = generated_token_count(state) - 1;
     }

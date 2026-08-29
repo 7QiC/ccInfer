@@ -268,6 +268,39 @@ TEST_F(SchedulerTest, FullBlockIsNotPrefixVisibleBeforeRetirement) {
     SchedulerTestAccess::block_pool(*scheduler_).release_blocks(chunk.block_table);
 }
 
+TEST_F(SchedulerTest, PartialPrefixHitStartsPrefillAfterCachedBlocks) {
+    SchedulerTestAccess::accepting(*scheduler_).store(true);
+    auto& pool = SchedulerTestAccess::block_pool(*scheduler_);
+
+    std::vector<int32_t> prompt(20, 7);
+    auto seeded = pool.allocate_blocks(1);
+    ASSERT_TRUE(seeded);
+    const int32_t seeded_block = (*seeded)[0];
+    std::vector<int32_t> full_block(prompt.begin(), prompt.begin() + kKVBlockSize);
+    pool.publish_full_block(0, full_block, seeded_block);
+    pool.release_blocks(*seeded);
+
+    SchedulerRequest request;
+    request.request_id = "partial-prefix";
+    request.prompt_tokens = prompt;
+    request.sampling.max_tokens = 4;
+    SchedulerTestAccess::submit_on_scheduler_thread(*scheduler_, std::move(request));
+
+    auto batch = schedule_step();
+    ASSERT_EQ(batch.items.size(), 1u);
+    const auto& chunk = std::get<PrefillChunk>(batch.items.front());
+    EXPECT_EQ(chunk.prompt_span.start, kKVBlockSize);
+    EXPECT_EQ(chunk.prompt_span.length, 4);
+    EXPECT_EQ(chunk.expected_context_len, kKVBlockSize);
+
+    auto& running = SchedulerTestAccess::running(*scheduler_);
+    ASSERT_EQ(running.size(), 1u);
+    auto& scheduling = *running.front()->scheduling;
+    EXPECT_EQ(scheduling.block_table.size(), 2);
+    EXPECT_EQ(scheduling.executed_frontier, kKVBlockSize);
+    EXPECT_TRUE(scheduling.pending_hash_tokens.empty());
+}
+
 TEST_F(SchedulerTest, AdmissionKeepsOneCanonicalRequestState) {
     SchedulerTestAccess::accepting(*scheduler_).store(true);
     SchedulerRequest request;
