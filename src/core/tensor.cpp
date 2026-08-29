@@ -98,6 +98,7 @@ Tensor Tensor::from_buffer(std::shared_ptr<Buffer> buffer, void* data, ccop::DTy
 
 Tensor Tensor::view(std::initializer_list<std::int64_t> shape) {
     assert(buffer_ && "Tensor has no owner");
+    assert(is_contiguous() && "view requires a contiguous tensor");
     const ccop::Tensor view(data(), dtype(), device(), shape);
     assert(view.numel() == numel() && "view shape must preserve numel");
     assert(view.nbytes() <= buffer_->bytes());
