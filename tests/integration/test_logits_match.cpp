@@ -14,8 +14,8 @@
 
 #include "backend/backend.h"
 #include "cache/block.h"
-#include "cache/kv_cache_manager.h"
-#include "cache/kv_cache_storage.h"
+#include "cache/block_pool.h"
+#include "cache/block_storage.h"
 #include "model/config.h"
 #include "model/loader.h"
 #include "model/registry.h"
@@ -54,12 +54,13 @@ std::string read_file(const std::string& path) {
 //
 // Qwen3Model::forward() requires a fully populated ForwardInput including
 // paged-attention metadata.  For a single prefill with T tokens we:
-//   1. Create a KVCacheStorage with enough blocks for T tokens
+//   1. Create a BlockStorage with enough blocks for T tokens
 //   2. Allocate those blocks and fill slot_mapping / block_table
 //   3. Let the model embed token_ids internally (no manual embed step)
 
 struct ForwardFixture {
-    std::unique_ptr<KVCacheManager> kv_mgr;
+    std::unique_ptr<BlockStorage> storage;
+    std::unique_ptr<BlockPool> block_pool;
     std::shared_ptr<Buffer> token_ids;
     std::shared_ptr<Buffer> positions;
     std::shared_ptr<Buffer> slot_mapping;
@@ -69,34 +70,29 @@ struct ForwardFixture {
     int max_blocks_per_req = 0;
 };
 
-// Returns a fixture whose kv_mgr is nullptr on any failure.
+// Returns a fixture with empty storage/pool on any failure.
 ForwardFixture prepare_single_prefill(Backend& backend, const ModelConfig& config,
                                       const std::vector<int32_t>& token_ids_host) {
     ForwardFixture fixture;
-    fixture.kv_mgr = std::make_unique<KVCacheManager>();
 
     const int T = static_cast<int>(token_ids_host.size());
     const int max_blocks = std::max(1, (T + kKVBlockSize - 1) / kKVBlockSize);
 
     auto storage =
-        KVCacheStorage::create(backend, config.n_layers_, max_blocks, kKVBlockSize,
-                               config.n_kv_heads_, config.head_dim_, ccop::DType::kBFloat16);
+        BlockStorage::create(backend, config.n_layers_, max_blocks, kKVBlockSize,
+                             config.n_kv_heads_, config.head_dim_, ccop::DType::kBFloat16);
     if (!storage) {
-        fprintf(stderr, "prepare_single_prefill: KVCacheStorage::create failed\n");
-        fixture.kv_mgr.reset();
+        fprintf(stderr, "prepare_single_prefill: BlockStorage::create failed\n");
         return fixture;
     }
-    auto init = fixture.kv_mgr->init(std::move(*storage), max_blocks, kKVBlockSize);
-    if (!init) {
-        fprintf(stderr, "prepare_single_prefill: KVCacheManager::init failed\n");
-        fixture.kv_mgr.reset();
-        return fixture;
-    }
+    fixture.storage = std::move(*storage);
+    fixture.block_pool = std::make_unique<BlockPool>(max_blocks, kKVBlockSize);
 
-    auto blocks = fixture.kv_mgr->allocate_blocks(max_blocks);
+    auto blocks = fixture.block_pool->allocate_blocks(max_blocks);
     if (!blocks) {
         fprintf(stderr, "prepare_single_prefill: allocate_blocks failed\n");
-        fixture.kv_mgr.reset();
+        fixture.storage.reset();
+        fixture.block_pool.reset();
         return fixture;
     }
     fixture.max_blocks_per_req = blocks->size();
@@ -146,7 +142,7 @@ std::vector<float> run_prefill_logits(Backend& backend, const ModelConfig& confi
     }
 
     auto fixture = prepare_single_prefill(backend, config, token_ids);
-    if (!fixture.kv_mgr) {
+    if (!fixture.storage || !fixture.block_pool) {
         fprintf(stderr, "run_prefill_logits: prepare_single_prefill failed\n");
         return {};
     }
@@ -161,7 +157,7 @@ std::vector<float> run_prefill_logits(Backend& backend, const ModelConfig& confi
     fwd_in.positions = Tensor(fixture.positions, ccop::DType::kInt32, {T});
     fwd_in.max_position_id_ = T - 1;
     fwd_in.mode_ = ForwardMode::Prefill;
-    fwd_in.kv_mgr_ = fixture.kv_mgr.get();
+    fwd_in.block_storage_ = fixture.storage.get();
     fwd_in.slot_mapping = Tensor(fixture.slot_mapping, ccop::DType::kInt32, {T});
     fwd_in.block_table =
         Tensor(fixture.block_table, ccop::DType::kInt32, {1, fixture.max_blocks_per_req});
@@ -190,7 +186,8 @@ std::vector<float> run_prefill_logits(Backend& backend, const ModelConfig& confi
 // Greedy generation: prefill + decode loop
 
 struct GenFixture {
-    std::unique_ptr<KVCacheManager> kv_mgr;
+    std::unique_ptr<BlockStorage> storage;
+    std::unique_ptr<BlockPool> block_pool;
     std::shared_ptr<Buffer> token_ids;        // [1] — single token per decode step
     std::shared_ptr<Buffer> positions;        // [1]
     std::shared_ptr<Buffer> slot_mapping;     // [1]
@@ -204,30 +201,27 @@ struct GenFixture {
 };
 
 // Creates a GenFixture with enough blocks for prompt + max_new_tokens.
-// Returns a fixture with kv_mgr == nullptr on failure.
+// Returns an empty fixture on failure.
 GenFixture prepare_generation(Backend& backend, const ModelConfig& config,
                               const std::vector<int32_t>& prompt_tokens, int max_new_tokens) {
     GenFixture f;
-    f.kv_mgr = std::make_unique<KVCacheManager>();
 
     const int prompt_len = static_cast<int>(prompt_tokens.size());
     const int total_tokens = prompt_len + max_new_tokens;
     const int total_blocks = std::max(1, (total_tokens + kKVBlockSize - 1) / kKVBlockSize);
 
     auto storage =
-        KVCacheStorage::create(backend, config.n_layers_, total_blocks, kKVBlockSize,
-                               config.n_kv_heads_, config.head_dim_, ccop::DType::kBFloat16);
+        BlockStorage::create(backend, config.n_layers_, total_blocks, kKVBlockSize,
+                             config.n_kv_heads_, config.head_dim_, ccop::DType::kBFloat16);
     if (!storage) {
-        f.kv_mgr.reset();
         return f;
     }
-    if (!f.kv_mgr->init(std::move(*storage), total_blocks, kKVBlockSize)) {
-        f.kv_mgr.reset();
-        return f;
-    }
-    auto blocks = f.kv_mgr->allocate_blocks(total_blocks);
+    f.storage = std::move(*storage);
+    f.block_pool = std::make_unique<BlockPool>(total_blocks, kKVBlockSize);
+    auto blocks = f.block_pool->allocate_blocks(total_blocks);
     if (!blocks) {
-        f.kv_mgr.reset();
+        f.storage.reset();
+        f.block_pool.reset();
         return f;
     }
     f.max_blocks_per_req = blocks->size();
@@ -274,7 +268,7 @@ std::vector<float> run_decode_step(Backend& backend, const ModelConfig& config,
     fwd_in.positions = Tensor(f.positions, ccop::DType::kInt32, {1});
     fwd_in.max_position_id_ = pos;
     fwd_in.mode_ = ForwardMode::Decode;
-    fwd_in.kv_mgr_ = f.kv_mgr.get();
+    fwd_in.block_storage_ = f.storage.get();
     fwd_in.slot_mapping = Tensor(f.slot_mapping, ccop::DType::kInt32, {1});
     fwd_in.block_table = Tensor(f.block_table, ccop::DType::kInt32, {1, f.max_blocks_per_req});
     fwd_in.query_start_loc = Tensor(f.query_start_loc, ccop::DType::kInt32, {2});
@@ -324,7 +318,7 @@ std::vector<int32_t> run_greedy_generation(Backend& backend, const ModelConfig& 
     }
 
     auto f = prepare_generation(backend, config, prompt_tokens, max_new_tokens);
-    if (!f.kv_mgr) {
+    if (!f.storage || !f.block_pool) {
         fprintf(stderr, "run_greedy_generation: prepare_generation failed\n");
         return {};
     }
@@ -367,7 +361,7 @@ std::vector<int32_t> run_greedy_generation(Backend& backend, const ModelConfig& 
         fwd_in.positions = Tensor(pf_pos, ccop::DType::kInt32, {prompt_len});
         fwd_in.max_position_id_ = prompt_len - 1;
         fwd_in.mode_ = ForwardMode::Prefill;
-        fwd_in.kv_mgr_ = f.kv_mgr.get();
+        fwd_in.block_storage_ = f.storage.get();
         fwd_in.slot_mapping = Tensor(pf_slot, ccop::DType::kInt32, {prompt_len});
         fwd_in.block_table = Tensor(f.block_table, ccop::DType::kInt32, {1, f.max_blocks_per_req});
         fwd_in.query_start_loc = Tensor(pf_qsl, ccop::DType::kInt32, {2});

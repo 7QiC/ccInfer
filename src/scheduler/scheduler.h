@@ -6,7 +6,6 @@
 #include <future>
 #include <list>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -16,6 +15,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
 
+#include "cache/block_pool.h"
 #include "common/types.h"
 #include "config/config.h"
 #include "executor/executor.h"
@@ -32,21 +32,25 @@ struct SequenceReservation {
     int execution_leases = 0;
     int reserved_prompt_tokens = 0;
     int reserved_generation_tokens = 0;
+    int reserved_kv_tokens = 0;
 };
 
-// Scheduler's committed logical frontier. The physical execution frontier is
-// owned by Worker::SequenceState and must not be mirrored here.
+// Scheduler-side phase cursor. Physical execution is coordinated by Executor;
+// Worker does not own a logical sequence state.
 struct SequenceScheduleCursor {
     GenerationPhase phase = GenerationPhase::Prefill;
     int prefill_cursor = 0;
     int generated_tokens_in_prompt = 0;
-    bool wait_pending = false;
 };
 
 struct SequenceSchedulingState {
     SequenceId seq_id = 0;
     SequenceReservation reservation;
     SequenceScheduleCursor cursor;
+    BlockTable block_table;
+    int executed_frontier = 0;
+    uint64_t parent_hash = 0;
+    std::vector<int32_t> pending_hash_tokens;
 };
 
 // One canonical request object shared by waiting and running scheduling
@@ -57,15 +61,13 @@ struct RequestState {
     std::vector<int32_t> initial_prompt_tokens;
     std::vector<int32_t> prompt_tokens;
     RequestStatus status = RequestStatus::Active;
-    bool sink_disconnected = false;
-
     std::vector<int32_t> generated_tokens;
     SamplingParams sampling;
     int max_context_len = 2048;
 
     TokenSink sink;
-    // Materialized only after admission. This is Scheduler-owned scheduling
-    // state; Worker owns the physical execution frontier separately.
+    // Materialized only after admission. All logical sequence state remains in
+    // Scheduler; Worker receives only per-batch physical execution data.
     std::optional<SequenceSchedulingState> scheduling;
 };
 
@@ -82,7 +84,7 @@ public:
     Scheduler(const Scheduler&) = delete;
     Scheduler& operator=(const Scheduler&) = delete;
 
-    // Thread-safe public boundary.
+    // Public methods post state changes to the scheduler io_context.
     void submit(SchedulerRequest req);
     void cancel(std::string request_id);
     void start();
@@ -118,7 +120,6 @@ private:
     asio::awaitable<bool> evict_one_skipped();
     bool has_schedulable_work() const;
     bool has_waiting_work() const noexcept { return !waiting_.empty(); }
-    bool has_skip_work() const noexcept { return !skip_.empty(); }
 
     void build_running_batch(BatchBuildContext& ctx);
     bool build_state_work(BatchBuildContext& ctx, RequestState& state);
@@ -127,15 +128,17 @@ private:
     static bool is_prefill_phase(GenerationPhase phase) noexcept;
     static bool is_decode_phase(GenerationPhase phase) noexcept;
     static void prepare_for_wait(RequestState& state);
+    void release_scheduling_blocks(RequestState& state);
+    asio::awaitable<void> release_and_move_to_wait(const RequestPtr& request);
 
     asio::awaitable<void> update_from_output(const ScheduledBatch& batch,
                                              const BatchResult& result);
+    void retire_work(const WorkItem& item, const WorkItemResult& result);
     asio::awaitable<void> handle_batch_error(const ScheduledBatch& batch, ErrorCode err);
     asio::awaitable<void> cleanup_terminal_requests();
     asio::awaitable<void> cleanup_terminal_queue(std::deque<RequestPtr>& queue);
     asio::awaitable<void> fail_batch(const ScheduledBatch& batch, ErrorCode err);
     asio::awaitable<void> preempt_one_for_admission();
-    asio::awaitable<void> release_and_move_to_wait(const RequestPtr& request);
     void fail_all_waiting(ErrorCode err);
     asio::awaitable<void> cleanup_all_running(ErrorCode shutdown_err);
     asio::awaitable<void> wait_for_work();
@@ -165,9 +168,11 @@ private:
 
     std::atomic<bool> accepting_{false};
     uint64_t next_batch_id_{1};
+    uint64_t next_seq_id_{1};
+    BlockPool block_pool_;
 
-    std::mutex shutdown_mutex_;
-    std::unique_ptr<std::promise<void>> shutdown_promise_;
+    std::atomic<bool> shutdown_requested_{false};
+    std::promise<void> shutdown_promise_;
     std::shared_future<void> shutdown_future_;
     bool shutdown_done_sent_{false};
 };

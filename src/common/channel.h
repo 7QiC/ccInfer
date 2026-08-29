@@ -12,10 +12,7 @@ namespace ccinfer {
 namespace asio = boost::asio;
 
 using BatchChannel =
-    asio::experimental::channel<void(boost::system::error_code, Result<WorkerBatchResult>)>;
-using AdmitSequenceChannel =
-    asio::experimental::channel<void(boost::system::error_code, Result<AdmitSequenceResult>)>;
-using VoidChannel = asio::experimental::channel<void(boost::system::error_code, Result<void>)>;
+    asio::experimental::channel<void(boost::system::error_code, Result<BatchResult>)>;
 
 using BatchFuture = std::shared_ptr<BatchChannel>;
 

@@ -24,17 +24,10 @@ public:
     virtual Result<void> init(const Config& config) = 0;
     virtual void shutdown() = 0;
 
-    virtual asio::awaitable<Result<AdmitSequenceResult>> admit_sequence(
-        std::vector<int32_t> prompt_tokens, int max_context_len,
-        SequenceInitialState initial_state = {}) = 0;
-    virtual asio::awaitable<Result<void>> release_sequence(SequenceId seq_id) = 0;
-    // Dispatch is non-blocking: the returned channel is the completion future
-    // for this batch. EngineCore owns the in-flight bookkeeping and decides
-    // when to await the future.
+    // Dispatch is non-blocking. Implementations execute queued batches in FIFO
+    // order; the returned channel is the completion future for this batch.
     virtual Result<BatchFuture> execute_batch(ScheduledBatch batch) = 0;
     virtual asio::awaitable<Result<BatchResult>> collect_batch(BatchFuture future) = 0;
-
-    virtual Capacity capacity() const = 0;
 
     static std::unique_ptr<Executor> create(boost::asio::io_context& io);
 };

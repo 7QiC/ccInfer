@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "backend/backend.h"
-#include "cache/kv_cache_manager.h"
+#include "cache/block_storage.h"
 #include "common/error_code.h"
 #include "common/physical_batch.h"
 #include "core/traits.h"
@@ -22,7 +22,8 @@ class ModelRunner {
 public:
     template <typename Traits>
     static Result<std::vector<WorkItemResult>> inference(Model& model, const PhysicalBatch& batch,
-                                                         Backend& backend, KVCacheManager& kv_mgr,
+                                                         Backend& backend,
+                                                         BlockStorage& block_storage,
                                                          const SamplingParams& sampling = {}) {
         static_assert(runner_traits_valid_v<Traits>, "RunnerTraits has unknown dtype tags");
 
@@ -41,7 +42,6 @@ public:
                batch.block_table.valid() && batch.query_start_loc.valid() &&
                batch.context_lens.valid() && batch.logits_indices.valid());
         assert(T > 0 && B > 0 && batch.max_blocks_per_req > 0);
-        assert(batch.item_indices.size() == static_cast<std::size_t>(B));
         assert(batch.item_seq_ids.size() == static_cast<std::size_t>(B));
         assert(batch.item_kinds.size() == static_cast<std::size_t>(B));
         assert(batch.mode == ForwardMode::Prefill || batch.mode == ForwardMode::Decode ||
@@ -71,7 +71,7 @@ public:
         input.positions = batch.positions;
         input.num_tokens_ = T;
         input.max_position_id_ = batch.max_position_id;
-        input.kv_mgr_ = &kv_mgr;
+        input.block_storage_ = &block_storage;
         input.slot_mapping = batch.slot_mapping;
         input.block_table = batch.block_table;
         input.query_start_loc = batch.query_start_loc;
@@ -116,7 +116,7 @@ public:
         results.reserve(static_cast<std::size_t>(B));
         for (int i = 0; i < B; ++i) {
             WorkItemResult wr;
-            wr.item_index = static_cast<int>(batch.item_indices[i]);
+            wr.item_index = i;
             wr.seq_id = batch.item_seq_ids[i];
             wr.kind = batch.item_kinds[i];
             const bool sampled = batch.sample_flags[i];

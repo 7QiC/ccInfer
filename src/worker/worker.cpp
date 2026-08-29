@@ -2,41 +2,175 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <initializer_list>
 #include <iterator>
-#include <limits>
-#include <mutex>
-#include <stdexcept>
 #include <type_traits>
-#include <variant>
+#include <utility>
+
+#include <boost/asio/post.hpp>
 
 #include "backend/backend.h"
-#include "cache/kv_cache_manager.h"
-#include "cache/kv_cache_storage.h"
-#include "common/error_code.h"
+#include "common/asio_error.h"
 #include "core/traits.h"
-#include "facade/log.h"
 #include "model/loader.h"
 #include "model/registry.h"
-#include "worker/batch_translator.h"
 #include "worker/model_runner.h"
 
 namespace ccinfer {
+Worker::BatchTranslator::BatchTranslator(Backend& backend, int block_size)
+    : backend_(backend), block_size_(block_size) {}
+
+Result<PhysicalBatch> Worker::BatchTranslator::translate(const ScheduledBatch& batch) const {
+    assert(block_size_ > 0);
+    assert(!batch.items.empty());
+
+    const std::size_t count = batch.items.size();
+    int max_blocks = 0;
+    int total_tokens = 0;
+    for (const auto& item : batch.items) {
+        const int context = std::visit(
+            [](const auto& work) { return work.expected_context_len.value_or(0); }, item);
+        const BlockTable* table =
+            std::visit([](const auto& work) { return &work.block_table; }, item);
+        const bool writes =
+            std::holds_alternative<PrefillChunk>(item) || std::get<DecodeOneToken>(item).write_kv;
+        if (const auto* decode = std::get_if<DecodeOneToken>(&item); decode)
+            assert(!decode->late_bind);
+        assert(!table->empty());
+        assert(context >= 0);
+        assert(context + (writes ? work_token_count(item) : 0) <=
+               table->token_capacity(block_size_));
+        max_blocks = std::max(max_blocks, table->size());
+        total_tokens += work_token_count(item);
+    }
+
+    std::vector<int32_t> token_ids(static_cast<std::size_t>(total_tokens));
+    std::vector<int32_t> positions(static_cast<std::size_t>(total_tokens));
+    std::vector<int32_t> slots(static_cast<std::size_t>(total_tokens));
+    std::vector<int32_t> block_table(count * static_cast<std::size_t>(max_blocks), -1);
+    std::vector<int32_t> query_start(count + 1);
+    std::vector<int32_t> context_lens(count);
+    std::vector<int32_t> logits_indices(count, -1);
+    std::vector<int32_t> item_counts(count);
+    std::vector<SequenceId> item_seq_ids(count);
+    std::vector<WorkKind> item_kinds(count);
+    std::vector<bool> sample_flags(count);
+    std::vector<int32_t> logits_rows;
+    int offset = 0;
+    int num_logits = 0;
+    int max_position = 0;
+    bool has_prefill = false;
+    bool has_decode = false;
+
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto& item = batch.items[i];
+        const int context = std::visit(
+            [](const auto& work) { return work.expected_context_len.value_or(0); }, item);
+        const auto& table = *std::visit([](const auto& work) { return &work.block_table; }, item);
+        const bool prefill = std::holds_alternative<PrefillChunk>(item);
+        const bool writes = prefill || std::get<DecodeOneToken>(item).write_kv;
+        const int tokens = work_token_count(item);
+        item_counts[i] = tokens;
+        item_seq_ids[i] = work_sequence_id(item);
+        item_kinds[i] = work_kind(item);
+        has_prefill |= prefill;
+        has_decode |= !prefill;
+        query_start[i] = offset;
+        for (int b = 0; b < table.size(); ++b)
+            block_table[i * static_cast<std::size_t>(max_blocks) + static_cast<std::size_t>(b)] =
+                table[b];
+
+        std::visit(
+            [&](const auto& work) {
+                using T = std::decay_t<decltype(work)>;
+                if constexpr (std::is_same_v<T, PrefillChunk>) {
+                    for (int t = 0; t < tokens; ++t) {
+                        const int pos = context + t;
+                        token_ids[static_cast<std::size_t>(offset + t)] = work.tokens[t];
+                        positions[static_cast<std::size_t>(offset + t)] = pos;
+                        slots[static_cast<std::size_t>(offset + t)] =
+                            table[pos / block_size_] * block_size_ + pos % block_size_;
+                    }
+                    sample_flags[i] = work.needs_sample;
+                } else {
+                    const int pos = writes ? context : std::max(0, context - 1);
+                    token_ids[static_cast<std::size_t>(offset)] = work.input_token;
+                    positions[static_cast<std::size_t>(offset)] = pos;
+                    slots[static_cast<std::size_t>(offset)] =
+                        writes ? table[pos / block_size_] * block_size_ + pos % block_size_ : -1;
+                    sample_flags[i] = true;
+                }
+            },
+            item);
+        context_lens[i] = context + (writes ? tokens : 0);
+        max_position =
+            std::max(max_position, positions[static_cast<std::size_t>(offset + tokens - 1)]);
+        if (sample_flags[i]) {
+            logits_indices[i] = num_logits++;
+            logits_rows.push_back(offset + tokens - 1);
+        }
+        offset += tokens;
+    }
+    query_start[count] = offset;
+
+    PhysicalBatch result;
+    result.num_tokens = total_tokens;
+    result.batch_size = static_cast<int>(count);
+    result.max_blocks_per_req = max_blocks;
+    result.mode = has_prefill && has_decode ? ForwardMode::Mixed
+                  : has_prefill             ? ForwardMode::Prefill
+                                            : ForwardMode::Decode;
+    result.item_seq_ids = std::move(item_seq_ids);
+    result.item_kinds = std::move(item_kinds);
+    result.item_token_counts = std::move(item_counts);
+    result.sample_flags = std::move(sample_flags);
+    result.logits_rows_host = std::move(logits_rows);
+    result.num_logits = num_logits;
+    result.max_position_id = max_position;
+
+    auto upload = [&](const std::vector<int32_t>& values,
+                      std::initializer_list<std::int64_t> shape) -> Result<Tensor> {
+        return Tensor::from_host(backend_, values.data(), ccop::DType::kInt32, shape);
+    };
+    auto token_r = upload(token_ids, {total_tokens});
+    if (!token_r) return std::unexpected(token_r.error());
+    result.token_ids = std::move(*token_r);
+    auto position_r = upload(positions, {total_tokens});
+    if (!position_r) return std::unexpected(position_r.error());
+    result.positions = std::move(*position_r);
+    auto slot_r = upload(slots, {total_tokens});
+    if (!slot_r) return std::unexpected(slot_r.error());
+    result.slot_mapping = std::move(*slot_r);
+    auto table_r = upload(block_table, {static_cast<std::int64_t>(count), max_blocks});
+    if (!table_r) return std::unexpected(table_r.error());
+    result.block_table = std::move(*table_r);
+    auto query_r = upload(query_start, {static_cast<std::int64_t>(count + 1)});
+    if (!query_r) return std::unexpected(query_r.error());
+    result.query_start_loc = std::move(*query_r);
+    auto context_r = upload(context_lens, {static_cast<std::int64_t>(count)});
+    if (!context_r) return std::unexpected(context_r.error());
+    result.context_lens = std::move(*context_r);
+    auto logits_r = upload(logits_indices, {static_cast<std::int64_t>(count)});
+    if (!logits_r) return std::unexpected(logits_r.error());
+    result.logits_indices = std::move(*logits_r);
+    auto sync_r = backend_.synchronize();
+    if (!sync_r) return std::unexpected(sync_r.error());
+    return result;
+}
 
 Worker::Worker(asio::io_context& io) : io_(io) {}
 
 Worker::~Worker() { shutdown(); }
 
 Result<void> Worker::init(const Config& config) {
-    if (running_.load() || worker_thread_.joinable()) {
+    if (running_.load() || worker_thread_.joinable())
         return std::unexpected(ErrorCode::InvalidArgument);
-    }
-
-    auto r = init_resources(config);
-    if (!r) {
+    auto result = init_resources(config);
+    if (!result) {
         reset_resources();
-        return r;
+        return result;
     }
-
     running_.store(true);
     worker_thread_ = std::thread(&Worker::worker_loop, this);
     return {};
@@ -48,118 +182,8 @@ void Worker::shutdown() {
     if (worker_thread_.joinable()) worker_thread_.join();
 }
 
-Result<AdmitSequenceResult> Worker::admit_sequence_resources(
-    SequenceId seq_id, const std::vector<int32_t>& prompt_tokens, int max_context_len,
-    SequenceInitialState initial_state) {
-    std::lock_guard lock(resource_mutex_);
-    if (!initialized_ || !backend_ || !kv_mgr_) {
-        return std::unexpected(ErrorCode::ServerShuttingDown);
-    }
-    if (seq_id == 0 || prompt_tokens.empty() || max_context_len <= 0) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-    if (initial_state.last_token < -1 || initial_state.tokens_generated < 0 ||
-        initial_state.max_tokens <= 0) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-    if (prompt_tokens.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-    if (static_cast<int64_t>(max_context_len) < static_cast<int64_t>(prompt_tokens.size())) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-    if (static_cast<int64_t>(max_context_len) >
-        static_cast<int64_t>(max_blocks_.load()) * engine_config_.block_size) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-    if (model_ && max_context_len > model_->config().max_seq_len_) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-    const int vocab_size = model_ ? model_->config().vocab_size_ : 0;
-    for (auto tok : prompt_tokens) {
-        if (tok < 0 || (vocab_size > 0 && tok >= vocab_size))
-            return std::unexpected(ErrorCode::InvalidArgument);
-    }
-    if (active_sequences_.load() >= engine_config_.max_sequences) {
-        return std::unexpected(ErrorCode::MaxSequencesReached);
-    }
-    if (request_states_.count(seq_id) > 0) {
-        return std::unexpected(ErrorCode::InvalidArgument);
-    }
-
-    auto pr = kv_mgr_->lookup_prefix_cache(prompt_tokens, /*namespace_salt=*/0);
-
-    int64_t prefix64 = static_cast<int64_t>(pr.prefix_hit_blocks) * kv_mgr_->block_size();
-    int prefix_tokens =
-        static_cast<int>(std::min(prefix64, static_cast<int64_t>(prompt_tokens.size())));
-
-    SequenceState state;
-    state.seq_id = seq_id;
-    state.prompt_len = static_cast<int>(prompt_tokens.size());
-    state.max_context_len = max_context_len;
-    state.kv_written = prefix_tokens;
-    state.prompt_processed = prefix_tokens;
-    state.block_table = std::move(pr.block_table);
-    state.parent_hash = pr.parent_hash;
-    state.pending_tokens = std::move(pr.pending_tokens);
-    state.last_token = initial_state.last_token;
-    state.tokens_generated = initial_state.tokens_generated;
-    state.max_tokens = initial_state.max_tokens;
-    request_states_[seq_id] = std::move(state);
-    active_sequences_++;
-    sync_capacity();
-    return AdmitSequenceResult{.seq_id = seq_id, .prompt_processed = prefix_tokens};
-}
-
-Result<void> Worker::release_sequence_resources(SequenceId seq_id) {
-    std::lock_guard lock(resource_mutex_);
-    if (!initialized_) return {};
-    auto it = request_states_.find(seq_id);
-    if (it == request_states_.end()) return {};
-    if (!it->second.block_table.empty()) {
-        auto r = kv_mgr_->release_blocks(it->second.block_table);
-        if (!r) return r;
-    }
-    active_sequences_--;
-    request_states_.erase(it);
-    sync_capacity();
-    return {};
-}
-
-namespace {
-
-template <typename Channel>
-std::shared_ptr<Channel> make_result_channel(boost::asio::io_context& io) {
-    return std::make_shared<Channel>(io.get_executor(), 1);
-}
-
-}  // namespace
-
-Result<std::shared_ptr<AdmitSequenceChannel>> Worker::enqueue_admit_sequence(
-    SequenceId seq_id, std::vector<int32_t> prompt_tokens, int max_context_len,
-    SequenceInitialState initial_state) {
-    auto channel = make_result_channel<AdmitSequenceChannel>(io_);
-    std::unique_lock lock(queue_mutex_);
-    if (!running_) return std::unexpected(ErrorCode::ServerShuttingDown);
-    queue_.push_back(
-        AdmitCommand{seq_id, std::move(prompt_tokens), max_context_len, initial_state, channel});
-    lock.unlock();
-    cv_.notify_one();
-    return channel;
-}
-
-Result<std::shared_ptr<VoidChannel>> Worker::enqueue_release_sequence(SequenceId seq_id) {
-    auto channel = make_result_channel<VoidChannel>(io_);
-    std::unique_lock lock(queue_mutex_);
-    if (!running_) return std::unexpected(ErrorCode::ServerShuttingDown);
-    queue_.push_back(ReleaseCommand{seq_id, channel});
-    lock.unlock();
-    cv_.notify_one();
-    return channel;
-}
-
 Result<BatchFuture> Worker::enqueue_execute_batch(ScheduledBatch batch) {
-    auto channel = make_result_channel<BatchChannel>(io_);
+    auto channel = std::make_shared<BatchChannel>(io_.get_executor(), 1);
     std::unique_lock lock(queue_mutex_);
     if (!running_) return std::unexpected(ErrorCode::ServerShuttingDown);
     queue_.push_back(PendingBatch{std::move(batch), channel});
@@ -168,177 +192,27 @@ Result<BatchFuture> Worker::enqueue_execute_batch(ScheduledBatch batch) {
     return channel;
 }
 
-Capacity Worker::capacity() const {
-    return Capacity{
-        engine_config_.max_sequences, active_sequences_.load(),    free_blocks_.load(),
-        max_blocks_.load(),           block_size_.load(),          block_active_.load(),
-        block_cached_idle_.load(),    prefix_lookup_hits_.load(),  prefix_lookup_misses_.load(),
-        prefix_evictions_.load(),     prefix_cached_blocks_.load()};
-}
-
 void Worker::worker_loop() {
     while (true) {
-        std::deque<PendingCommand> local_queue;
+        std::deque<PendingBatch> local_queue;
         {
             std::unique_lock lock(queue_mutex_);
             cv_.wait(lock, [this] { return !queue_.empty() || !running_; });
-
-            if (!running_ && queue_.empty()) {
-                break;
-            }
-
+            if (!running_ && queue_.empty()) break;
             local_queue = std::move(queue_);
             queue_.clear();
         }
-
         for (auto& command : local_queue) process_command(std::move(command));
     }
-
     reset_resources();
 }
 
-void Worker::process_command(PendingCommand command) {
+void Worker::process_command(PendingBatch pending) {
     if (!running_.load()) {
-        std::visit(
-            [this](auto&& value) {
-                using T = std::decay_t<decltype(value)>;
-                if constexpr (std::is_same_v<T, AdmitCommand>) {
-                    resolve(value.channel, Result<AdmitSequenceResult>(
-                                               std::unexpected(ErrorCode::ServerShuttingDown)));
-                } else if constexpr (std::is_same_v<T, ReleaseCommand>) {
-                    resolve(value.channel,
-                            Result<void>(std::unexpected(ErrorCode::ServerShuttingDown)));
-                } else {
-                    resolve(value.chan, Result<WorkerBatchResult>(
-                                            std::unexpected(ErrorCode::ServerShuttingDown)));
-                }
-            },
-            std::move(command));
+        resolve(pending.chan, Result<BatchResult>(std::unexpected(ErrorCode::ServerShuttingDown)));
         return;
     }
-
-    std::visit(
-        [this](auto&& value) {
-            using T = std::decay_t<decltype(value)>;
-            if constexpr (std::is_same_v<T, AdmitCommand>) {
-                process_admit(std::move(value));
-            } else if constexpr (std::is_same_v<T, ReleaseCommand>) {
-                process_release(std::move(value));
-            } else {
-                process_batch(std::move(value));
-            }
-        },
-        std::move(command));
-}
-
-void Worker::process_admit(AdmitCommand command) {
-    resolve(command.channel,
-            admit_sequence_resources(command.seq_id, command.prompt_tokens, command.max_context_len,
-                                     command.initial_state));
-}
-
-void Worker::process_release(ReleaseCommand command) {
-    resolve(command.channel, release_sequence_resources(command.seq_id));
-}
-
-void Worker::sync_capacity() {
-    if (!kv_mgr_) return;
-    auto s = kv_mgr_->stats();
-    free_blocks_.store(s.block_free);
-    max_blocks_.store(s.block_total);
-    block_size_.store(s.block_size);
-    block_active_.store(s.block_active);
-    block_cached_idle_.store(s.block_cached_idle);
-    prefix_lookup_hits_.store(s.prefix.lookup_hits);
-    prefix_lookup_misses_.store(s.prefix.lookup_misses);
-    prefix_evictions_.store(s.prefix.evictions);
-    prefix_cached_blocks_.store(static_cast<uint64_t>(s.prefix.cached_blocks));
-}
-
-Result<void> Worker::init_resources(const Config& config) {
-    std::lock_guard lock(resource_mutex_);
-    try {
-        engine_config_ = config.engine_;
-
-        auto b = Backend::create(engine_config_.device_id);
-        if (!b) {
-            return std::unexpected(b.error());
-        }
-        backend_ = std::move(*b);
-
-        static std::once_flag register_flag;
-        std::call_once(register_flag, register_builtin_models);
-
-        auto loader_r = WeightLoader::create(config.model_path_ + "/model.safetensors");
-        if (!loader_r) {
-            return std::unexpected(loader_r.error());
-        }
-
-        auto model_r = ModelRegistry::instance().create(config.model_, *loader_r, *backend_);
-        if (!model_r) {
-            return std::unexpected(model_r.error());
-        }
-        model_ = std::move(*model_r);
-
-        const int num_layers = config.model_.n_layers_;
-        const int num_kv_heads = config.model_.n_kv_heads_;
-        const int head_dim = config.model_.head_dim_;
-
-        max_blocks_.store(engine_config_.max_blocks);
-
-        auto kvs_r = KVCacheStorage::create(*backend_, num_layers, max_blocks_.load(),
-                                            engine_config_.block_size, num_kv_heads, head_dim,
-                                            ccop::DType::kBFloat16);
-        if (!kvs_r) {
-            return std::unexpected(kvs_r.error());
-        }
-
-        kv_mgr_ = std::make_unique<KVCacheManager>();
-        auto kmgr_r =
-            kv_mgr_->init(std::move(*kvs_r), max_blocks_.load(), engine_config_.block_size);
-        if (!kmgr_r) {
-            return std::unexpected(kmgr_r.error());
-        }
-
-        sync_capacity();
-        initialized_ = true;
-        return {};
-    } catch (const std::exception&) {
-        return std::unexpected(ErrorCode::InternalError);
-    } catch (...) {
-        return std::unexpected(ErrorCode::InternalError);
-    }
-}
-
-void Worker::reset_resources() {
-    std::lock_guard lock(resource_mutex_);
-    initialized_ = false;
-    active_sequences_.store(0);
-    free_blocks_.store(0);
-    max_blocks_.store(0);
-    block_size_.store(0);
-    block_active_.store(0);
-    block_cached_idle_.store(0);
-    prefix_lookup_hits_.store(0);
-    prefix_lookup_misses_.store(0);
-    prefix_evictions_.store(0);
-    prefix_cached_blocks_.store(0);
-    request_states_.clear();
-    model_.reset();
-    kv_mgr_.reset();
-    backend_.reset();
-}
-
-Worker::SequenceRegistry Worker::build_sequence_states(const ScheduledBatch& batch) const {
-    SequenceRegistry sequences;
-    sequences.reserve(batch.items.size());
-    for (const auto& item : batch.items) {
-        const SequenceId seq_id = work_sequence_id(item);
-        if (sequences.count(seq_id) > 0) continue;
-        auto it = request_states_.find(seq_id);
-        if (it != request_states_.end()) sequences.emplace(seq_id, it->second);
-    }
-    return sequences;
+    process_batch(std::move(pending));
 }
 
 Worker::ResolvedBatch Worker::resolve_batch(const ScheduledBatch& batch) const {
@@ -348,258 +222,139 @@ Worker::ResolvedBatch Worker::resolve_batch(const ScheduledBatch& batch) const {
     resolved.batch.items.reserve(batch.items.size());
     resolved.original_indices.reserve(batch.items.size());
 
-    for (std::size_t original_index = 0; original_index < batch.items.size(); ++original_index) {
-        const auto& item = batch.items[original_index];
+    for (std::size_t i = 0; i < batch.items.size(); ++i) {
+        WorkItem item = batch.items[i];
         const SequenceId seq_id = work_sequence_id(item);
-        auto state_it = request_states_.find(seq_id);
-        if (state_it == request_states_.end()) {
-            WorkItemResult stale_result;
-            stale_result.item_index = static_cast<int>(original_index);
-            stale_result.seq_id = seq_id;
-            stale_result.kind = work_kind(item);
-            stale_result.stale = true;
-            resolved.stale_results.push_back(std::move(stale_result));
-            continue;
-        }
-        const auto& state = state_it->second;
-
-        bool stale = false;
-        WorkItem resolved_item = item;
+        bool stale = failed_sequences_.contains(seq_id);
         std::visit(
             [&](auto& work) {
-                using T = std::decay_t<decltype(work)>;
-                if constexpr (std::is_same_v<T, PrefillChunk>) {
-                    stale = state.finished || state.prompt_processed != work.prompt_span.start;
-                    if (!stale) work.expected_context_len = state.kv_written;
-                } else {
-                    stale = state.finished || state.prompt_processed != state.prompt_len;
-                    if (!stale && work.late_bind) {
-                        stale = state.last_token < 0;
-                        if (!stale) {
-                            work.input_token = state.last_token;
-                            work.expected_context_len = state.kv_written;
-                            work.late_bind = false;
-                        }
+                if constexpr (std::is_same_v<std::decay_t<decltype(work)>, DecodeOneToken>) {
+                    if (stale || !work.late_bind) return;
+                    auto token = latest_tokens_.find(seq_id);
+                    if (token == latest_tokens_.end()) {
+                        stale = true;
+                        return;
                     }
+                    work.input_token = token->second;
+                    work.late_bind = false;
                 }
             },
-            resolved_item);
-
+            item);
         if (stale) {
-            WorkItemResult stale_result;
-            stale_result.item_index = static_cast<int>(original_index);
-            stale_result.seq_id = seq_id;
-            stale_result.kind = work_kind(item);
-            stale_result.stale = true;
-            resolved.stale_results.push_back(std::move(stale_result));
+            WorkItemResult result;
+            result.item_index = static_cast<int>(i);
+            result.seq_id = seq_id;
+            result.kind = work_kind(batch.items[i]);
+            result.stale = true;
+            resolved.stale_results.push_back(std::move(result));
             continue;
         }
-
-        resolved.batch.items.push_back(std::move(resolved_item));
-        resolved.original_indices.push_back(original_index);
+        resolved.batch.items.push_back(std::move(item));
+        resolved.original_indices.push_back(i);
     }
-
     return resolved;
 }
 
-std::vector<SequenceDelta> Worker::build_deltas(const SequenceRegistry& before,
-                                                const SequenceRegistry& after) {
-    std::vector<SequenceDelta> deltas;
-    deltas.reserve(after.size());
-    for (const auto& [seq_id, state] : after) {
-        auto before_it = before.find(seq_id);
-        // Internal invariant: every sequence copied into a batch snapshot must
-        // still exist in the canonical worker registry and in the before copy.
-        assert(before_it != before.end());
-        assert(request_states_.find(seq_id) != request_states_.end());
-
-        SequenceDelta delta;
-        delta.seq_id = seq_id;
-        delta.kv_tokens_committed = state.kv_written - before_it->second.kv_written;
-        delta.prompt_tokens_committed = state.prompt_processed - before_it->second.prompt_processed;
-        assert(delta.kv_tokens_committed >= 0);
-        assert(delta.prompt_tokens_committed >= 0);
-        if (delta.kv_tokens_committed > 0 || delta.prompt_tokens_committed > 0) {
-            deltas.push_back(delta);
-        }
-    }
-    for (const auto& [seq_id, state] : after) request_states_.at(seq_id) = state;
-    return deltas;
-}
-
-void Worker::apply_sampled_progress(SequenceRegistry& states, const BatchResult& batch) {
-    for (const auto& work_result : batch.items) {
-        auto it = states.find(work_result.seq_id);
-        // Internal invariant: WorkItemResults are produced from the same batch
-        // items that were used to build this SequenceRegistry snapshot.
-        assert(it != states.end());
-        auto& state = it->second;
-        if (!work_result.sampled_tokens.empty()) {
-            state.last_token = work_result.sampled_tokens.front();
-            ++state.tokens_generated;
-        }
-        state.finished =
-            work_result.eos || (state.max_tokens > 0 && state.tokens_generated >= state.max_tokens);
-    }
-}
-
-void Worker::append_deferred_results(const ScheduledBatch& batch,
-                                     const std::vector<std::size_t>& deferred_indices,
-                                     BatchResult& result) {
-    for (const std::size_t deferred_index : deferred_indices) {
-        WorkItemResult wr;
-        wr.item_index = static_cast<int>(deferred_index);
-        wr.seq_id = work_sequence_id(batch.items[deferred_index]);
-        wr.kind = work_kind(batch.items[deferred_index]);
-        wr.tokens_consumed = 0;
-        wr.kv_deferred = true;
-        result.items.push_back(std::move(wr));
-    }
-}
-
-void Worker::cache_committed_blocks(const ScheduledBatch& batch,
-                                    const std::vector<std::size_t>& deferred_indices,
-                                    const std::vector<bool>& no_write_flags,
-                                    SequenceRegistry& sequences) {
-    const int block_size = kv_mgr_->block_size();
-    std::vector<uint8_t> deferred(batch.items.size(), 0);
-    for (const std::size_t idx : deferred_indices) deferred[idx] = 1;
-
-    for (std::size_t i = 0; i < batch.items.size(); ++i) {
-        if (deferred[i]) continue;
-        if (i < no_write_flags.size() && no_write_flags[i]) continue;
-
-        const auto& item = batch.items[i];
-        const SequenceId seq_id = work_sequence_id(item);
-        auto it = sequences.find(seq_id);
-        if (it == sequences.end()) continue;
-        SequenceState& seq = it->second;
-
-        std::vector<int32_t> written_tokens;
-        if (const auto* pc = std::get_if<PrefillChunk>(&item)) {
-            written_tokens = pc->tokens;
-        } else if (const auto* d = std::get_if<DecodeOneToken>(&item)) {
-            if (d->write_kv) written_tokens.push_back(d->input_token);
-        }
-
-        const int write_start = seq.kv_written - static_cast<int>(written_tokens.size());
-        std::vector<int32_t> block_ids;
-        std::vector<int32_t> table_indices;
-        for (std::size_t j = 0; j < written_tokens.size(); ++j) {
-            seq.pending_tokens.push_back(written_tokens[j]);
-            if (seq.pending_tokens.size() % static_cast<std::size_t>(block_size) == 0) {
-                const int global_pos = write_start + static_cast<int>(j);
-                const int block_index = global_pos / block_size;
-                block_ids.push_back(seq.block_table[static_cast<std::size_t>(block_index)]);
-                table_indices.push_back(block_index);
-            }
-        }
-
-        if (block_ids.empty()) continue;
-
-        seq.parent_hash = kv_mgr_->cache_rolling_blocks(seq.parent_hash, seq.pending_tokens,
-                                                        block_ids, table_indices, seq.block_table);
-        seq.pending_tokens.erase(seq.pending_tokens.begin(),
-                                 seq.pending_tokens.begin() +
-                                     static_cast<std::ptrdiff_t>(
-                                         block_ids.size() * static_cast<std::size_t>(block_size)));
-    }
-}
-
 void Worker::process_batch(PendingBatch pending) {
-    std::lock_guard resource_lock(resource_mutex_);
-
-    if (!initialized_ || !backend_ || !kv_mgr_) {
-        resolve(pending.chan,
-                Result<WorkerBatchResult>(std::unexpected(ErrorCode::ServerShuttingDown)));
+    if (!initialized_ || !backend_ || !block_storage_) {
+        resolve(pending.chan, Result<BatchResult>(std::unexpected(ErrorCode::ServerShuttingDown)));
         return;
     }
-
     assert(!pending.batch.items.empty());
-
     auto resolved = resolve_batch(pending.batch);
     if (resolved.batch.items.empty()) {
-        WorkerBatchResult worker_result;
-        worker_result.batch.batch_id = pending.batch.batch_id;
-        worker_result.batch.items = std::move(resolved.stale_results);
-        resolve(pending.chan, Result<WorkerBatchResult>(std::move(worker_result)));
+        BatchResult result;
+        result.batch_id = pending.batch.batch_id;
+        result.items = std::move(resolved.stale_results);
+        resolve(pending.chan, Result<BatchResult>(std::move(result)));
         return;
     }
 
-    auto& execution_batch = resolved.batch;
-
-    auto before = build_sequence_states(execution_batch);
-    assert(before.size() == execution_batch.items.size());
-    auto sequences = before;
-
-    assert(model_ && "Worker initialized without a model");
-    BatchTranslator translator(*backend_, *kv_mgr_, engine_config_.block_size);
-
-    auto plan_r = translator.prepare(execution_batch, sequences);
-    if (!plan_r) {
-        sync_capacity();  // translate may have evicted LRU blocks.
-        resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(plan_r.error())));
+    assert(model_);
+    auto fail_sequences = [&] {
+        for (const auto& item : resolved.batch.items)
+            failed_sequences_.insert(work_sequence_id(item));
+    };
+    BatchTranslator translator(*backend_, engine_config_.block_size);
+    auto physical = translator.translate(resolved.batch);
+    if (!physical) {
+        fail_sequences();
+        resolve(pending.chan, Result<BatchResult>(std::unexpected(physical.error())));
         return;
     }
-    auto plan = std::move(*plan_r);
-
-    sync_capacity();  // reflect allocated blocks before forward.
 
     BatchResult result;
     result.batch_id = pending.batch.batch_id;
-
-    if (plan.physical_batch.num_tokens > 0) {
-        auto& phys_batch = plan.physical_batch;
-        auto exec_r = ModelRunner::inference<BF16RunnerTraits>(*model_, phys_batch, *backend_,
-                                                               *kv_mgr_, execution_batch.sampling);
-        if (!exec_r) {
-            plan.rollback();
-            sync_capacity();
-            resolve(pending.chan, Result<WorkerBatchResult>(std::unexpected(exec_r.error())));
-            return;
+    auto execution = ModelRunner::inference<BF16RunnerTraits>(
+        *model_, *physical, *backend_, *block_storage_, resolved.batch.sampling);
+    if (!execution) {
+        fail_sequences();
+        resolve(pending.chan, Result<BatchResult>(std::unexpected(execution.error())));
+        return;
+    }
+    result.items = std::move(*execution);
+    for (auto& item_result : result.items) {
+        const std::size_t index = static_cast<std::size_t>(item_result.item_index);
+        item_result.item_index = static_cast<int>(resolved.original_indices[index]);
+        const auto& item = pending.batch.items[static_cast<std::size_t>(item_result.item_index)];
+        if (!item_result.sampled_tokens.empty()) {
+            latest_tokens_[item_result.seq_id] = item_result.sampled_tokens.front();
+        } else {
+            std::visit(
+                [&](const auto& work) {
+                    using T = std::decay_t<decltype(work)>;
+                    if constexpr (std::is_same_v<T, PrefillChunk>) {
+                        if (!work.tokens.empty())
+                            latest_tokens_[item_result.seq_id] = work.tokens.back();
+                    } else if (work.write_kv) {
+                        latest_tokens_[item_result.seq_id] = work.input_token;
+                    }
+                },
+                item);
         }
-        result.items = std::move(*exec_r);
-        for (auto& wr : result.items) {
-            if (wr.item_index >= 0 &&
-                static_cast<std::size_t>(wr.item_index) < plan.no_write_flags.size() &&
-                plan.no_write_flags[static_cast<std::size_t>(wr.item_index)]) {
-                wr.kv_deferred = true;
-            }
-        }
     }
-
-    append_deferred_results(execution_batch, plan.deferred_indices, result);
-
-    for (const auto& wr : result.items) {
-        assert(wr.item_index >= 0 &&
-               static_cast<std::size_t>(wr.item_index) < execution_batch.items.size());
-        const auto& requested_item = execution_batch.items[static_cast<std::size_t>(wr.item_index)];
-        assert(wr.kind == work_kind(requested_item));
-        assert(wr.kv_deferred || wr.tokens_consumed == work_token_count(requested_item));
-    }
-
-    plan.commit();
-
-    cache_committed_blocks(execution_batch, plan.deferred_indices, plan.no_write_flags, sequences);
-
-    sync_capacity();
-
-    apply_sampled_progress(sequences, result);
-    auto deltas = build_deltas(before, sequences);
-
-    WorkerBatchResult worker_result;
-    worker_result.batch = std::move(result);
-    for (auto& wr : worker_result.batch.items) {
-        wr.item_index =
-            static_cast<int>(resolved.original_indices[static_cast<std::size_t>(wr.item_index)]);
-    }
-    worker_result.batch.items.insert(worker_result.batch.items.end(),
-                                     std::make_move_iterator(resolved.stale_results.begin()),
-                                     std::make_move_iterator(resolved.stale_results.end()));
-    worker_result.deltas = std::move(deltas);
-    std::sort(worker_result.batch.items.begin(), worker_result.batch.items.end(),
+    result.items.insert(result.items.end(), std::make_move_iterator(resolved.stale_results.begin()),
+                        std::make_move_iterator(resolved.stale_results.end()));
+    std::sort(result.items.begin(), result.items.end(),
               [](const auto& lhs, const auto& rhs) { return lhs.item_index < rhs.item_index; });
-    resolve(pending.chan, Result<WorkerBatchResult>(std::move(worker_result)));
+
+    resolve(pending.chan, Result<BatchResult>(std::move(result)));
+}
+
+Result<void> Worker::init_resources(const Config& config) {
+    try {
+        engine_config_ = config.engine_;
+        auto backend = Backend::create(engine_config_.device_id);
+        if (!backend) return std::unexpected(backend.error());
+        backend_ = std::move(*backend);
+        static std::once_flag register_flag;
+        std::call_once(register_flag, register_builtin_models);
+        auto loader = WeightLoader::create(config.model_path_ + "/model.safetensors");
+        if (!loader) return std::unexpected(loader.error());
+        auto model = ModelRegistry::instance().create(config.model_, *loader, *backend_);
+        if (!model) return std::unexpected(model.error());
+        model_ = std::move(*model);
+        auto storage =
+            BlockStorage::create(*backend_, config.model_.n_layers_, engine_config_.max_blocks,
+                                 engine_config_.block_size, config.model_.n_kv_heads_,
+                                 config.model_.head_dim_, ccop::DType::kBFloat16);
+        if (!storage) return std::unexpected(storage.error());
+        block_storage_ = std::move(*storage);
+        assert(block_storage_->block_size() == engine_config_.block_size);
+        initialized_ = true;
+        return {};
+    } catch (...) {
+        return std::unexpected(ErrorCode::InternalError);
+    }
+}
+
+void Worker::reset_resources() {
+    initialized_ = false;
+    latest_tokens_.clear();
+    failed_sequences_.clear();
+    model_.reset();
+    block_storage_.reset();
+    backend_.reset();
 }
 
 }  // namespace ccinfer

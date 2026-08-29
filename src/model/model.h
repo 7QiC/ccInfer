@@ -7,7 +7,7 @@
 namespace ccinfer {
 
 struct ModelConfig;
-class KVCacheManager;
+class BlockStorage;
 class Backend;
 
 struct ForwardInput {
@@ -21,8 +21,8 @@ struct ForwardInput {
 
     ForwardMode mode_ = ForwardMode::Prefill;
 
-    // Paged-attention fields — all mandatory when kv_mgr_ is set.
-    KVCacheManager* kv_mgr_ = nullptr;
+    // Paged-attention fields.
+    BlockStorage* block_storage_ = nullptr;
     Tensor slot_mapping;     // [num_tokens]
     Tensor block_table;      // [batch, max_blocks_per_req]
     Tensor query_start_loc;  // [batch + 1]
@@ -37,8 +37,8 @@ struct ForwardInput {
 };
 
 struct ForwardOutput {
-    Tensor logits;     // [num_logits, vocab] float
-    Tensor tokens_out; // [batch_size] sampled token ids
+    Tensor logits;      // [num_logits, vocab] float
+    Tensor tokens_out;  // [batch_size] sampled token ids
 };
 
 class Model {

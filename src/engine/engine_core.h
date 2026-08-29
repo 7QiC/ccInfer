@@ -15,8 +15,8 @@ namespace ccinfer {
 class Executor;
 class Scheduler;
 
-// EngineCore owns the execution loop. Its queue is CPU-side bookkeeping for
-// dispatched batches; Worker remains the owner of device execution state.
+// EngineCore owns the execution loop and FIFO completion collection; Worker
+// remains the owner of device execution state.
 class EngineCore {
 public:
     EngineCore(boost::asio::io_context& io, Scheduler& scheduler, Executor& executor,

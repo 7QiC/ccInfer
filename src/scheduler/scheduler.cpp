@@ -28,6 +28,18 @@ int generated_token_count(const RequestState& state) noexcept {
     return static_cast<int>(state.generated_tokens.size());
 }
 
+int kv_token_count(const WorkItem& item) noexcept {
+    return std::visit(
+        [](const auto& work) {
+            if constexpr (std::is_same_v<std::decay_t<decltype(work)>, PrefillChunk>) {
+                return work.prompt_span.length;
+            } else {
+                return work.write_kv ? 1 : 0;
+            }
+        },
+        item);
+}
+
 }  // namespace
 
 Scheduler::Scheduler(asio::io_context& io, Executor& executor, EngineConfig config)
@@ -35,7 +47,9 @@ Scheduler::Scheduler(asio::io_context& io, Executor& executor, EngineConfig conf
       executor_(executor),
       engine_config_(config),
       idle_timer_(io),
-      core_(std::make_unique<EngineCore>(io, *this, executor, config)) {}
+      core_(std::make_unique<EngineCore>(io, *this, executor, config)),
+      block_pool_(config.max_blocks, config.block_size),
+      shutdown_future_(shutdown_promise_.get_future().share()) {}
 
 Scheduler::~Scheduler() = default;
 
@@ -61,11 +75,23 @@ void Scheduler::cancel(std::string request_id) {
     });
 }
 
-Capacity Scheduler::capacity() const { return executor_.capacity(); }
+Capacity Scheduler::capacity() const {
+    const auto stats = block_pool_.stats();
+    return Capacity{engine_config_.max_sequences,
+                    static_cast<int>(running_.size() + skip_.size()),
+                    stats.block_free,
+                    stats.block_total,
+                    stats.block_size,
+                    stats.block_active,
+                    stats.block_cached_idle,
+                    stats.prefix.lookup_hits,
+                    stats.prefix.lookup_misses,
+                    stats.prefix.evictions,
+                    static_cast<uint64_t>(stats.prefix.cached_blocks)};
+}
 
 void Scheduler::start() {
-    std::lock_guard lock(shutdown_mutex_);
-    if (shutdown_promise_) return;
+    if (shutdown_requested_.load()) return;
 
     bool expected = false;
     if (!accepting_.compare_exchange_strong(expected, true)) return;
@@ -75,11 +101,7 @@ void Scheduler::start() {
 void Scheduler::shutdown() { shutdown_async(); }
 
 std::shared_future<void> Scheduler::shutdown_async() {
-    std::lock_guard lock(shutdown_mutex_);
-    if (shutdown_promise_) return shutdown_future_;
-
-    shutdown_promise_ = std::make_unique<std::promise<void>>();
-    shutdown_future_ = shutdown_promise_->get_future().share();
+    if (shutdown_requested_.exchange(true)) return shutdown_future_;
     const bool was_running = accepting_.exchange(false);
 
     asio::post(io_, [this, was_running] {
@@ -118,11 +140,6 @@ void Scheduler::cancel_on_scheduler_thread(const std::string& request_id) {
         auto& state = *it->second;
         if (state.status == RequestStatus::Active) {
             state.status = RequestStatus::Cancelled;
-            if (state.scheduling) {
-                const SequenceId seq_id = state.scheduling->seq_id;
-                asio::co_spawn(io_, executor_.release_sequence(seq_id), asio::detached);
-                state.scheduling.reset();
-            }
         }
         return;
     }
@@ -133,7 +150,7 @@ void Scheduler::wake_on_scheduler_thread() { idle_timer_.cancel(); }
 void Scheduler::complete_shutdown_on_scheduler_thread() {
     if (shutdown_done_sent_) return;
     shutdown_done_sent_ = true;
-    if (shutdown_promise_) shutdown_promise_->set_value();
+    shutdown_promise_.set_value();
 }
 
 bool Scheduler::send_event(const TokenSink& sink, Result<GeneratedToken> result) {
@@ -160,25 +177,18 @@ bool Scheduler::send_token_event(RequestState& state) {
     token.has_token = true;
     token.finished = state.status == RequestStatus::Finished;
     const bool sent = send_event(state.sink, std::move(token));
-    if (!sent) {
-        state.sink_disconnected = true;
-        if (state.status == RequestStatus::Active) state.status = RequestStatus::Cancelled;
-    }
+    if (!sent && state.status == RequestStatus::Active) state.status = RequestStatus::Cancelled;
     return sent;
 }
 
 bool Scheduler::send_terminal_event(RequestState& state) {
     state.status = RequestStatus::Finished;
-    const bool sent = send_event(state.sink, GeneratedToken{.has_token = false, .finished = true});
-    if (!sent) state.sink_disconnected = true;
-    return sent;
+    return send_event(state.sink, GeneratedToken{.has_token = false, .finished = true});
 }
 
 bool Scheduler::send_error_event(RequestState& state, ErrorCode err) {
     state.status = RequestStatus::Failed;
-    const bool sent = send_event(state.sink, std::unexpected(err));
-    if (!sent) state.sink_disconnected = true;
-    return sent;
+    return send_event(state.sink, std::unexpected(err));
 }
 
 asio::awaitable<bool> Scheduler::admit_one_skipped(BatchBuildContext& ctx) {
@@ -191,14 +201,18 @@ asio::awaitable<bool> Scheduler::admit_one_skipped(BatchBuildContext& ctx) {
     skip_.pop_front();
     auto& state = *request;
     if (state.status == RequestStatus::Cancelled) {
-        if (state.scheduling) co_await executor_.release_sequence(state.scheduling->seq_id);
+        if (state.scheduling) {
+            release_scheduling_blocks(state);
+        }
         send_event(state.sink, std::unexpected(ErrorCode::RequestCancelled));
         erase_request(request);
         co_return true;
     }
 
     if (state.sampling.max_tokens <= 0) {
-        if (state.scheduling) co_await executor_.release_sequence(state.scheduling->seq_id);
+        if (state.scheduling) {
+            release_scheduling_blocks(state);
+        }
         send_event(state.sink, GeneratedToken{.has_token = false, .finished = true});
         erase_request(request);
         co_return true;
@@ -210,21 +224,14 @@ asio::awaitable<bool> Scheduler::admit_one_skipped(BatchBuildContext& ctx) {
     }
 
     if (!accepting_.load()) {
-        co_await executor_.release_sequence(state.scheduling->seq_id);
+        release_scheduling_blocks(state);
         send_event(state.sink, std::unexpected(ErrorCode::ServerShuttingDown));
         erase_request(request);
         co_return true;
     }
 
-    if (state.status == RequestStatus::Cancelled) {
-        co_await executor_.release_sequence(state.scheduling->seq_id);
-        send_event(state.sink, std::unexpected(ErrorCode::RequestCancelled));
-        erase_request(request);
-        co_return true;
-    }
-
     if (generated_token_count(state) >= state.sampling.max_tokens) {
-        co_await executor_.release_sequence(state.scheduling->seq_id);
+        release_scheduling_blocks(state);
         send_terminal_event(state);
         erase_request(request);
         co_return true;
@@ -247,22 +254,15 @@ asio::awaitable<bool> Scheduler::evict_one_skipped() {
     }
 
     prepare_for_wait(*request);
-    auto result = co_await executor_.release_sequence(request->scheduling->seq_id);
-    if (!result) {
-        ccLog::warn("evict skipped sequence failed seq={} err={}", request->scheduling->seq_id,
-                    static_cast<int>(result.error()));
-        skip_.push_front(request);
-        co_return false;
-    }
-
-    request->scheduling.reset();
+    release_scheduling_blocks(*request);
     waiting_.push_front(request);
     co_return true;
 }
 
 asio::awaitable<bool> Scheduler::admit_one_waiting(BatchBuildContext& ctx) {
     if (ctx.token_budget <= 0 || waiting_.empty() ||
-        running_.size() >= static_cast<std::size_t>(engine_config_.max_running_requests)) {
+        running_.size() >= static_cast<std::size_t>(engine_config_.max_running_requests) ||
+        running_.size() + skip_.size() >= static_cast<std::size_t>(engine_config_.max_sequences)) {
         co_return false;
     }
 
@@ -284,66 +284,62 @@ asio::awaitable<bool> Scheduler::admit_one_waiting(BatchBuildContext& ctx) {
     if (state.scheduling) {
         // Defensive: a scheduled request should not be in waiting under the
         // skip/wait model. Release it and re-admit as a fresh sequence.
-        co_await executor_.release_sequence(state.scheduling->seq_id);
-        state.scheduling.reset();
+        release_scheduling_blocks(state);
     }
 
-    SequenceInitialState initial_state;
-    initial_state.tokens_generated = generated_token_count(state);
-    initial_state.max_tokens = state.sampling.max_tokens;
-    if (!state.generated_tokens.empty()) initial_state.last_token = state.generated_tokens.back();
+    const int prompt_len = static_cast<int>(state.prompt_tokens.size());
+    if (prompt_len <= 0 || prompt_len > state.max_context_len ||
+        prompt_len > block_pool_.max_blocks() * block_pool_.block_size()) {
+        send_event(state.sink, std::unexpected(ErrorCode::InvalidArgument));
+        erase_request(request);
+        co_return true;
+    }
 
-    AdmitSequenceResult result;
-    while (true) {
-        auto admit_r = co_await executor_.admit_sequence(state.prompt_tokens, state.max_context_len,
-                                                         initial_state);
-        if (admit_r) {
-            result = *admit_r;
-            break;
-        }
-
-        if (admit_r.error() == ErrorCode::KVBlockExhausted && co_await evict_one_skipped()) {
-            continue;
-        }
-
-        if (admit_r.error() == ErrorCode::KVBlockExhausted ||
-            admit_r.error() == ErrorCode::MaxSequencesReached) {
+    auto lookup = block_pool_.lookup_prefix_cache(state.prompt_tokens);
+    const int blocks_needed =
+        (prompt_len + block_pool_.block_size() - 1) / block_pool_.block_size();
+    const int missing_blocks = blocks_needed - lookup.block_table.size();
+    Result<BlockTable> allocated = BlockTable{};
+    if (missing_blocks > 0) allocated = block_pool_.allocate_blocks(missing_blocks);
+    if (!allocated) {
+        block_pool_.release_blocks(lookup.block_table);
+        if (allocated.error() == ErrorCode::KVBlockExhausted && co_await evict_one_skipped()) {
             waiting_.push_front(request);
             co_return false;
         }
-
-        send_event(state.sink, std::unexpected(admit_r.error()));
+        if (allocated.error() == ErrorCode::KVBlockExhausted) {
+            waiting_.push_front(request);
+            co_return false;
+        }
+        send_event(state.sink, std::unexpected(allocated.error()));
         erase_request(request);
         co_return true;
     }
+    for (int i = 0; i < allocated->size(); ++i) lookup.block_table.push_back((*allocated)[i]);
 
     if (!accepting_.load()) {
-        co_await executor_.release_sequence(result.seq_id);
+        block_pool_.release_blocks(lookup.block_table);
         send_event(state.sink, std::unexpected(ErrorCode::ServerShuttingDown));
-        erase_request(request);
-        co_return true;
-    }
-
-    if (state.status == RequestStatus::Cancelled) {
-        co_await executor_.release_sequence(result.seq_id);
-        send_event(state.sink, std::unexpected(ErrorCode::RequestCancelled));
         erase_request(request);
         co_return true;
     }
 
     state.scheduling.emplace();
     auto& scheduling = *state.scheduling;
-    scheduling.seq_id = result.seq_id;
+    scheduling.seq_id = next_seq_id_++;
+    scheduling.block_table = std::move(lookup.block_table);
+    scheduling.executed_frontier = lookup.prefix_hit_blocks * block_pool_.block_size();
+    scheduling.parent_hash = lookup.parent_hash;
+    scheduling.pending_hash_tokens = std::move(lookup.pending_tokens);
     if (!state.generated_tokens.empty()) {
         scheduling.cursor.generated_tokens_in_prompt = generated_token_count(state) - 1;
     }
 
-    const int prompt_len = static_cast<int>(state.prompt_tokens.size());
-    if (result.prompt_processed > 0 && result.prompt_processed < prompt_len) {
-        scheduling.cursor.prefill_cursor = result.prompt_processed;
+    if (scheduling.executed_frontier > 0 && scheduling.executed_frontier < prompt_len) {
+        scheduling.cursor.prefill_cursor = scheduling.executed_frontier;
         scheduling.cursor.phase = state.generated_tokens.empty() ? GenerationPhase::Prefill
                                                                  : GenerationPhase::ReplayPrefill;
-    } else if (result.prompt_processed >= prompt_len) {
+    } else if (scheduling.executed_frontier >= prompt_len) {
         scheduling.cursor.prefill_cursor = prompt_len;
         scheduling.cursor.phase =
             state.generated_tokens.empty() ? GenerationPhase::Bootstrap : GenerationPhase::Decode;
@@ -359,8 +355,7 @@ asio::awaitable<ScheduledBatch> Scheduler::schedule_step() {
     BatchBuildContext ctx;
     ctx.batch.batch_id = next_batch_id_++;
     ctx.token_budget = engine_config_.max_token_budget;
-    const auto cap = executor_.capacity();
-    ctx.block_size = cap.block_size;
+    ctx.block_size = block_pool_.block_size();
 
     if (ctx.block_size <= 0) {
         for (auto request_it : running_) {
@@ -428,11 +423,15 @@ bool Scheduler::build_state_work(BatchBuildContext& ctx, RequestState& state) {
         const bool needs_sample = final_chunk && !(replay && !state.generated_tokens.empty());
         std::vector<int32_t> chunk_tokens(state.prompt_tokens.begin() + prompt_start,
                                           state.prompt_tokens.begin() + prompt_start + chunk_len);
-        ctx.batch.items.push_back(PrefillChunk{scheduling.seq_id,
-                                               TokenSpan{prompt_start, chunk_len}, std::nullopt,
-                                               needs_sample, std::move(chunk_tokens)});
+        ctx.batch.items.push_back(
+            PrefillChunk{scheduling.seq_id, TokenSpan{prompt_start, chunk_len}, std::nullopt,
+                         needs_sample, std::move(chunk_tokens), scheduling.block_table});
+        auto& item = std::get<PrefillChunk>(ctx.batch.items.back());
+        item.expected_context_len =
+            scheduling.executed_frontier + scheduling.reservation.reserved_kv_tokens;
         ctx.token_budget -= chunk_len;
         scheduling.reservation.reserved_prompt_tokens += chunk_len;
+        scheduling.reservation.reserved_kv_tokens += chunk_len;
         if (needs_sample) ++scheduling.reservation.reserved_generation_tokens;
         ++scheduling.reservation.execution_leases;
         return true;
@@ -456,8 +455,8 @@ bool Scheduler::build_state_work(BatchBuildContext& ctx, RequestState& state) {
         input_token = state.prompt_tokens.back();
         write_kv = false;
     } else {
-        // The token is deliberately not selected here. Worker resolves it
-        // from the persistent state immediately before execution.
+        // The token may be produced by an earlier in-flight batch. Worker
+        // resolves it from the latest token produced for this sequence.
         late_bind = true;
     }
 
@@ -470,10 +469,22 @@ bool Scheduler::build_state_work(BatchBuildContext& ctx, RequestState& state) {
         return false;
     }
 
-    ctx.batch.items.push_back(
-        DecodeOneToken{scheduling.seq_id, input_token, std::nullopt, late_bind, write_kv});
+    const int context_len =
+        scheduling.executed_frontier + scheduling.reservation.reserved_kv_tokens;
+    const int required_tokens = context_len + (write_kv ? 1 : 0);
+    const int required_blocks =
+        (required_tokens + block_pool_.block_size() - 1) / block_pool_.block_size();
+    if (required_blocks > scheduling.block_table.size()) {
+        auto blocks = block_pool_.allocate_blocks(required_blocks - scheduling.block_table.size());
+        if (!blocks) return false;
+        for (int i = 0; i < blocks->size(); ++i) scheduling.block_table.push_back((*blocks)[i]);
+    }
+
+    ctx.batch.items.push_back(DecodeOneToken{scheduling.seq_id, input_token, context_len, write_kv,
+                                             late_bind, scheduling.block_table});
     --ctx.token_budget;
     ++scheduling.reservation.reserved_generation_tokens;
+    if (write_kv) ++scheduling.reservation.reserved_kv_tokens;
     ++scheduling.reservation.execution_leases;
     return true;
 }
@@ -522,22 +533,20 @@ void Scheduler::prepare_for_wait(RequestState& state) {
                                state.generated_tokens.end() - 1);
 }
 
+void Scheduler::release_scheduling_blocks(RequestState& state) {
+    if (!state.scheduling) return;
+    block_pool_.release_blocks(state.scheduling->block_table);
+    state.scheduling.reset();
+}
+
 asio::awaitable<void> Scheduler::release_and_move_to_wait(const RequestPtr& request) {
     auto& state = *request;
     if (!state.scheduling) co_return;
 
     prepare_for_wait(state);
     const SequenceId seq_id = state.scheduling->seq_id;
-    auto release_r = co_await executor_.release_sequence(seq_id);
-    if (!release_r) {
-        ccLog::warn("release to wait failed seq={} err={}", seq_id,
-                    static_cast<int>(release_r.error()));
-        send_error_event(state, release_r.error());
-        co_return;
-    }
-
+    release_scheduling_blocks(state);
     by_seq_id_.erase(seq_id);
-    state.scheduling.reset();
     for (auto rit = running_.begin(); rit != running_.end(); ++rit) {
         if (rit->get() == request.get()) {
             running_.erase(rit);
@@ -566,6 +575,9 @@ void Scheduler::retire_reservation(RequestState& state, const WorkItem& item) {
             }
         },
         item);
+
+    reservation.reserved_kv_tokens =
+        std::max(0, reservation.reserved_kv_tokens - kv_token_count(item));
 }
 
 asio::awaitable<void> Scheduler::update_from_output(const ScheduledBatch& batch,
@@ -581,94 +593,105 @@ asio::awaitable<void> Scheduler::update_from_output(const ScheduledBatch& batch,
         assert(work_kind(original) == work_result.kind);
     }
 
-    for (const auto& work_result : result.items) {
-        auto it = by_seq_id_.find(work_result.seq_id);
-        if (it == by_seq_id_.end()) continue;
-        auto& state = *it->second;
-        if (!state.scheduling) continue;
-        auto& scheduling = *state.scheduling;
-        const auto& original = batch.items[work_result.item_index];
-        retire_reservation(state, original);
+    for (const auto& work_result : result.items)
+        retire_work(batch.items[work_result.item_index], work_result);
+    co_return;
+}
 
-        // A later batch may have been dispatched before an earlier batch
-        // produced EOS or otherwise changed the request state. It still owns
-        // its reservation until retirement, but its result is intentionally
-        // ignored.
-        if (work_result.stale || !is_schedulable_state(state)) continue;
+void Scheduler::retire_work(const WorkItem& original, const WorkItemResult& work_result) {
+    auto it = by_seq_id_.find(work_result.seq_id);
+    if (it == by_seq_id_.end() || !it->second->scheduling) return;
+    auto& state = *it->second;
+    auto& scheduling = *state.scheduling;
+    retire_reservation(state, original);
 
-        bool final_prefill = false;
-        if (work_result.kind == WorkKind::PrefillChunk) {
-            const auto& chunk = std::get<PrefillChunk>(original);
-            if (work_result.kv_deferred) {
-                scheduling.cursor.wait_pending = true;
-                continue;
-            }
-            const int prompt_len = static_cast<int>(state.prompt_tokens.size());
-            const bool replay_prefill = scheduling.cursor.phase == GenerationPhase::ReplayPrefill;
-            if (work_result.tokens_consumed != chunk.prompt_span.length ||
-                work_result.tokens_consumed <= 0 ||
-                scheduling.cursor.prefill_cursor != chunk.prompt_span.start ||
-                scheduling.cursor.prefill_cursor + work_result.tokens_consumed > prompt_len) {
-                send_error_event(state, ErrorCode::BatchTranslationFailed);
-                continue;
-            }
-            final_prefill =
-                scheduling.cursor.prefill_cursor + work_result.tokens_consumed >= prompt_len;
-            scheduling.cursor.prefill_cursor += work_result.tokens_consumed;
-            if (final_prefill) scheduling.cursor.phase = GenerationPhase::Decode;
+    // A later batch may have been dispatched before an earlier batch produced
+    // EOS or otherwise changed the request state. Its reservation is retired,
+    // but its result is intentionally ignored.
+    if (work_result.stale || !is_schedulable_state(state)) return;
 
-            if (!final_prefill) {
-                if (!work_result.sampled_tokens.empty() || work_result.eos)
-                    send_error_event(state, ErrorCode::BatchTranslationFailed);
-                continue;
-            }
-
-            const bool replay_without_sample = replay_prefill && !state.generated_tokens.empty() &&
-                                               work_result.sampled_tokens.empty() &&
-                                               !work_result.eos;
-            if (work_result.sampled_tokens.empty() && !work_result.eos && !replay_without_sample) {
-                send_error_event(state, ErrorCode::BatchTranslationFailed);
-                continue;
-            }
-        } else if (work_result.kv_deferred && work_result.tokens_consumed == 0) {
-            scheduling.cursor.wait_pending = true;
-            continue;
-        } else if (work_result.tokens_consumed != 1) {
+    bool final_prefill = false;
+    const int context_before = std::visit(
+        [](const auto& work) { return work.expected_context_len.value_or(0); }, original);
+    const int kv_tokens = kv_token_count(original);
+    if (work_result.kind == WorkKind::PrefillChunk) {
+        const auto& chunk = std::get<PrefillChunk>(original);
+        const int prompt_len = static_cast<int>(state.prompt_tokens.size());
+        const bool replay_prefill = scheduling.cursor.phase == GenerationPhase::ReplayPrefill;
+        if (work_result.tokens_consumed != chunk.prompt_span.length ||
+            work_result.tokens_consumed <= 0 ||
+            scheduling.cursor.prefill_cursor != chunk.prompt_span.start ||
+            scheduling.cursor.prefill_cursor + work_result.tokens_consumed > prompt_len) {
             send_error_event(state, ErrorCode::BatchTranslationFailed);
-            continue;
+            return;
+        }
+        final_prefill =
+            scheduling.cursor.prefill_cursor + work_result.tokens_consumed >= prompt_len;
+        scheduling.cursor.prefill_cursor += work_result.tokens_consumed;
+        scheduling.executed_frontier =
+            std::max(scheduling.executed_frontier, context_before + work_result.tokens_consumed);
+        if (final_prefill) scheduling.cursor.phase = GenerationPhase::Decode;
+
+        if (!final_prefill) {
+            if (!work_result.sampled_tokens.empty() || work_result.eos)
+                send_error_event(state, ErrorCode::BatchTranslationFailed);
+            return;
         }
 
-        const bool finished =
-            work_result.eos ||
-            generated_token_count(state) + static_cast<int>(!work_result.sampled_tokens.empty()) >=
-                state.sampling.max_tokens;
-        if (!work_result.sampled_tokens.empty()) {
-            state.generated_tokens.push_back(work_result.sampled_tokens.front());
-            if (scheduling.cursor.phase == GenerationPhase::Bootstrap)
-                scheduling.cursor.phase = GenerationPhase::Decode;
+        const bool replay_without_sample = replay_prefill && !state.generated_tokens.empty() &&
+                                           work_result.sampled_tokens.empty() && !work_result.eos;
+        if (work_result.sampled_tokens.empty() && !work_result.eos && !replay_without_sample) {
+            send_error_event(state, ErrorCode::BatchTranslationFailed);
+            return;
         }
-        if (finished || generated_token_count(state) >= state.sampling.max_tokens)
-            state.status = RequestStatus::Finished;
-        if (!work_result.sampled_tokens.empty()) send_token_event(state);
-        if (state.status == RequestStatus::Finished && work_result.sampled_tokens.empty()) {
-            send_terminal_event(state);
+    } else if (work_result.tokens_consumed != 1) {
+        send_error_event(state, ErrorCode::BatchTranslationFailed);
+        return;
+    } else {
+        scheduling.executed_frontier =
+            std::max(scheduling.executed_frontier, context_before + kv_tokens);
+    }
+
+    if (kv_tokens > 0) {
+        const int pending_before = static_cast<int>(scheduling.pending_hash_tokens.size());
+        int next_block_index = (context_before - pending_before) / block_pool_.block_size();
+        std::vector<int32_t> written_tokens;
+        if (const auto* chunk = std::get_if<PrefillChunk>(&original)) {
+            written_tokens = chunk->tokens;
+        } else if (!state.generated_tokens.empty()) {
+            written_tokens.push_back(state.generated_tokens.back());
+        }
+        scheduling.pending_hash_tokens.insert(scheduling.pending_hash_tokens.end(),
+                                              written_tokens.begin(), written_tokens.end());
+        while (scheduling.pending_hash_tokens.size() >=
+               static_cast<std::size_t>(block_pool_.block_size())) {
+            std::vector<int32_t> full_block(
+                scheduling.pending_hash_tokens.begin(),
+                scheduling.pending_hash_tokens.begin() + block_pool_.block_size());
+            const int block_index = next_block_index++;
+            assert(block_index >= 0 && block_index < scheduling.block_table.size());
+            scheduling.parent_hash = block_pool_.publish_full_block(
+                scheduling.parent_hash, full_block, scheduling.block_table[block_index]);
+            scheduling.pending_hash_tokens.erase(
+                scheduling.pending_hash_tokens.begin(),
+                scheduling.pending_hash_tokens.begin() + block_pool_.block_size());
         }
     }
 
-    std::vector<RequestPtr> to_wait;
-    for (auto request_it : running_) {
-        auto& state = *request_it;
-        if (!state.scheduling) continue;
-        auto& scheduling = *state.scheduling;
-        if (!scheduling.cursor.wait_pending || scheduling.reservation.execution_leases != 0 ||
-            !is_schedulable_state(state))
-            continue;
-        scheduling.cursor.wait_pending = false;
-        to_wait.push_back(request_it);
+    const bool finished =
+        work_result.eos ||
+        generated_token_count(state) + static_cast<int>(!work_result.sampled_tokens.empty()) >=
+            state.sampling.max_tokens;
+    if (!work_result.sampled_tokens.empty()) {
+        state.generated_tokens.push_back(work_result.sampled_tokens.front());
+        if (scheduling.cursor.phase == GenerationPhase::Bootstrap)
+            scheduling.cursor.phase = GenerationPhase::Decode;
     }
-
-    for (auto& request : to_wait) {
-        co_await release_and_move_to_wait(request);
+    if (finished || generated_token_count(state) >= state.sampling.max_tokens)
+        state.status = RequestStatus::Finished;
+    if (!work_result.sampled_tokens.empty()) send_token_event(state);
+    if (state.status == RequestStatus::Finished && work_result.sampled_tokens.empty()) {
+        send_terminal_event(state);
     }
 }
 
@@ -678,8 +701,7 @@ void Scheduler::mark_dispatch_failed(const ScheduledBatch& batch, ErrorCode err)
         auto it = by_seq_id_.find(seq_id);
         if (it == by_seq_id_.end()) continue;
         retire_reservation(*it->second, item);
-        if (err == ErrorCode::KVBlockExhausted) continue;
-        send_error_event(*it->second, err);
+        if (err != ErrorCode::KVBlockExhausted) send_error_event(*it->second, err);
     }
 }
 
@@ -701,11 +723,7 @@ asio::awaitable<void> Scheduler::cleanup_terminal_requests() {
         auto request_it = *running_it;
         auto& state = *request_it;
         const SequenceId seq_id = state.scheduling->seq_id;
-        auto result = co_await executor_.release_sequence(seq_id);
-        if (!result) {
-            ccLog::warn("sequence cleanup failed seq={} err={}", seq_id,
-                        static_cast<int>(result.error()));
-        }
+        release_scheduling_blocks(state);
         by_seq_id_.erase(seq_id);
         running_.erase(running_it);
         erase_request(request_it);
@@ -723,17 +741,14 @@ asio::awaitable<void> Scheduler::cleanup_terminal_queue(std::deque<RequestPtr>& 
     for (auto it : to_release) {
         auto request = *it;
         if (request->scheduling) {
-            auto result = co_await executor_.release_sequence(request->scheduling->seq_id);
-            if (!result) {
-                ccLog::warn("queue cleanup failed seq={} err={}", request->scheduling->seq_id,
-                            static_cast<int>(result.error()));
-            }
-            by_seq_id_.erase(request->scheduling->seq_id);
-            request->scheduling.reset();
+            const SequenceId seq_id = request->scheduling->seq_id;
+            release_scheduling_blocks(*request);
+            by_seq_id_.erase(seq_id);
         }
         queue.erase(it);
         erase_request(request);
     }
+    co_return;
 }
 
 asio::awaitable<void> Scheduler::fail_batch(const ScheduledBatch& batch, ErrorCode err) {
@@ -776,10 +791,7 @@ asio::awaitable<void> Scheduler::handle_batch_error(const ScheduledBatch& batch,
         }
     }
 
-    for (auto& request : to_wait) {
-        co_await release_and_move_to_wait(request);
-    }
-    co_return;
+    for (auto& request : to_wait) co_await release_and_move_to_wait(request);
 }
 
 asio::awaitable<void> Scheduler::preempt_one_for_admission() {
@@ -800,9 +812,7 @@ asio::awaitable<void> Scheduler::preempt_one_for_admission() {
 void Scheduler::fail_all_waiting(ErrorCode err) {
     auto fail_one = [&](const RequestPtr& request_it) {
         if (request_it->scheduling) {
-            const SequenceId seq_id = request_it->scheduling->seq_id;
-            asio::co_spawn(io_, executor_.release_sequence(seq_id), asio::detached);
-            request_it->scheduling.reset();
+            release_scheduling_blocks(*request_it);
         }
         send_event(request_it->sink, std::unexpected(err));
         erase_request(request_it);
@@ -829,17 +839,13 @@ asio::awaitable<void> Scheduler::cleanup_all_running(ErrorCode shutdown_err) {
         auto request_it = *running_it;
         auto& state = *request_it;
         if (!state.scheduling) continue;
-        const SequenceId seq_id = state.scheduling->seq_id;
         if (state.status == RequestStatus::Active) send_error_event(state, shutdown_err);
 
-        auto result = co_await executor_.release_sequence(seq_id);
-        if (!result) {
-            ccLog::warn("shutdown cleanup failed seq={} err={}", seq_id,
-                        static_cast<int>(result.error()));
-        }
+        release_scheduling_blocks(state);
         running_.erase(running_it);
         erase_request(request_it);
     }
+    co_return;
 }
 
 asio::awaitable<void> Scheduler::wait_for_work() {

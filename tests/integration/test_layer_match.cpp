@@ -15,12 +15,12 @@
 #include "backend/backend.h"
 #include "backend/cuda/cuda_utils.h"
 #include "cache/block.h"
-#include "cache/kv_cache_manager.h"
-#include "cache/kv_cache_storage.h"
+#include "cache/block_pool.h"
+#include "cache/block_storage.h"
+#include "facade/ops.h"
 #include "model/config.h"
 #include "model/loader.h"
 #include "model/rope/rope_cache.h"
-#include "facade/ops.h"
 #include "tokenizer/byte_level_bpe_tokenizer.h"
 
 using namespace ccinfer;
@@ -153,8 +153,7 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
     Tensor input_embeds(input_embeds_buf, ccop::DType::kBFloat16, {T, D});
     Tensor embed_tensor = std::move(*embed);
     Tensor token_ids(token_ids_buf, ccop::DType::kInt32, {T});
-    ASSERT_TRUE(
-        map_result(ccop::embed(embed_tensor, token_ids, &input_embeds, ctx)).has_value());
+    ASSERT_TRUE(map_result(ccop::embed(embed_tensor, token_ids, &input_embeds, ctx)).has_value());
 
     const size_t bf16_size = ccop::dtype_size(ccop::DType::kBFloat16);
     auto hidden_a_buf = alloc_buf(*backend_, static_cast<size_t>(T) * D * bf16_size);
@@ -170,15 +169,12 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
     auto ffn_act_buf = alloc_buf(*backend_, static_cast<size_t>(T) * d_ff * bf16_size);
 
     const int max_blocks = std::max(1, (T + kKVBlockSize - 1) / kKVBlockSize);
-    auto kv_mgr = std::make_unique<KVCacheManager>();
-    {
-        auto storage = KVCacheStorage::create(*backend_, n_layers, max_blocks, kKVBlockSize, nkv,
-                                              hd, ccop::DType::kBFloat16);
-        ASSERT_TRUE(storage.has_value());
-        ASSERT_TRUE(kv_mgr->init(std::move(*storage), max_blocks, kKVBlockSize));
-        auto blocks = kv_mgr->allocate_blocks(max_blocks);
-        ASSERT_TRUE(blocks.has_value());
-    }
+    auto storage = BlockStorage::create(*backend_, n_layers, max_blocks, kKVBlockSize, nkv, hd,
+                                        ccop::DType::kBFloat16);
+    ASSERT_TRUE(storage.has_value());
+    BlockPool block_pool(max_blocks, kKVBlockSize);
+    auto blocks = block_pool.allocate_blocks(max_blocks);
+    ASSERT_TRUE(blocks.has_value());
 
     std::vector<std::int32_t> slot_mapping_host(static_cast<size_t>(T));
     for (int i = 0; i < T; ++i) slot_mapping_host[static_cast<size_t>(i)] = i;
@@ -187,7 +183,7 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
                cudaMemcpyHostToDevice);
 
     std::vector<std::int32_t> bt_host(static_cast<size_t>(max_blocks));
-    for (int i = 0; i < max_blocks; ++i) bt_host[static_cast<size_t>(i)] = i;
+    for (int i = 0; i < max_blocks; ++i) bt_host[static_cast<size_t>(i)] = (*blocks)[i];
     auto block_table_buf =
         alloc_buf(*backend_, static_cast<size_t>(max_blocks) * sizeof(std::int32_t));
     cudaMemcpy(block_table_buf->data(), bt_host.data(), max_blocks * sizeof(std::int32_t),
@@ -287,8 +283,7 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
             loader_->load_tensor<__nv_bfloat16>(*backend_, p + ".self_attn.k_norm.weight", {hd});
         if (kn) k_norm_buf = kn->buffer();
 
-        ASSERT_TRUE(
-            map_result(ccop::rms_norm(&normed, hidden, *rms_attn, eps, ctx)).has_value());
+        ASSERT_TRUE(map_result(ccop::rms_norm(&normed, hidden, *rms_attn, eps, ctx)).has_value());
         if (is_first_layer)
             dump_bf16_to_f32(out_dir, "l0_attn_norm.bin", normed, static_cast<size_t>(T) * D);
 
@@ -303,40 +298,38 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
         }
 
         if (q_norm_buf) {
-            ASSERT_TRUE(
-                map_result(ccop::rms_norm(&q_norm_2d, q_norm_2d,
-                                              Tensor(q_norm_buf, ccop::DType::kBFloat16, {hd}), eps,
-                                              ctx))
-                    .has_value());
+            ASSERT_TRUE(map_result(ccop::rms_norm(&q_norm_2d, q_norm_2d,
+                                                  Tensor(q_norm_buf, ccop::DType::kBFloat16, {hd}),
+                                                  eps, ctx))
+                            .has_value());
         }
         if (k_norm_buf) {
-            ASSERT_TRUE(
-                map_result(ccop::rms_norm(&k_norm_2d, k_norm_2d,
-                                              Tensor(k_norm_buf, ccop::DType::kBFloat16, {hd}), eps,
-                                              ctx))
-                    .has_value());
+            ASSERT_TRUE(map_result(ccop::rms_norm(&k_norm_2d, k_norm_2d,
+                                                  Tensor(k_norm_buf, ccop::DType::kBFloat16, {hd}),
+                                                  eps, ctx))
+                            .has_value());
         }
         if (is_first_layer) {
             dump_bf16_to_f32(out_dir, "l0_q_normed.bin", q, static_cast<size_t>(T) * nq * hd);
             dump_bf16_to_f32(out_dir, "l0_k_normed.bin", k, static_cast<size_t>(T) * nkv * hd);
         }
 
-        ASSERT_TRUE(map_result(ccop::rope(&q, &k, positions, rope_cache.tensor(), hd, ctx))
-                        .has_value());
+        ASSERT_TRUE(
+            map_result(ccop::rope(&q, &k, positions, rope_cache.tensor(), hd, ctx)).has_value());
 
         {
-            auto k_cache = kv_mgr->k_cache(l);
-            auto v_cache = kv_mgr->v_cache(l);
+            auto k_cache = (*storage)->k_layer_tensor(l);
+            auto v_cache = (*storage)->v_layer_tensor(l);
             ASSERT_TRUE(
                 map_result(ccop::write_kv_cache(k, v, &k_cache, &v_cache, slot_mapping, ctx))
                     .has_value());
         }
         {
-            auto k_blocks = kv_mgr->k_cache_blocks(l);
-            auto v_blocks = kv_mgr->v_cache_blocks(l);
+            auto k_blocks = (*storage)->k_block_tensor(l);
+            auto v_blocks = (*storage)->v_block_tensor(l);
             ASSERT_TRUE(map_result(ccop::prefill_attention(q, k_blocks, v_blocks, block_table,
-                                                               query_start_loc, context_lens,
-                                                               &attn_out_3d, attn_scale, ctx))
+                                                           query_start_loc, context_lens,
+                                                           &attn_out_3d, attn_scale, ctx))
                             .has_value());
         }
 
@@ -346,15 +339,13 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
         if (is_first_layer)
             dump_bf16_to_f32(out_dir, "l0_o_proj.bin", next_hidden, static_cast<size_t>(T) * D);
 
-        ASSERT_TRUE(
-            map_result(ccop::element_add(&next_hidden_flat, hidden_flat, ctx)).has_value());
+        ASSERT_TRUE(map_result(ccop::element_add(&next_hidden_flat, hidden_flat, ctx)).has_value());
         std::swap(hidden, next_hidden);
         std::swap(hidden_flat, next_hidden_flat);
         if (is_first_layer)
             dump_bf16_to_f32(out_dir, "l0_attn_residual.bin", hidden, static_cast<size_t>(T) * D);
 
-        ASSERT_TRUE(
-            map_result(ccop::rms_norm(&normed, hidden, *rms_ffn, eps, ctx)).has_value());
+        ASSERT_TRUE(map_result(ccop::rms_norm(&normed, hidden, *rms_ffn, eps, ctx)).has_value());
         if (is_first_layer)
             dump_bf16_to_f32(out_dir, "l0_ffn_norm.bin", normed, static_cast<size_t>(T) * D);
 
@@ -363,13 +354,12 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
         if (is_first_layer)
             dump_bf16_to_f32(out_dir, "l0_gate.bin", gate, static_cast<size_t>(T) * d_ff);
 
-        ASSERT_TRUE(map_result(ccop::gemm(&up, normed, *up_w, false, true, 1.0f, 0.0f, ctx))
-                        .has_value());
+        ASSERT_TRUE(
+            map_result(ccop::gemm(&up, normed, *up_w, false, true, 1.0f, 0.0f, ctx)).has_value());
         if (is_first_layer)
             dump_bf16_to_f32(out_dir, "l0_up.bin", up, static_cast<size_t>(T) * d_ff);
 
-        ASSERT_TRUE(
-            map_result(ccop::silu_mul(&ffn_act_flat, gate_flat, up_flat, ctx)).has_value());
+        ASSERT_TRUE(map_result(ccop::silu_mul(&ffn_act_flat, gate_flat, up_flat, ctx)).has_value());
         if (is_first_layer)
             dump_bf16_to_f32(out_dir, "l0_silu_mul.bin", ffn_act, static_cast<size_t>(T) * d_ff);
 
@@ -379,8 +369,7 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
         if (is_first_layer)
             dump_bf16_to_f32(out_dir, "l0_down.bin", next_hidden, static_cast<size_t>(T) * D);
 
-        ASSERT_TRUE(
-            map_result(ccop::element_add(&next_hidden_flat, hidden_flat, ctx)).has_value());
+        ASSERT_TRUE(map_result(ccop::element_add(&next_hidden_flat, hidden_flat, ctx)).has_value());
         std::swap(hidden, next_hidden);
         std::swap(hidden_flat, next_hidden_flat);
 

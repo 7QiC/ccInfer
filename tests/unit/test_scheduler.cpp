@@ -14,9 +14,8 @@
 #include <boost/asio/use_future.hpp>
 #include <gtest/gtest.h>
 
-#include "scheduler/scheduler.h"
-
 #include "common/channel.h"
+#include "scheduler/scheduler.h"
 
 namespace ccinfer {
 
@@ -34,6 +33,10 @@ struct SchedulerTestAccess {
     static auto& waiting(Scheduler& s) { return s.waiting_; }
     static auto& running(Scheduler& s) { return s.running_; }
     static auto& by_seq_id(Scheduler& s) { return s.by_seq_id_; }
+    static auto& block_pool(Scheduler& s) { return s.block_pool_; }
+    static void cancel_on_scheduler_thread(Scheduler& s, const std::string& id) {
+        s.cancel_on_scheduler_thread(id);
+    }
 };
 
 namespace {
@@ -44,16 +47,6 @@ public:
 
     Result<void> init(const Config&) override { return {}; }
     void shutdown() override {}
-
-    asio::awaitable<Result<AdmitSequenceResult>> admit_sequence(
-        std::vector<int32_t> prompt, int, SequenceInitialState = {}) override {
-        co_return AdmitSequenceResult{next_id_++, static_cast<int>(prompt.size())};
-    }
-
-
-    asio::awaitable<Result<void>> release_sequence(SequenceId) override {
-        co_return Result<void>{};
-    }
 
     Result<BatchFuture> execute_batch(ScheduledBatch batch) override {
         ++execute_calls_;
@@ -69,10 +62,8 @@ public:
         auto [ec, result] = co_await future->async_receive(asio::as_tuple(asio::deferred));
         if (ec) co_return std::unexpected(ErrorCode::ChannelClosed);
         if (!result) co_return std::unexpected(result.error());
-        co_return std::move(result->batch);
+        co_return std::move(*result);
     }
-
-    Capacity capacity() const override { return cap_; }
 
     void complete_oldest() {
         ASSERT_FALSE(batches_.empty());
@@ -81,8 +72,8 @@ public:
         auto future = std::move(futures_.front());
         futures_.pop_front();
 
-        WorkerBatchResult result;
-        result.batch.batch_id = batch.batch_id;
+        BatchResult result;
+        result.batch_id = batch.batch_id;
         for (std::size_t i = 0; i < batch.items.size(); ++i) {
             WorkItemResult item_result;
             item_result.item_index = static_cast<int>(i);
@@ -100,7 +91,7 @@ public:
                     }
                 },
                 batch.items[i]);
-            result.batch.items.push_back(std::move(item_result));
+            result.items.push_back(std::move(item_result));
         }
         future->try_send(boost::system::error_code{}, std::move(result));
     }
@@ -110,8 +101,6 @@ public:
     std::size_t max_queued_batches() const { return max_queued_batches_; }
 
     boost::asio::io_context& io_;
-    Capacity cap_{64, 0, 1024, 1024, 16, 0, 0, 0, 0, 0, 0};
-    SequenceId next_id_{1};
     int execute_calls_{0};
     bool auto_complete_{false};
     std::size_t max_queued_batches_{0};
@@ -134,7 +123,8 @@ protected:
 
     ScheduledBatch schedule_step() {
         io_.restart();
-        auto future = asio::co_spawn(io_, SchedulerTestAccess::schedule_step(*scheduler_), asio::use_future);
+        auto future =
+            asio::co_spawn(io_, SchedulerTestAccess::schedule_step(*scheduler_), asio::use_future);
         io_.run();
         return future.get();
     }
@@ -176,6 +166,106 @@ TEST_F(SchedulerTest, RunningSetAllowsSameSequenceAcrossInFlightBatches) {
     ASSERT_EQ(next.items.size(), 2u);
     EXPECT_EQ(first.scheduling->reservation.execution_leases, 2);
     EXPECT_EQ(second.scheduling->reservation.execution_leases, 2);
+}
+
+TEST_F(SchedulerTest, SameSequenceReservesSuccessiveInFlightDecodePositions) {
+    auto state = make_decode(1);
+    state.generated_tokens = {7};
+    state.scheduling->cursor.phase = GenerationPhase::Decode;
+    state.scheduling->executed_frontier = 1;
+    auto& request = add_running(*scheduler_, std::move(state));
+
+    auto first = schedule_step();
+    auto second = schedule_step();
+    ASSERT_EQ(first.items.size(), 1u);
+    ASSERT_EQ(second.items.size(), 1u);
+    const auto& first_work = std::get<DecodeOneToken>(first.items.front());
+    const auto& second_work = std::get<DecodeOneToken>(second.items.front());
+    EXPECT_EQ(first_work.seq_id, 1u);
+    EXPECT_EQ(second_work.seq_id, 1u);
+    EXPECT_TRUE(first_work.late_bind);
+    EXPECT_TRUE(second_work.late_bind);
+    EXPECT_EQ(first_work.expected_context_len, 1);
+    EXPECT_EQ(second_work.expected_context_len, 2);
+    EXPECT_EQ(request.scheduling->reservation.execution_leases, 2);
+    EXPECT_EQ(request.scheduling->block_table.size(), 1);
+}
+
+TEST_F(SchedulerTest, CancelledSequenceRetainsBlocksUntilInFlightResultRetires) {
+    auto& request = add_running(*scheduler_, make_decode(1));
+    auto batch = schedule_step();
+    ASSERT_EQ(batch.items.size(), 1u);
+    const int32_t in_flight_block = std::get<DecodeOneToken>(batch.items.front()).block_table[0];
+
+    SchedulerTestAccess::cancel_on_scheduler_thread(*scheduler_, request.request_id);
+    SchedulerTestAccess::accepting(*scheduler_).store(true);
+    SchedulerRequest other;
+    other.request_id = "probe-request";
+    other.prompt_tokens = {2};
+    other.sampling.max_tokens = 4;
+    SchedulerTestAccess::submit_on_scheduler_thread(*scheduler_, std::move(other));
+    auto other_batch = schedule_step();
+    ASSERT_EQ(other_batch.items.size(), 1u);
+    EXPECT_NE(std::get<PrefillChunk>(other_batch.items.front()).block_table[0], in_flight_block);
+    const int free_after_other_dispatch =
+        SchedulerTestAccess::block_pool(*scheduler_).num_free_blocks();
+
+    BatchResult result;
+    result.batch_id = batch.batch_id;
+    WorkItemResult item;
+    item.item_index = 0;
+    item.seq_id = 1;
+    item.kind = WorkKind::DecodeOneToken;
+    item.tokens_consumed = 1;
+    result.items.push_back(item);
+
+    io_.restart();
+    auto update = asio::co_spawn(
+        io_, SchedulerTestAccess::update_from_output(*scheduler_, batch, result), asio::use_future);
+    io_.run();
+    update.get();
+    EXPECT_EQ(SchedulerTestAccess::block_pool(*scheduler_).num_free_blocks(),
+              free_after_other_dispatch);
+}
+
+TEST_F(SchedulerTest, FullBlockIsNotPrefixVisibleBeforeRetirement) {
+    RequestState state;
+    state.scheduling.emplace();
+    state.scheduling->seq_id = 1;
+    state.prompt_tokens = std::vector<int32_t>(16, 5);
+    state.max_context_len = 64;
+    state.sampling.max_tokens = 2;
+    auto blocks = SchedulerTestAccess::block_pool(*scheduler_).allocate_blocks(1);
+    ASSERT_TRUE(blocks);
+    state.scheduling->block_table = *blocks;
+    add_running(*scheduler_, std::move(state));
+
+    auto batch = schedule_step();
+    ASSERT_EQ(batch.items.size(), 1u);
+    const auto& chunk = std::get<PrefillChunk>(batch.items.front());
+    auto before = SchedulerTestAccess::block_pool(*scheduler_).lookup_prefix_cache(chunk.tokens);
+    EXPECT_EQ(before.prefix_hit_blocks, 0);
+
+    BatchResult result;
+    result.batch_id = batch.batch_id;
+    WorkItemResult item;
+    item.item_index = 0;
+    item.seq_id = 1;
+    item.kind = WorkKind::PrefillChunk;
+    item.sampled_tokens = {42};
+    item.tokens_consumed = 16;
+    result.items.push_back(std::move(item));
+
+    io_.restart();
+    auto update = asio::co_spawn(
+        io_, SchedulerTestAccess::update_from_output(*scheduler_, batch, result), asio::use_future);
+    io_.run();
+    update.get();
+
+    auto after = SchedulerTestAccess::block_pool(*scheduler_).lookup_prefix_cache(chunk.tokens);
+    ASSERT_EQ(after.prefix_hit_blocks, 1);
+    SchedulerTestAccess::block_pool(*scheduler_).release_blocks(after.block_table);
+    SchedulerTestAccess::block_pool(*scheduler_).release_blocks(chunk.block_table);
 }
 
 TEST_F(SchedulerTest, AdmissionKeepsOneCanonicalRequestState) {
@@ -239,10 +329,22 @@ TEST_F(SchedulerTest, DecodeAndPrefillShareOneTokenBudget) {
 TEST_F(SchedulerTest, NonBlockingExecutorKeepsMultipleBatchFutures) {
     ScheduledBatch first;
     first.batch_id = 1;
-    first.items.push_back(DecodeOneToken{1, 7, 0, true});
+    DecodeOneToken first_item;
+    first_item.seq_id = 1;
+    first_item.input_token = 7;
+    first_item.expected_context_len = 0;
+    first_item.write_kv = true;
+    first_item.late_bind = true;
+    first.items.push_back(std::move(first_item));
     ScheduledBatch second;
     second.batch_id = 2;
-    second.items.push_back(DecodeOneToken{2, 8, 0, true});
+    DecodeOneToken second_item;
+    second_item.seq_id = 2;
+    second_item.input_token = 8;
+    second_item.expected_context_len = 0;
+    second_item.write_kv = true;
+    second_item.late_bind = true;
+    second.items.push_back(std::move(second_item));
 
     auto first_future = executor_.execute_batch(first);
     auto second_future = executor_.execute_batch(second);
@@ -277,7 +379,54 @@ TEST_F(SchedulerTest, EngineCoreDispatchesUpToConcurrentBatchLimit) {
     EXPECT_EQ(shutdown.wait_for(std::chrono::seconds(0)), std::future_status::ready);
 }
 
-TEST_F(SchedulerTest, BootstrapTransitionsToDecodeAfterFirstSample) {
+TEST_F(SchedulerTest, BatchCompletionRetiresAllIndependentItems) {
+    auto first_state = make_decode(1);
+    auto second_state = make_decode(2);
+    first_state.generated_tokens = {7};
+    second_state.generated_tokens = {8};
+    first_state.scheduling->executed_frontier = 1;
+    second_state.scheduling->executed_frontier = 1;
+    auto first_channel = std::make_shared<TokenChannel>(io_.get_executor(), 16);
+    auto second_channel = std::make_shared<TokenChannel>(io_.get_executor(), 16);
+    first_state.sink.executor = io_.get_executor();
+    first_state.sink.channel = first_channel;
+    second_state.sink.executor = io_.get_executor();
+    second_state.sink.channel = second_channel;
+    auto& first_request = add_running(*scheduler_, std::move(first_state));
+    auto& second_request = add_running(*scheduler_, std::move(second_state));
+
+    ScheduledBatch batch;
+    batch.batch_id = 10;
+    batch.items.push_back(DecodeOneToken{1, 7, 1, true, true, {}});
+    batch.items.push_back(DecodeOneToken{2, 8, 1, true, true, {}});
+    first_request.scheduling->reservation = SequenceReservation{1, 0, 1, 1};
+    second_request.scheduling->reservation = SequenceReservation{1, 0, 1, 1};
+
+    BatchResult result;
+    result.batch_id = batch.batch_id;
+    for (const auto& [index, token] : std::vector<std::pair<int, int32_t>>{{1, 20}, {0, 19}}) {
+        WorkItemResult item;
+        item.item_index = index;
+        item.seq_id = index == 0 ? 1 : 2;
+        item.kind = WorkKind::DecodeOneToken;
+        item.sampled_tokens = {token};
+        item.tokens_consumed = 1;
+        result.items.push_back(std::move(item));
+    }
+
+    io_.restart();
+    auto update = asio::co_spawn(
+        io_, SchedulerTestAccess::update_from_output(*scheduler_, batch, result), asio::use_future);
+    io_.run();
+    update.get();
+
+    EXPECT_EQ(first_request.generated_tokens, std::vector<int32_t>({7, 19}));
+    EXPECT_EQ(second_request.generated_tokens, std::vector<int32_t>({8, 20}));
+    EXPECT_EQ(first_request.scheduling->reservation.execution_leases, 0);
+    EXPECT_EQ(second_request.scheduling->reservation.execution_leases, 0);
+}
+
+TEST_F(SchedulerTest, RetiresPrefillBeforeSchedulingDependentDecode) {
     SchedulerTestAccess::accepting(*scheduler_).store(true);
     SchedulerRequest request;
     request.request_id = "bootstrap";
@@ -290,26 +439,24 @@ TEST_F(SchedulerTest, BootstrapTransitionsToDecodeAfterFirstSample) {
 
     auto batch = schedule_step();
     ASSERT_EQ(batch.items.size(), 1u);
-    ASSERT_TRUE(std::holds_alternative<DecodeOneToken>(batch.items.front()));
-    const auto& first = std::get<DecodeOneToken>(batch.items.front());
-    EXPECT_FALSE(first.write_kv);
-    EXPECT_FALSE(first.late_bind);
-    EXPECT_EQ(first.input_token, 3);
+    ASSERT_TRUE(std::holds_alternative<PrefillChunk>(batch.items.front()));
+    const auto& first = std::get<PrefillChunk>(batch.items.front());
+    EXPECT_EQ(first.prompt_span.length, 3);
+    EXPECT_TRUE(first.needs_sample);
 
     BatchResult result;
     result.batch_id = batch.batch_id;
     WorkItemResult wr;
     wr.item_index = 0;
     wr.seq_id = first.seq_id;
-    wr.kind = WorkKind::DecodeOneToken;
+    wr.kind = WorkKind::PrefillChunk;
     wr.sampled_tokens = {42};
-    wr.tokens_consumed = 1;
+    wr.tokens_consumed = 3;
     result.items.push_back(std::move(wr));
 
     io_.restart();
-    auto update_future =
-        asio::co_spawn(io_, SchedulerTestAccess::update_from_output(*scheduler_, batch, result),
-                       asio::use_future);
+    auto update_future = asio::co_spawn(
+        io_, SchedulerTestAccess::update_from_output(*scheduler_, batch, result), asio::use_future);
     io_.run();
     update_future.get();
 

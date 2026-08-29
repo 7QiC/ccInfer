@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -30,13 +29,12 @@ struct PhysicalBatch {
     // request i; -1 means no sampling.
     Tensor logits_indices;  // [batch_size], int32
 
-    std::vector<std::size_t> item_indices;  // maps physical seq → WorkItem index
     ForwardMode mode = ForwardMode::Prefill;
     std::vector<SequenceId> item_seq_ids;
     std::vector<WorkKind> item_kinds;
 
     // CPU-side per-item metadata used by ModelRunner to build WorkItemResults,
-    // avoiding D2H round-trips of data BatchTranslator already produced.
+    // avoiding D2H round-trips of data the worker already produced.
     std::vector<int32_t> item_token_counts;  // [batch_size] tokens per physical seq
     std::vector<bool> sample_flags;          // [batch_size] sample this seq's logits
 

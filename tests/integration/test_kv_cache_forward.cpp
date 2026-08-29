@@ -1,3 +1,4 @@
+#include <ccop/ops/naive_attention.h>
 #include <cmath>
 #include <cstdlib>
 #include <vector>
@@ -8,10 +9,9 @@
 
 #include "backend/backend.h"
 #include "cache/block.h"
-#include "cache/kv_cache_manager.h"
-#include "cache/kv_cache_storage.h"
+#include "cache/block_pool.h"
+#include "cache/block_storage.h"
 #include "facade/ops.h"
-#include <ccop/ops/naive_attention.h>
 
 namespace ccinfer {
 namespace {
@@ -30,20 +30,19 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     auto backend_r = Backend::create(0);
     if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
     auto &backend = **backend_r;
-    auto r_storage = KVCacheStorage::create(backend, kNumLayers, kMaxBlocks, block_size, nkv, hd,
-                                            ccop::DType::kBFloat16);
+    auto r_storage = BlockStorage::create(backend, kNumLayers, kMaxBlocks, block_size, nkv, hd,
+                                          ccop::DType::kBFloat16);
     ASSERT_TRUE(r_storage.has_value());
 
-    KVCacheManager mgr;
-    auto init_r = mgr.init(std::move(*r_storage), kMaxBlocks, block_size);
-    ASSERT_TRUE(init_r.has_value());
-    EXPECT_EQ(mgr.num_free_blocks(), kMaxBlocks);
+    auto storage = std::move(*r_storage);
+    BlockPool pool(kMaxBlocks, block_size);
+    EXPECT_EQ(pool.num_free_blocks(), kMaxBlocks);
 
     int num_blocks = (kNumTokens + block_size - 1) / block_size;
-    auto alloc = mgr.allocate_blocks(num_blocks);
+    auto alloc = pool.allocate_blocks(num_blocks);
     ASSERT_TRUE(alloc.has_value());
     EXPECT_EQ(alloc->size(), num_blocks);
-    EXPECT_EQ(mgr.num_free_blocks(), kMaxBlocks - num_blocks);
+    EXPECT_EQ(pool.num_free_blocks(), kMaxBlocks - num_blocks);
 
     cudaStream_t stream;
     cudaStreamCreate(&stream);
@@ -51,8 +50,6 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     // Allocate Q, K, V in token-major dense layout
     int64_t q_elems = static_cast<int64_t>(kNumTokens) * nq * hd;
     int64_t kv_new_elems = static_cast<int64_t>(kNumTokens) * nkv * hd;
-    int64_t cache_elems = static_cast<int64_t>(kMaxBlocks) * block_size * nkv * hd;
-
     __nv_bfloat16 *d_q, *d_k_new, *d_v_new, *d_out_prefill, *d_out_ref;
     cudaMalloc(&d_q, q_elems * sizeof(__nv_bfloat16));
     cudaMalloc(&d_k_new, kv_new_elems * sizeof(__nv_bfloat16));
@@ -91,8 +88,8 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
         ccop::Tensor k_new(d_k_new, ccop::DType::kBFloat16, kCuda0, {kNumTokens, nkv, hd});
         ccop::Tensor v_new(d_v_new, ccop::DType::kBFloat16, kCuda0, {kNumTokens, nkv, hd});
         ccop::Tensor slot(d_slot_mapping, ccop::DType::kInt32, kCuda0, {kNumTokens});
-        auto k_cache = mgr.k_cache(0);
-        auto v_cache = mgr.v_cache(0);
+        auto k_cache = storage->k_layer_tensor(0);
+        auto v_cache = storage->v_layer_tensor(0);
         ASSERT_TRUE(
             map_result(ccop::write_kv_cache(k_new, v_new, &k_cache, &v_cache, slot, {stream}))
                 .has_value());
@@ -116,25 +113,25 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     {
         constexpr ccop::Device kCuda0{ccop::DeviceType::kCUDA, 0};
         ccop::Tensor q(d_q, ccop::DType::kBFloat16, kCuda0, {kNumTokens, nq, hd});
-        auto k_cache = mgr.k_cache_blocks(0);
-        auto v_cache = mgr.v_cache_blocks(0);
+        auto k_cache = storage->k_block_tensor(0);
+        auto v_cache = storage->v_block_tensor(0);
         ccop::Tensor block_table(d_block_table, ccop::DType::kInt32, kCuda0, {1, num_blocks});
         ccop::Tensor query_start_loc(d_query_start_loc, ccop::DType::kInt32, kCuda0, {2});
         ccop::Tensor context_lens(d_context_lens, ccop::DType::kInt32, kCuda0, {1});
-        ccop::Tensor out_prefill(d_out_prefill, ccop::DType::kBFloat16, kCuda0, {kNumTokens, nq, hd});
+        ccop::Tensor out_prefill(d_out_prefill, ccop::DType::kBFloat16, kCuda0,
+                                 {kNumTokens, nq, hd});
         const float scale = 1.0f / std::sqrt(static_cast<float>(hd));
-        ASSERT_TRUE(map_result(ccop::prefill_attention(q, k_cache, v_cache, block_table,
-                                                           query_start_loc, context_lens,
-                                                           &out_prefill, scale, {stream}))
-                        .has_value());
+        ASSERT_TRUE(
+            map_result(ccop::prefill_attention(q, k_cache, v_cache, block_table, query_start_loc,
+                                               context_lens, &out_prefill, scale, {stream}))
+                .has_value());
 
         // Reference: naive_attention on dense K/V.
         ccop::Tensor k_new(d_k_new, ccop::DType::kBFloat16, kCuda0, {kNumTokens, nkv, hd});
         ccop::Tensor v_new(d_v_new, ccop::DType::kBFloat16, kCuda0, {kNumTokens, nkv, hd});
         ccop::Tensor out_ref(d_out_ref, ccop::DType::kBFloat16, kCuda0, {kNumTokens, nq, hd});
-        ASSERT_TRUE(
-            map_result(ccop::naive_attention(q, k_new, v_new, &out_ref, scale, {stream}))
-                .has_value());
+        ASSERT_TRUE(map_result(ccop::naive_attention(q, k_new, v_new, &out_ref, scale, {stream}))
+                        .has_value());
 
         cudaStreamSynchronize(stream);
 
@@ -187,17 +184,18 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
 
         constexpr ccop::Device kCuda0{ccop::DeviceType::kCUDA, 0};
         ccop::Tensor decode_q(d_decode_q, ccop::DType::kBFloat16, kCuda0, {kDecodeBatch, nq, hd});
-        auto k_cache = mgr.k_cache_blocks(0);
-        auto v_cache = mgr.v_cache_blocks(0);
+        auto k_cache = storage->k_block_tensor(0);
+        auto v_cache = storage->v_block_tensor(0);
         ccop::Tensor dec_block_table(d_dec_block_table, ccop::DType::kInt32, kCuda0,
-                                    {kDecodeBatch, num_blocks});
+                                     {kDecodeBatch, num_blocks});
         ccop::Tensor dec_context_lens(d_dec_context_lens, ccop::DType::kInt32, kCuda0,
-                                     {kDecodeBatch});
-        ccop::Tensor decode_out(d_decode_out, ccop::DType::kBFloat16, kCuda0, {kDecodeBatch, nq, hd});
+                                      {kDecodeBatch});
+        ccop::Tensor decode_out(d_decode_out, ccop::DType::kBFloat16, kCuda0,
+                                {kDecodeBatch, nq, hd});
         const float scale = 1.0f / std::sqrt(static_cast<float>(hd));
         ASSERT_TRUE(
             map_result(ccop::decode_attention(decode_q, k_cache, v_cache, dec_block_table,
-                                                  dec_context_lens, &decode_out, scale, {stream}))
+                                              dec_context_lens, &decode_out, scale, {stream}))
                 .has_value());
         cudaStreamSynchronize(stream);
 
@@ -220,13 +218,8 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
         cudaFree(d_dec_context_lens);
     }
 
-    auto rel = mgr.release_blocks(*alloc);
-    ASSERT_TRUE(rel.has_value());
-    EXPECT_EQ(mgr.num_free_blocks(), kMaxBlocks);
-
-    auto rel2 = mgr.release_blocks(*alloc);
-    EXPECT_FALSE(rel2.has_value());
-    EXPECT_EQ(rel2.error(), ErrorCode::KVBlockDoubleFree);
+    pool.release_blocks(*alloc);
+    EXPECT_EQ(pool.num_free_blocks(), kMaxBlocks);
 
     auto sync_err = cudaStreamSynchronize(stream);
     ASSERT_EQ(sync_err, cudaSuccess);

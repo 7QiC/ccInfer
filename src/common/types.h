@@ -2,7 +2,6 @@
 
 #include <cstdint>
 #include <functional>
-#include <memory>
 #include <optional>
 #include <string>
 #include <variant>
@@ -12,6 +11,7 @@
 #include <boost/asio/experimental/channel.hpp>
 #include <boost/system/error_code.hpp>
 
+#include "cache/block.h"
 #include "common/error_code.h"
 
 namespace ccinfer {
@@ -22,17 +22,6 @@ namespace asio = boost::asio;
 // also contains the HTTP request boundary, so it depends on the lightweight
 // Boost.Asio channel/executor types but not on CUDA or model implementations.
 using SequenceId = uint64_t;
-
-struct SequenceInitialState {
-    int32_t last_token = -1;
-    int tokens_generated = 0;
-    int max_tokens = 0;
-};
-
-struct AdmitSequenceResult {
-    SequenceId seq_id = 0;
-    int prompt_processed = 0;
-};
 
 enum class ForwardMode : uint8_t { Prefill, Decode, Mixed };
 enum class WorkKind : uint8_t { PrefillChunk, DecodeOneToken };
@@ -52,16 +41,18 @@ struct PrefillChunk {
     std::optional<int> expected_context_len;
     bool needs_sample = false;    // only true for the final chunk
     std::vector<int32_t> tokens;  // actual token ids for this chunk
+    BlockTable block_table;       // scheduler-owned logical table mirror
 };
 
 struct DecodeOneToken {
     SequenceId seq_id = 0;
     int32_t input_token = 0;
     std::optional<int> expected_context_len;
-    bool late_bind = false;
     // false = bootstrap decode: sample from the last cached prompt token and
     // write no new KV / allocate no new block.
     bool write_kv = true;
+    bool late_bind = false;
+    BlockTable block_table;  // scheduler-owned logical table mirror
 };
 
 using WorkItem = std::variant<PrefillChunk, DecodeOneToken>;
@@ -105,36 +96,11 @@ struct WorkItemResult {
     int tokens_consumed = 0;
     bool eos = false;
     bool stale = false;
-    bool kv_deferred = false;
 };
 
 struct BatchResult {
     uint64_t batch_id = 0;
     std::vector<WorkItemResult> items;
-};
-
-// Executor -> Worker logical sequence snapshot.  This intentionally contains
-// no physical KV block table: block ids are worker/device-local resources.
-struct SequenceSnapshot {
-    SequenceId seq_id = 0;
-    int prompt_len = 0;
-    int max_context_len = 0;
-    int kv_written = 0;
-    int prompt_processed = 0;
-    bool finished = false;
-};
-
-// Worker -> Executor logical progress delta.  Physical block-table mutations
-// stay in the Worker; Executor only updates sequence progress.
-struct SequenceDelta {
-    SequenceId seq_id = 0;
-    int kv_tokens_committed = 0;
-    int prompt_tokens_committed = 0;
-};
-
-struct WorkerBatchResult {
-    BatchResult batch;
-    std::vector<SequenceDelta> deltas;
 };
 
 struct GeneratedToken {

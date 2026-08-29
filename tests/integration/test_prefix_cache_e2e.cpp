@@ -6,20 +6,23 @@
 #include <gtest/gtest.h>
 
 #include "backend/backend.h"
-#include "cache/kv_cache_manager.h"
-#include "cache/kv_cache_storage.h"
+#include "cache/block_pool.h"
+#include "cache/block_storage.h"
 #include "facade/ops.h"
 
 namespace ccinfer {
 namespace {
 
-std::vector<int32_t> table_indices(int n) {
-    std::vector<int32_t> idx(static_cast<std::size_t>(n));
-    for (int i = 0; i < n; ++i) idx[static_cast<std::size_t>(i)] = i;
-    return idx;
+void publish_blocks(BlockPool& pool, const std::vector<int32_t>& tokens, const BlockTable& table) {
+    uint64_t parent_hash = 0;
+    for (int i = 0; i < table.size(); ++i) {
+        const auto begin = tokens.begin() + i * pool.block_size();
+        std::vector<int32_t> block_tokens(begin, begin + pool.block_size());
+        parent_hash = pool.publish_full_block(parent_hash, block_tokens, table[i]);
+    }
 }
 
-// Full lifecycle: lookup/allocate → cache_rolling_blocks → release →
+// Full lifecycle: lookup/allocate → publish blocks → release →
 // lookup (hit) → verify shared blocks produce correct attention output.
 TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
     constexpr int kNumTokens = 32;
@@ -32,31 +35,29 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
 
     auto backend_r = Backend::create(0);
     if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
-    auto &backend = **backend_r;
+    auto& backend = **backend_r;
 
-    // 1. Init storage and manager.
-    auto sr = KVCacheStorage::create(backend, kNumLayers, kMaxBlocks, block_size, nkv, hd,
-                                     ccop::DType::kBFloat16);
+    // 1. Init storage and block pool.
+    auto sr = BlockStorage::create(backend, kNumLayers, kMaxBlocks, block_size, nkv, hd,
+                                   ccop::DType::kBFloat16);
     ASSERT_TRUE(sr.has_value());
 
-    KVCacheManager mgr;
-    auto init_r = mgr.init(std::move(*sr), kMaxBlocks, block_size);
-    ASSERT_TRUE(init_r.has_value());
+    auto storage = std::move(*sr);
+    BlockPool pool(kMaxBlocks, block_size);
 
     // 2. Request 1: prepare and cache.
     std::vector<int32_t> tokens(kNumTokens);
     for (int i = 0; i < kNumTokens; ++i) tokens[i] = i + 1;
 
-    auto pr1 = mgr.lookup_prefix_cache(tokens);
-    auto alloc1 = mgr.allocate_blocks(kNumTokens / block_size - pr1.block_table.size());
+    auto pr1 = pool.lookup_prefix_cache(tokens);
+    auto alloc1 = pool.allocate_blocks(kNumTokens / block_size - pr1.block_table.size());
     ASSERT_TRUE(alloc1.has_value());
     for (int b = 0; b < alloc1->size(); ++b) pr1.block_table.push_back((*alloc1)[b]);
     ASSERT_EQ(pr1.block_table.size(), 2);
     ASSERT_EQ(pr1.prefix_hit_blocks, 0);
-    int free_before_cache = mgr.num_free_blocks();
+    int free_before_cache = pool.num_free_blocks();
 
-    mgr.cache_rolling_blocks(0, tokens, pr1.block_table.ids(),
-                             table_indices(pr1.block_table.size()), pr1.block_table);
+    publish_blocks(pool, tokens, pr1.block_table);
 
     // 3. Write KV data into the blocks, then release.
     cudaStream_t stream;
@@ -70,26 +71,26 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
         h_k[i] = __float2bfloat16(static_cast<float>((i + 1) % 100) * 0.01f);
         h_v[i] = __float2bfloat16(static_cast<float>((i + 50) % 100) * 0.01f);
     }
-    cudaMemcpyAsync(mgr.k_cache(0).data(), h_k.data(), kv_elems * sizeof(__nv_bfloat16),
+    cudaMemcpyAsync(storage->k_layer_tensor(0).data(), h_k.data(), kv_elems * sizeof(__nv_bfloat16),
                     cudaMemcpyHostToDevice, stream);
-    cudaMemcpyAsync(mgr.v_cache(0).data(), h_v.data(), kv_elems * sizeof(__nv_bfloat16),
+    cudaMemcpyAsync(storage->v_layer_tensor(0).data(), h_v.data(), kv_elems * sizeof(__nv_bfloat16),
                     cudaMemcpyHostToDevice, stream);
 
-    mgr.release_blocks(pr1.block_table);
+    pool.release_blocks(pr1.block_table);
 
     // 4. Verify blocks went to LRU (CACHED_IDLE).
-    auto stats1 = mgr.stats();
+    auto stats1 = pool.stats();
     EXPECT_EQ(stats1.block_cached_idle, 2);
     // Free count unchanged (blocks moved from ACTIVE to LRU, not FREE).
-    EXPECT_EQ(mgr.num_free_blocks(), free_before_cache);
+    EXPECT_EQ(pool.num_free_blocks(), free_before_cache);
 
     // 5. Request 2: same tokens → prefix hit.
-    auto pr2 = mgr.lookup_prefix_cache(tokens);
+    auto pr2 = pool.lookup_prefix_cache(tokens);
     EXPECT_EQ(pr2.block_table.size(), 2);
     EXPECT_EQ(pr2.prefix_hit_blocks, 2);
     EXPECT_EQ(pr2.block_table.shared_count(), 2);
     // No new blocks allocated.
-    EXPECT_EQ(mgr.num_free_blocks(), free_before_cache);
+    EXPECT_EQ(pool.num_free_blocks(), free_before_cache);
 
     // 6. Run prefill attention using the shared blocks.
     int64_t q_elems = static_cast<int64_t>(kNumTokens) * nq * hd;
@@ -120,8 +121,8 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
 
     constexpr ccop::Device kCuda0{ccop::DeviceType::kCUDA, 0};
     ccop::Tensor q(d_q, ccop::DType::kBFloat16, kCuda0, {kNumTokens, nq, hd});
-    auto k_cache = mgr.k_cache_blocks(0);
-    auto v_cache = mgr.v_cache_blocks(0);
+    auto k_cache = storage->k_block_tensor(0);
+    auto v_cache = storage->v_block_tensor(0);
     ccop::Tensor block_table(d_bt, ccop::DType::kInt32, kCuda0, {1, kMaxBlocks});
     ccop::Tensor query_start_loc(d_qsl, ccop::DType::kInt32, kCuda0, {2});
     ccop::Tensor context_lens(d_ctx, ccop::DType::kInt32, kCuda0, {1});
@@ -142,32 +143,31 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
     }
 
     // 7. Release second request.
-    mgr.release_blocks(pr2.block_table);
-    EXPECT_EQ(mgr.stats().block_cached_idle, 2);
+    pool.release_blocks(pr2.block_table);
+    EXPECT_EQ(pool.stats().block_cached_idle, 2);
 
     // 8. LRU eviction: fill cache with distinct tokens, then verify eviction.
     int cached_count = 2;
     for (int i = 0; cached_count < kMaxBlocks; ++i) {
         std::vector<int32_t> t(32, 100 + i);
-        auto px = mgr.lookup_prefix_cache(t);
+        auto px = pool.lookup_prefix_cache(t);
         auto alloc_px =
-            mgr.allocate_blocks(static_cast<int>(t.size()) / block_size - px.block_table.size());
+            pool.allocate_blocks(static_cast<int>(t.size()) / block_size - px.block_table.size());
         ASSERT_TRUE(alloc_px.has_value());
         for (int b = 0; b < alloc_px->size(); ++b) px.block_table.push_back((*alloc_px)[b]);
-        mgr.cache_rolling_blocks(0, t, px.block_table.ids(), table_indices(px.block_table.size()),
-                                 px.block_table);
-        mgr.release_blocks(px.block_table);
+        publish_blocks(pool, t, px.block_table);
+        pool.release_blocks(px.block_table);
         // Some may collide with previous hashes; count actual cached blocks.
         cached_count =
-            mgr.stats().block_cached_idle + mgr.stats().block_active + mgr.stats().block_free;
+            pool.stats().block_cached_idle + pool.stats().block_active + pool.stats().block_free;
     }
 
     // At this point free list should be 0 or close to it.
     // allocate_blocks should trigger eviction.
-    auto stats_before = mgr.stats();
-    auto alloc = mgr.allocate_blocks(1);
+    auto stats_before = pool.stats();
+    auto alloc = pool.allocate_blocks(1);
     ASSERT_TRUE(alloc.has_value());
-    auto stats_after = mgr.stats();
+    auto stats_after = pool.stats();
     EXPECT_LE(stats_after.block_cached_idle, stats_before.block_cached_idle);
     if (stats_before.block_free == 0) {
         EXPECT_GT(stats_after.prefix.evictions, stats_before.prefix.evictions);

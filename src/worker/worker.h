@@ -7,27 +7,28 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
 
 #include "backend/backend.h"
+#include "cache/block_storage.h"
 #include "common/channel.h"
 #include "common/error_code.h"
+#include "common/physical_batch.h"
 #include "common/types.h"
 #include "config/config.h"
 #include "facade/log.h"
-#include "worker/sequence_state.h"
 
 namespace ccinfer {
 
 namespace asio = boost::asio;
 
-class KVCacheManager;
 class Model;
+struct WorkerTestAccess;
 
 class Worker {
 public:
@@ -40,26 +41,19 @@ public:
     Result<void> init(const Config& config);
     void shutdown();
 
-    Result<std::shared_ptr<AdmitSequenceChannel>> enqueue_admit_sequence(
-        SequenceId seq_id, std::vector<int32_t> prompt_tokens, int max_context_len,
-        SequenceInitialState initial_state = {});
-    Result<std::shared_ptr<VoidChannel>> enqueue_release_sequence(SequenceId seq_id);
     Result<BatchFuture> enqueue_execute_batch(ScheduledBatch batch);
 
-    Capacity capacity() const;
-
 private:
-    struct AdmitCommand {
-        SequenceId seq_id;
-        std::vector<int32_t> prompt_tokens;
-        int max_context_len;
-        SequenceInitialState initial_state;
-        std::shared_ptr<AdmitSequenceChannel> channel;
-    };
+    friend struct WorkerTestAccess;
 
-    struct ReleaseCommand {
-        SequenceId seq_id;
-        std::shared_ptr<VoidChannel> channel;
+    class BatchTranslator {
+    public:
+        BatchTranslator(Backend& backend, int block_size);
+        Result<PhysicalBatch> translate(const ScheduledBatch& batch) const;
+
+    private:
+        Backend& backend_;
+        int block_size_;
     };
 
     struct PendingBatch {
@@ -73,71 +67,36 @@ private:
         std::vector<WorkItemResult> stale_results;
     };
 
-    using PendingCommand = std::variant<AdmitCommand, ReleaseCommand, PendingBatch>;
-    using SequenceRegistry = std::unordered_map<SequenceId, SequenceState>;
-
     void worker_loop();
-    void process_command(PendingCommand command);
-    void process_admit(AdmitCommand command);
-    void process_release(ReleaseCommand command);
+    void process_command(PendingBatch pending);
     void process_batch(PendingBatch pending);
 
     Result<void> init_resources(const Config& config);
     void reset_resources();
 
-    Result<AdmitSequenceResult> admit_sequence_resources(SequenceId seq_id,
-                                                         const std::vector<int32_t>& prompt_tokens,
-                                                         int max_context_len,
-                                                         SequenceInitialState initial_state);
-    Result<void> release_sequence_resources(SequenceId seq_id);
-
-    void sync_capacity();
-
-    SequenceRegistry build_sequence_states(const ScheduledBatch& batch) const;
     ResolvedBatch resolve_batch(const ScheduledBatch& batch) const;
-    std::vector<SequenceDelta> build_deltas(const SequenceRegistry& before,
-                                            const SequenceRegistry& after);
-    static void apply_sampled_progress(SequenceRegistry& states, const BatchResult& batch);
-    static void append_deferred_results(const ScheduledBatch& batch,
-                                        const std::vector<std::size_t>& deferred_indices,
-                                        BatchResult& result);
-    void cache_committed_blocks(const ScheduledBatch& batch,
-                                const std::vector<std::size_t>& deferred_indices,
-                                const std::vector<bool>& no_write_flags,
-                                SequenceRegistry& sequences);
 
     template <typename ChanPtr, typename T>
     void resolve(ChanPtr& chan_ptr, Result<T> result);
 
     asio::io_context& io_;
 
-    std::deque<PendingCommand> queue_;
+    std::deque<PendingBatch> queue_;
     std::mutex queue_mutex_;
     std::condition_variable cv_;
     std::thread worker_thread_;
     std::atomic<bool> running_{false};
 
-    std::mutex resource_mutex_;
-    std::unordered_map<SequenceId, SequenceState> request_states_;
-
-    // Cached capacity, synced from KVCacheManager::stats().
-    std::atomic<int> active_sequences_{0};
-    std::atomic<int> free_blocks_{0};
-    std::atomic<int> max_blocks_{0};
-    std::atomic<int> block_size_{0};
-    std::atomic<int> block_active_{0};
-    std::atomic<int> block_cached_idle_{0};
-    std::atomic<uint64_t> prefix_lookup_hits_{0};
-    std::atomic<uint64_t> prefix_lookup_misses_{0};
-    std::atomic<uint64_t> prefix_evictions_{0};
-    std::atomic<uint64_t> prefix_cached_blocks_{0};
+    // Execution-only handoff state. Scheduler policy, block ownership and
+    // request lifecycle remain independent of these maps.
+    std::unordered_map<SequenceId, int32_t> latest_tokens_;
+    std::unordered_set<SequenceId> failed_sequences_;
     bool initialized_ = false;
     EngineConfig engine_config_;
 
-    // Device resources protected by resource_mutex_.
     std::unique_ptr<Backend> backend_;
     std::unique_ptr<Model> model_;
-    std::unique_ptr<KVCacheManager> kv_mgr_;
+    std::unique_ptr<BlockStorage> block_storage_;
 };
 
 template <typename ChanPtr, typename T>
