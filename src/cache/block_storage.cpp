@@ -117,10 +117,14 @@ Result<void> BlockStorage::init(Backend& backend, int num_layers, int max_blocks
     auto k_r = backend.allocate_buffer(total_bytes);
     if (!k_r) return std::unexpected(k_r.error());
     auto k_buf = std::move(*k_r);
+    auto k_zero = backend.memset(k_buf->data(), 0, total_bytes);
+    if (!k_zero) return std::unexpected(k_zero.error());
 
     auto v_r = backend.allocate_buffer(total_bytes);
     if (!v_r) return std::unexpected(v_r.error());
     auto v_buf = std::move(*v_r);
+    auto v_zero = backend.memset(v_buf->data(), 0, total_bytes);
+    if (!v_zero) return std::unexpected(v_zero.error());
 
     k_data_ = std::move(k_buf);
     v_data_ = std::move(v_buf);

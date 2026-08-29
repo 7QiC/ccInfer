@@ -28,7 +28,7 @@ public:
     Result<void> memcpy_h2d(void* dst, const void* src, std::size_t count);
     Result<void> memcpy_d2h(void* dst, const void* src, std::size_t count);
     Result<void> memcpy_d2d(void* dst, const void* src, std::size_t count);
-    [[nodiscard]] void* stream() const noexcept;
+    Result<void> memset(void* dst, int value, std::size_t count);
     Result<void> synchronize();
     [[nodiscard]] ccop::ExecutionContext context() const noexcept;
 

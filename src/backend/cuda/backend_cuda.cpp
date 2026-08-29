@@ -36,7 +36,7 @@ public:
 
 private:
     CudaBuffer(std::size_t bytes, void* ptr, ccop::Device device)
-        : bytes_(bytes), ptr_(ptr), device_(device) {}
+        : ptr_(ptr), bytes_(bytes), device_(device) {}
 
     void* ptr_ = nullptr;
     std::size_t bytes_ = 0;
@@ -106,10 +106,12 @@ Result<void> Backend::memcpy_d2d(void* dst, const void* src, std::size_t count) 
     return cuda_check(cudaMemcpyAsync(dst, src, count, cudaMemcpyDeviceToDevice, impl_->stream_));
 }
 
-void* Backend::stream() const noexcept { return impl_->stream_; }
+Result<void> Backend::memset(void* dst, int value, std::size_t count) {
+    assert(dst != nullptr && count > 0);
+    return cuda_check(cudaMemsetAsync(dst, value, count, impl_->stream_));
+}
 
 Result<void> Backend::synchronize() { return cuda_check(cudaStreamSynchronize(impl_->stream_)); }
-
 ccop::ExecutionContext Backend::context() const noexcept {
     return {impl_->stream_, impl_->cublas_handle_};
 }
