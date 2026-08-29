@@ -153,6 +153,7 @@ int main(int argc, char* argv[]) {
 
     ccinfer::Scheduler scheduler(scheduler_io, *executor, config.engine_);
     scheduler.start();
+    std::thread sched_thread([&scheduler_io] { scheduler_io.run(); });
 
     ccinfer::HttpServer http_server(http_io, static_cast<uint16_t>(port), scheduler, *tokenizer);
     auto sr = http_server.start();
@@ -162,6 +163,9 @@ int main(int argc, char* argv[]) {
         auto scheduler_shutdown = scheduler.shutdown_async();
         if (scheduler_shutdown.valid()) scheduler_shutdown.wait();
         executor->shutdown();
+        scheduler_guard.reset();
+        scheduler_io.stop();
+        if (sched_thread.joinable()) sched_thread.join();
         return 1;
     }
     std::cout << "Server listening on port " << port << std::endl;
@@ -174,7 +178,6 @@ int main(int argc, char* argv[]) {
     });
 
     std::thread http_thread([&http_io] { http_io.run(); });
-    std::thread sched_thread([&scheduler_io] { scheduler_io.run(); });
 
     while (!shutdown_flag.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
