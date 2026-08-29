@@ -27,10 +27,7 @@ public:
     Result<std::string> decode(const std::vector<int32_t>& token_ids,
                                bool skip_special_tokens = true) const override;
 
-    int32_t bos_token_id() const noexcept override { return bos_token_id_; }
     int32_t eos_token_id() const noexcept override { return eos_token_id_; }
-    int32_t pad_token_id() const noexcept override { return pad_token_id_; }
-    int32_t unk_token_id() const noexcept override { return unk_token_id_; }
 
     int32_t vocab_size() const noexcept override { return max_token_id_ + 1; }
 
@@ -57,7 +54,7 @@ private:
     void parse_added_tokens(const nlohmann::json& j);
     void resolve_special_tokens();
 
-    Result<std::vector<std::string>> byte_encode_segment(std::string_view text) const;
+    std::vector<std::string> byte_encode_segment(std::string_view text) const;
     std::vector<std::string> apply_bpe(std::vector<std::string> symbols) const;
     Result<std::vector<int32_t>> encode_normal_segment(std::string_view text) const;
 
@@ -79,9 +76,7 @@ private:
     std::unordered_map<int32_t, std::string> id_to_special_token_;
 
     int32_t max_token_id_ = -1;
-    int32_t bos_token_id_ = -1;
     int32_t eos_token_id_ = -1;
-    int32_t pad_token_id_ = -1;
     int32_t unk_token_id_ = -1;
 };
 

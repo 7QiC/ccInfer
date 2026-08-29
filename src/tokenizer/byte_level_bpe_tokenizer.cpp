@@ -130,9 +130,7 @@ Result<void> ByteLevelBpeTokenizer::load(const std::string& path) {
     special_token_to_id_.clear();
     id_to_special_token_.clear();
     max_token_id_ = -1;
-    bos_token_id_ = -1;
     eos_token_id_ = -1;
-    pad_token_id_ = -1;
     unk_token_id_ = -1;
 
     auto r = parse_vocab(model);
@@ -224,13 +222,9 @@ void ByteLevelBpeTokenizer::parse_added_tokens(const nlohmann::json& j) {
             id_to_special_token_[id] = content;
         }
 
-        if (content == "<s>" || content == "<|begin_of_text|>") {
-            bos_token_id_ = id;
-        } else if (content == "</s>" || content == "<|end_of_text|>" ||
-                   content == "<|endoftext|>" || content == "<|im_end|>") {
+        if (content == "</s>" || content == "<|end_of_text|>" || content == "<|endoftext|>" ||
+            content == "<|im_end|>") {
             eos_token_id_ = id;
-        } else if (content == "<pad>" || content == "[PAD]") {
-            pad_token_id_ = id;
         } else if (content == "<unk>" || content == "[UNK]") {
             unk_token_id_ = id;
         }
@@ -244,20 +238,15 @@ void ByteLevelBpeTokenizer::resolve_special_tokens() {
         if (it != vocab_.end() && *dst < 0) *dst = it->second;
     };
 
-    set_if_exists("<s>", &bos_token_id_);
-    set_if_exists("<|begin_of_text|>", &bos_token_id_);
     set_if_exists("</s>", &eos_token_id_);
     set_if_exists("<|end_of_text|>", &eos_token_id_);
     set_if_exists("<|endoftext|>", &eos_token_id_);
     set_if_exists("<|im_end|>", &eos_token_id_);
-    set_if_exists("<pad>", &pad_token_id_);
-    set_if_exists("[PAD]", &pad_token_id_);
     set_if_exists("<unk>", &unk_token_id_);
     set_if_exists("[UNK]", &unk_token_id_);
 }
 
-Result<std::vector<std::string>> ByteLevelBpeTokenizer::byte_encode_segment(
-    std::string_view text) const {
+std::vector<std::string> ByteLevelBpeTokenizer::byte_encode_segment(std::string_view text) const {
     std::vector<std::string> symbols;
     symbols.reserve(text.size());
 
@@ -322,11 +311,7 @@ std::vector<std::string> ByteLevelBpeTokenizer::apply_bpe(std::vector<std::strin
 
 Result<std::vector<int32_t>> ByteLevelBpeTokenizer::encode_normal_segment(
     std::string_view text) const {
-    auto symbols_result = byte_encode_segment(text);
-    if (!symbols_result) {
-        return std::unexpected(symbols_result.error());
-    }
-    std::vector<std::string> symbols = apply_bpe(std::move(*symbols_result));
+    std::vector<std::string> symbols = apply_bpe(byte_encode_segment(text));
 
     std::vector<int32_t> ids;
     ids.reserve(symbols.size());

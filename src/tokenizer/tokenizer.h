@@ -22,10 +22,7 @@ public:
     virtual Result<std::string> decode(const std::vector<int32_t>& token_ids,
                                        bool skip_special_tokens = true) const = 0;
 
-    virtual int32_t bos_token_id() const noexcept = 0;
     virtual int32_t eos_token_id() const noexcept = 0;
-    virtual int32_t pad_token_id() const noexcept = 0;
-    virtual int32_t unk_token_id() const noexcept = 0;
 
     virtual int32_t vocab_size() const noexcept = 0;
 };
