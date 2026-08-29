@@ -26,7 +26,7 @@ inline constexpr bool has_flag(uint32_t flags, BlockFlags f) noexcept {
 //   ACTIVE_CACHED — kCached,               ref_count>0
 //   CACHED_IDLE   — kCached | kInLRU,      ref_count=0
 //
-// Blocks live in fixed-address storage owned by KVCacheManager, such as
+// Blocks live in fixed-address metadata storage owned by BlockPool, such as
 // std::unique_ptr<Block[]>.
 // They must never be moved after intrusive-list hooks are inserted.
 

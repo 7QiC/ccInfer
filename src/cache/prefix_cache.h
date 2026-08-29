@@ -7,11 +7,10 @@
 #include <vector>
 
 #include "cache/cache_stats.h"
-#include "common/error_code.h"
 
 namespace ccinfer {
 
-// Single-threaded prefix cache. All access must come from the same worker thread.
+// Single-threaded prefix index. BlockPool serializes access for the engine.
 
 class PrefixCache {
 public:
@@ -28,26 +27,19 @@ public:
 
     std::optional<int32_t> lookup(uint64_t hash) const;
 
-    // Like lookup(), but does not update lookup hit/miss statistics.
-    std::optional<int32_t> find(uint64_t hash) const;
-
-    // Non-mutating preflight for insert(): true when the existing hash/block
-    // mappings contradict this pair.
-    bool would_insert_conflict(uint64_t hash, int32_t block_id) const;
-
-    Result<void> insert(uint64_t hash, int32_t block_id);
+    void insert(uint64_t hash, int32_t block_id);
 
     void remove_by_block(int32_t block_id);
 
     void record_eviction() { ++evictions_; }
 
-    std::size_t size() const { return hash_to_block_.size(); }
+    std::size_t size() const { return hash_to_blocks_.size(); }
     PrefixCacheStats stats() const;
 
 private:
     static uint64_t hash_combine(uint64_t seed, uint64_t val) noexcept;
 
-    std::unordered_map<uint64_t, int32_t> hash_to_block_;
+    std::unordered_map<uint64_t, std::vector<int32_t>> hash_to_blocks_;
     std::unordered_map<int32_t, uint64_t> block_to_hash_;
     // Stats counters. lookup_hits/misses are mutable because lookup() is const.
     mutable uint64_t lookup_hits_ = 0;

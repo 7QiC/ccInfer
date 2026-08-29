@@ -22,8 +22,8 @@ target_link_libraries(ccinfer_core
 )
 
 add_library(ccinfer_cache STATIC
-    cache/kv_cache_manager.cpp
-    cache/kv_cache_storage.cpp
+    cache/block_pool.cpp
+    cache/block_storage.cpp
     cache/prefix_cache.cpp
 )
 target_include_directories(ccinfer_cache

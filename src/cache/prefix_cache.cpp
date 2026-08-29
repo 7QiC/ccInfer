@@ -1,8 +1,7 @@
 #include "cache/prefix_cache.h"
 
+#include <algorithm>
 #include <cassert>
-
-#include "common/error_code.h"
 
 namespace ccinfer {
 
@@ -40,62 +39,47 @@ std::vector<uint64_t> PrefixCache::chain_hashes(const std::vector<int32_t>& toke
     return hashes;
 }
 
-std::optional<int32_t> PrefixCache::find(uint64_t hash) const {
-    auto it = hash_to_block_.find(hash);
-    if (it == hash_to_block_.end()) return std::nullopt;
-    return it->second;
-}
-
 std::optional<int32_t> PrefixCache::lookup(uint64_t hash) const {
-    auto it = hash_to_block_.find(hash);
-    if (it == hash_to_block_.end()) {
+    auto it = hash_to_blocks_.find(hash);
+    if (it == hash_to_blocks_.end()) {
         ++lookup_misses_;
         return std::nullopt;
     }
+    assert(!it->second.empty());
     ++lookup_hits_;
-    return it->second;
+    return it->second.front();
 }
 
-bool PrefixCache::would_insert_conflict(uint64_t hash, int32_t block_id) const {
-    auto rev = block_to_hash_.find(block_id);
-    if (rev != block_to_hash_.end() && rev->second != hash) return true;
-
-    auto it = hash_to_block_.find(hash);
-    return it != hash_to_block_.end() && it->second != block_id;
-}
-
-Result<void> PrefixCache::insert(uint64_t hash, int32_t block_id) {
-    // Consistency check: block_id must not already map to a different hash.
-    auto rev = block_to_hash_.find(block_id);
-    if (rev != block_to_hash_.end()) {
-        if (rev->second == hash) return {};  // idempotent
-        return std::unexpected(ErrorCode::KVBlockHashCollision);
+void PrefixCache::insert(uint64_t hash, int32_t block_id) {
+    auto it = block_to_hash_.find(block_id);
+    assert(it == block_to_hash_.end() || it->second == hash);
+    if (it == block_to_hash_.end()) {
+        hash_to_blocks_[hash].push_back(block_id);
+        block_to_hash_[block_id] = hash;
     }
-
-    // Consistency check: hash must not already map to a different block_id.
-    auto it = hash_to_block_.find(hash);
-    if (it != hash_to_block_.end()) {
-        if (it->second == block_id) return {};  // idempotent
-        return std::unexpected(ErrorCode::KVBlockHashCollision);
-    }
-
-    hash_to_block_[hash] = block_id;
-    block_to_hash_[block_id] = hash;
-    return {};
 }
 
 void PrefixCache::remove_by_block(int32_t block_id) {
     auto it = block_to_hash_.find(block_id);
-    if (it == block_to_hash_.end()) return;
-    hash_to_block_.erase(it->second);
+    assert(it != block_to_hash_.end());
+    auto bucket_it = hash_to_blocks_.find(it->second);
+    assert(bucket_it != hash_to_blocks_.end());
+    auto& bucket = bucket_it->second;
+    auto block_it = std::find(bucket.begin(), bucket.end(), block_id);
+    assert(block_it != bucket.end());
+    *block_it = bucket.back();
+    bucket.pop_back();
+    if (bucket.empty()) hash_to_blocks_.erase(bucket_it);
     block_to_hash_.erase(it);
 }
 
 PrefixCacheStats PrefixCache::stats() const {
+    std::size_t cached_blocks = 0;
+    for (const auto& entry : hash_to_blocks_) cached_blocks += entry.second.size();
     return {.lookup_hits = lookup_hits_,
             .lookup_misses = lookup_misses_,
             .evictions = evictions_,
-            .cached_blocks = hash_to_block_.size()};
+            .cached_blocks = cached_blocks};
 }
 
 }  // namespace ccinfer

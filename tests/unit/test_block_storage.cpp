@@ -6,12 +6,12 @@
 
 #include "backend/backend.h"
 #include "cache/block.h"
-#include "cache/kv_cache_storage.h"
+#include "cache/block_storage.h"
 
 namespace ccinfer {
 namespace {
 
-TEST(KVCacheStorageTest, LayerOffsetsAreCorrect) {
+TEST(BlockStorageTest, LayerOffsetsAreCorrect) {
     constexpr int kNumLayers = 3;
     constexpr int kMaxBlocks = 2;
     constexpr int kNvKVHeads = 1;
@@ -20,8 +20,8 @@ TEST(KVCacheStorageTest, LayerOffsetsAreCorrect) {
     auto backend_r = Backend::create(0);
     if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
     auto& backend = **backend_r;
-    auto s_r = KVCacheStorage::create(backend, kNumLayers, kMaxBlocks, kKVBlockSize, kNvKVHeads,
-                                      kHeadDim, ccop::DType::kBFloat16);
+    auto s_r = BlockStorage::create(backend, kNumLayers, kMaxBlocks, kKVBlockSize, kNvKVHeads,
+                                    kHeadDim, ccop::DType::kBFloat16);
     ASSERT_TRUE(s_r.has_value());
     auto& storage = **s_r;
 
@@ -43,7 +43,7 @@ TEST(KVCacheStorageTest, LayerOffsetsAreCorrect) {
     EXPECT_NE(k0.data(), v0.data());
 }
 
-TEST(KVCacheStorageTest, LayersAreIndependent) {
+TEST(BlockStorageTest, LayersAreIndependent) {
     constexpr int kNumLayers = 2;
     constexpr int kMaxBlocks = 1;
     constexpr int kNvKVHeads = 1;
@@ -52,8 +52,8 @@ TEST(KVCacheStorageTest, LayersAreIndependent) {
     auto backend_r = Backend::create(0);
     if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
     auto& backend = **backend_r;
-    auto s_r = KVCacheStorage::create(backend, kNumLayers, kMaxBlocks, kKVBlockSize, kNvKVHeads,
-                                      kHeadDim, ccop::DType::kBFloat16);
+    auto s_r = BlockStorage::create(backend, kNumLayers, kMaxBlocks, kKVBlockSize, kNvKVHeads,
+                                    kHeadDim, ccop::DType::kBFloat16);
     ASSERT_TRUE(s_r.has_value());
     auto& storage = **s_r;
 
@@ -108,7 +108,7 @@ TEST(KVCacheStorageTest, LayersAreIndependent) {
     }
 }
 
-TEST(KVCacheStorageTest, ZeroInitialized) {
+TEST(BlockStorageTest, ZeroInitialized) {
     constexpr int kNumLayers = 1;
     constexpr int kMaxBlocks = 4;
     constexpr int kNvKVHeads = 2;
@@ -117,8 +117,8 @@ TEST(KVCacheStorageTest, ZeroInitialized) {
     auto backend_r = Backend::create(0);
     if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
     auto& backend = **backend_r;
-    auto s_r = KVCacheStorage::create(backend, kNumLayers, kMaxBlocks, kKVBlockSize, kNvKVHeads,
-                                      kHeadDim, ccop::DType::kBFloat16);
+    auto s_r = BlockStorage::create(backend, kNumLayers, kMaxBlocks, kKVBlockSize, kNvKVHeads,
+                                    kHeadDim, ccop::DType::kBFloat16);
     ASSERT_TRUE(s_r.has_value());
     auto& storage = **s_r;
 

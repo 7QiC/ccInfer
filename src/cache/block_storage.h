@@ -11,20 +11,20 @@ namespace ccinfer {
 
 class Backend;
 
-class KVCacheStorage {
+class BlockStorage {
 public:
-    KVCacheStorage() = default;
-    ~KVCacheStorage();
-    KVCacheStorage(KVCacheStorage&&) noexcept;
-    KVCacheStorage& operator=(KVCacheStorage&&) noexcept;
+    BlockStorage() = default;
+    ~BlockStorage();
+    BlockStorage(BlockStorage&&) noexcept;
+    BlockStorage& operator=(BlockStorage&&) noexcept;
 
-    KVCacheStorage(const KVCacheStorage&) = delete;
-    KVCacheStorage& operator=(const KVCacheStorage&) = delete;
+    BlockStorage(const BlockStorage&) = delete;
+    BlockStorage& operator=(const BlockStorage&) = delete;
 
-    static Result<std::unique_ptr<KVCacheStorage>> create(Backend& backend, int num_layers,
-                                                          int max_blocks, int block_size,
-                                                          int num_kv_heads, int head_dim,
-                                                          ccop::DType dtype);
+    static Result<std::unique_ptr<BlockStorage>> create(Backend& backend, int num_layers,
+                                                        int max_blocks, int block_size,
+                                                        int num_kv_heads, int head_dim,
+                                                        ccop::DType dtype);
 
     // Slot-major 3D view of one layer: [max_slots, num_kv_heads, head_dim].
     Tensor k_layer_tensor(int layer);

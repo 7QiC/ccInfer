@@ -60,8 +60,7 @@ TEST(PrefixCacheTest, ChainHashesTokenCountOverload) {
 
 TEST(PrefixCacheTest, InsertLookupRoundTrip) {
     PrefixCache cache;
-    auto r = cache.insert(0xABCD, 3);
-    ASSERT_TRUE(r.has_value());
+    cache.insert(0xABCD, 3);
 
     auto opt = cache.lookup(0xABCD);
     ASSERT_TRUE(opt.has_value());
@@ -75,38 +74,39 @@ TEST(PrefixCacheTest, LookupMissReturnsNullopt) {
 
 TEST(PrefixCacheTest, InsertSameBlockIdempotent) {
     PrefixCache cache;
-    ASSERT_TRUE(cache.insert(0xAAAA, 7).has_value());
-    ASSERT_TRUE(cache.insert(0xAAAA, 7).has_value());  // idempotent
+    cache.insert(0xAAAA, 7);
+    cache.insert(0xAAAA, 7);  // idempotent
     EXPECT_EQ(cache.size(), 1);
 }
 
-TEST(PrefixCacheTest, InsertDifferentHashSameBlockCollision) {
+TEST(PrefixCacheTest, InsertSameHashDifferentBlockUsesBucket) {
     PrefixCache cache;
-    ASSERT_TRUE(cache.insert(0xAAAA, 7).has_value());
-    auto r = cache.insert(0xBBBB, 7);  // block 7 already maps to 0xAAAA
-    EXPECT_FALSE(r.has_value());
-    EXPECT_EQ(r.error(), ErrorCode::KVBlockHashCollision);
+    cache.insert(0xAAAA, 7);
+    cache.insert(0xAAAA, 8);
+    auto first = cache.lookup(0xAAAA);
+    ASSERT_TRUE(first.has_value());
+    EXPECT_EQ(*first, 7);
+    cache.remove_by_block(7);
+    auto second = cache.lookup(0xAAAA);
+    ASSERT_TRUE(second.has_value());
+    EXPECT_EQ(*second, 8);
 }
 
-TEST(PrefixCacheTest, InsertSameHashDifferentBlockCollision) {
+TEST(PrefixCacheTest, RemoveMiddleBlockKeepsRemainingMappings) {
     PrefixCache cache;
-    ASSERT_TRUE(cache.insert(0xAAAA, 7).has_value());
-    auto r = cache.insert(0xAAAA, 8);  // hash 0xAAAA already maps to block 7
-    EXPECT_FALSE(r.has_value());
-    EXPECT_EQ(r.error(), ErrorCode::KVBlockHashCollision);
-}
+    cache.insert(0xAAAA, 7);
+    cache.insert(0xAAAA, 8);
+    cache.insert(0xAAAA, 9);
 
-TEST(PrefixCacheTest, WouldInsertConflictPreflight) {
-    PrefixCache cache;
-    ASSERT_TRUE(cache.insert(0xAAAA, 7).has_value());
+    cache.remove_by_block(8);
+    auto first = cache.lookup(0xAAAA);
+    ASSERT_TRUE(first.has_value());
+    EXPECT_EQ(*first, 7);
 
-    // Same mapping is idempotent and therefore not a conflict.
-    EXPECT_FALSE(cache.would_insert_conflict(0xAAAA, 7));
-    // New absent pair is not a conflict.
-    EXPECT_FALSE(cache.would_insert_conflict(0xBBBB, 8));
-    // Cross-mapped pairs are conflicts.
-    EXPECT_TRUE(cache.would_insert_conflict(0xBBBB, 7));
-    EXPECT_TRUE(cache.would_insert_conflict(0xAAAA, 8));
+    cache.remove_by_block(7);
+    auto remaining = cache.lookup(0xAAAA);
+    ASSERT_TRUE(remaining.has_value());
+    EXPECT_EQ(*remaining, 9);
 }
 
 TEST(PrefixCacheTest, RemoveByBlock) {

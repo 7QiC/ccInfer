@@ -1,4 +1,4 @@
-#include "cache/kv_cache_storage.h"
+#include "cache/block_storage.h"
 
 #include <cassert>
 #include <limits>
@@ -19,15 +19,15 @@ inline bool checked_mul(std::size_t a, std::size_t b, std::size_t& out) noexcept
 
 }  // namespace
 
-KVCacheStorage::~KVCacheStorage() = default;
-KVCacheStorage::KVCacheStorage(KVCacheStorage&&) noexcept = default;
-KVCacheStorage& KVCacheStorage::operator=(KVCacheStorage&&) noexcept = default;
+BlockStorage::~BlockStorage() = default;
+BlockStorage::BlockStorage(BlockStorage&&) noexcept = default;
+BlockStorage& BlockStorage::operator=(BlockStorage&&) noexcept = default;
 
 namespace {
 
 void* layer_data(const std::shared_ptr<Buffer>& buffer, int layer, int num_layers,
                  int64_t layer_stride, std::size_t elem_size) {
-    assert(buffer && "KVCacheStorage not initialized");
+    assert(buffer && "BlockStorage not initialized");
     assert(layer >= 0 && layer < num_layers && "layer out of range");
     const std::size_t offset =
         static_cast<std::size_t>(layer) * static_cast<std::size_t>(layer_stride) * elem_size;
@@ -36,43 +36,43 @@ void* layer_data(const std::shared_ptr<Buffer>& buffer, int layer, int num_layer
 
 }  // namespace
 
-Tensor KVCacheStorage::k_layer_tensor(int layer) {
+Tensor BlockStorage::k_layer_tensor(int layer) {
     return Tensor::from_buffer(k_data_,
                                layer_data(k_data_, layer, num_layers_, layer_stride_, elem_size_),
                                dtype_, {max_slots_, num_kv_heads_, head_dim_});
 }
 
-Tensor KVCacheStorage::v_layer_tensor(int layer) {
+Tensor BlockStorage::v_layer_tensor(int layer) {
     return Tensor::from_buffer(v_data_,
                                layer_data(v_data_, layer, num_layers_, layer_stride_, elem_size_),
                                dtype_, {max_slots_, num_kv_heads_, head_dim_});
 }
 
-Tensor KVCacheStorage::k_block_tensor(int layer) {
+Tensor BlockStorage::k_block_tensor(int layer) {
     return Tensor::from_buffer(k_data_,
                                layer_data(k_data_, layer, num_layers_, layer_stride_, elem_size_),
                                dtype_, {max_blocks_, block_size_, num_kv_heads_, head_dim_});
 }
 
-Tensor KVCacheStorage::v_block_tensor(int layer) {
+Tensor BlockStorage::v_block_tensor(int layer) {
     return Tensor::from_buffer(v_data_,
                                layer_data(v_data_, layer, num_layers_, layer_stride_, elem_size_),
                                dtype_, {max_blocks_, block_size_, num_kv_heads_, head_dim_});
 }
 
-Result<std::unique_ptr<KVCacheStorage>> KVCacheStorage::create(Backend& backend, int num_layers,
-                                                               int max_blocks, int block_size,
-                                                               int num_kv_heads, int head_dim,
-                                                               ccop::DType dtype) {
-    auto storage = std::make_unique<KVCacheStorage>();
+Result<std::unique_ptr<BlockStorage>> BlockStorage::create(Backend& backend, int num_layers,
+                                                           int max_blocks, int block_size,
+                                                           int num_kv_heads, int head_dim,
+                                                           ccop::DType dtype) {
+    auto storage = std::make_unique<BlockStorage>();
     auto r =
         storage->init(backend, num_layers, max_blocks, block_size, num_kv_heads, head_dim, dtype);
     if (!r) return std::unexpected(r.error());
     return storage;
 }
 
-Result<void> KVCacheStorage::init(Backend& backend, int num_layers, int max_blocks, int block_size,
-                                  int num_kv_heads, int head_dim, ccop::DType dtype) {
+Result<void> BlockStorage::init(Backend& backend, int num_layers, int max_blocks, int block_size,
+                                int num_kv_heads, int head_dim, ccop::DType dtype) {
     if (num_layers <= 0 || max_blocks <= 0 || block_size <= 0 || num_kv_heads <= 0 ||
         head_dim <= 0 || dtype == ccop::DType::kUnknown) {
         return std::unexpected(ErrorCode::InvalidArgument);

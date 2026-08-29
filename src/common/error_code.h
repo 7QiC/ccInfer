@@ -24,9 +24,6 @@ enum class ErrorCode : uint16_t {
     ModelUnsupportedDType,
 
     KVBlockExhausted,
-    KVBlockDoubleFree,
-    KVInvalidBlockTable,
-    KVBlockHashCollision,
 
     RequestTooLong,
     RequestCancelled,
@@ -80,12 +77,6 @@ inline constexpr std::string_view error_message(ErrorCode c) noexcept {
 
         case ErrorCode::KVBlockExhausted:
             return "KV cache block exhausted";
-        case ErrorCode::KVBlockDoubleFree:
-            return "KV cache block double-free";
-        case ErrorCode::KVInvalidBlockTable:
-            return "invalid KV cache block table";
-        case ErrorCode::KVBlockHashCollision:
-            return "KV cache block hash collision";
 
         case ErrorCode::RequestTooLong:
             return "request too long";
