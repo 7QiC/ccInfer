@@ -8,6 +8,7 @@
 #include "cache/block.h"
 #include "cache/cache_stats.h"
 #include "cache/prefix_cache.h"
+#include "common/block_table.h"
 #include "common/error_code.h"
 
 namespace ccinfer {

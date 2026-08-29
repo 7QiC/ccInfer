@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <vector>
 
 #include <boost/intrusive/list.hpp>
 
@@ -65,36 +64,5 @@ using FreeList = boost::intrusive::list<
 using LruList = boost::intrusive::list<
     Block,
     boost::intrusive::member_hook<Block, boost::intrusive::list_member_hook<>, &Block::lru_hook>>;
-
-class BlockTable {
-public:
-    BlockTable() = default;
-
-    void push_back(int32_t block_id) { block_ids_.push_back(block_id); }
-    void set_shared_count(int32_t n) { shared_count_ = n; }
-
-    int32_t operator[](int i) const { return block_ids_[i]; }
-    void set(int i, int32_t block_id) { block_ids_[i] = block_id; }
-    int32_t size() const { return static_cast<int32_t>(block_ids_.size()); }
-    bool empty() const { return block_ids_.empty(); }
-    void clear() {
-        block_ids_.clear();
-        shared_count_ = 0;
-    }
-
-    int32_t shared_count() const { return shared_count_; }
-    const int32_t* data() const { return block_ids_.data(); }
-    const std::vector<int32_t>& ids() const { return block_ids_; }
-
-    int64_t token_capacity(int32_t block_size) const {
-        return static_cast<int64_t>(size()) * block_size;
-    }
-
-private:
-    std::vector<int32_t> block_ids_;
-    // Number of prefix-hit shared blocks at the front of this table.
-    // release_blocks() determines block lifetime via ref_count, not shared_count_.
-    int32_t shared_count_ = 0;
-};
 
 }  // namespace ccinfer

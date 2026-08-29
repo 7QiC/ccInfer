@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "cache/block.h"
+#include "common/block_table.h"
 
 namespace ccinfer {
 namespace {
@@ -20,7 +21,8 @@ TEST(BlockTest, Flags) {
     EXPECT_TRUE(b.is_free());
     EXPECT_FALSE(b.is_cached());
 
-    b.flags = static_cast<uint32_t>(BlockFlags::kInFreeList) | static_cast<uint32_t>(BlockFlags::kCached);
+    b.flags =
+        static_cast<uint32_t>(BlockFlags::kInFreeList) | static_cast<uint32_t>(BlockFlags::kCached);
     EXPECT_TRUE(b.is_free());
     EXPECT_TRUE(b.is_cached());
 }
