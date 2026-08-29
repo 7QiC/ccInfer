@@ -31,11 +31,7 @@ asio::awaitable<void> EngineCore::run() {
 
             auto future_r = executor_.execute_batch(batch);
             if (!future_r) {
-                if (future_r.error() == ErrorCode::KVBlockExhausted) {
-                    co_await scheduler_.handle_batch_error(batch, future_r.error());
-                } else {
-                    scheduler_.mark_dispatch_failed(batch, future_r.error());
-                }
+                scheduler_.fail_batch(batch, future_r.error());
                 co_await scheduler_.cleanup_terminal_requests();
                 continue;
             }
@@ -45,7 +41,8 @@ asio::awaitable<void> EngineCore::run() {
 
         if (in_flight_.empty()) {
             co_await scheduler_.cleanup_terminal_requests();
-            if (scheduler_.has_waiting_work() || scheduler_.has_schedulable_work()) {
+            if (!scheduler_.admission_paused() &&
+                (scheduler_.has_waiting_work() || scheduler_.has_schedulable_work())) {
                 co_await scheduler_.preempt_one_for_admission();
                 continue;
             }
@@ -73,7 +70,7 @@ asio::awaitable<void> EngineCore::collect_oldest() {
     if (result) {
         co_await scheduler_.update_from_output(current.batch, *result);
     } else {
-        co_await scheduler_.handle_batch_error(current.batch, result.error());
+        scheduler_.fail_batch(current.batch, result.error());
     }
 }
 

@@ -3,11 +3,11 @@
 #include <algorithm>
 #include <chrono>
 #include <iterator>
-#include <optional>
+#include <limits>
 #include <type_traits>
-#include <unordered_set>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include <boost/asio/as_tuple.hpp>
 #include <boost/asio/co_spawn.hpp>
@@ -259,6 +259,38 @@ asio::awaitable<bool> Scheduler::evict_one_skipped() {
     co_return true;
 }
 
+asio::awaitable<bool> Scheduler::suspend_one_running() {
+    auto find_smallest = [&](bool prefill_phase) {
+        RunningIterator best = running_.end();
+        int best_blocks = std::numeric_limits<int>::max();
+        for (auto reverse_it = running_.rbegin(); reverse_it != running_.rend(); ++reverse_it) {
+            auto running_it = std::prev(reverse_it.base());
+            auto& state = **running_it;
+            if (!state.scheduling) continue;
+            if (prefill_phase != is_prefill_phase(state.scheduling->cursor.phase)) continue;
+            if (!is_schedulable_state(state) || state.scheduling->reservation.execution_leases != 0)
+                continue;
+            const int blocks = state.scheduling->block_table.size();
+            if (blocks < best_blocks) {
+                best_blocks = blocks;
+                best = running_it;
+            }
+        }
+        return best;
+    };
+
+    // Prefer prefill sequences; within each phase, suspend the one holding the
+    // fewest blocks. Repeated suspensions handle shared blocks that do not
+    // become free after one release.
+    auto running_it = find_smallest(true);
+    if (running_it == running_.end()) running_it = find_smallest(false);
+    if (running_it == running_.end()) co_return false;
+
+    co_await release_and_move_to_wait(*running_it);
+    admission_paused_ = !running_.empty();
+    co_return true;
+}
+
 asio::awaitable<bool> Scheduler::admit_one_waiting(BatchBuildContext& ctx) {
     if (ctx.token_budget <= 0 || waiting_.empty() ||
         running_.size() >= static_cast<std::size_t>(engine_config_.max_running_requests) ||
@@ -281,15 +313,13 @@ asio::awaitable<bool> Scheduler::admit_one_waiting(BatchBuildContext& ctx) {
         co_return true;
     }
 
-    if (state.scheduling) {
-        // Defensive: a scheduled request should not be in waiting under the
-        // skip/wait model. Release it and re-admit as a fresh sequence.
-        release_scheduling_blocks(state);
-    }
+    assert(!state.scheduling && "a scheduled request should never be in waiting_");
 
     const int prompt_len = static_cast<int>(state.prompt_tokens.size());
+    const int64_t max_context_capacity =
+        static_cast<int64_t>(block_pool_.max_blocks()) * block_pool_.block_size();
     if (prompt_len <= 0 || prompt_len > state.max_context_len ||
-        prompt_len > block_pool_.max_blocks() * block_pool_.block_size()) {
+        state.max_context_len > max_context_capacity || prompt_len > max_context_capacity) {
         send_event(state.sink, std::unexpected(ErrorCode::InvalidArgument));
         erase_request(request);
         co_return true;
@@ -303,11 +333,13 @@ asio::awaitable<bool> Scheduler::admit_one_waiting(BatchBuildContext& ctx) {
     if (missing_blocks > 0) allocated = block_pool_.allocate_blocks(missing_blocks);
     if (!allocated) {
         block_pool_.release_blocks(lookup.block_table);
-        if (allocated.error() == ErrorCode::KVBlockExhausted && co_await evict_one_skipped()) {
-            waiting_.push_front(request);
-            co_return false;
-        }
         if (allocated.error() == ErrorCode::KVBlockExhausted) {
+            // KV shortage: free skipped sequences first, then suspend one
+            // running sequence. A suspension pauses new admissions until a
+            // running sequence completes, so the freed blocks are not
+            // immediately re-consumed by the same blocked request.
+            if (!co_await evict_one_skipped()) co_await suspend_one_running();
+            block_shortage_pending_ = false;
             waiting_.push_front(request);
             co_return false;
         }
@@ -355,24 +387,34 @@ asio::awaitable<ScheduledBatch> Scheduler::schedule_step() {
     ctx.batch.batch_id = next_batch_id_++;
     ctx.token_budget = engine_config_.max_token_budget;
     ctx.block_size = block_pool_.block_size();
+    assert(ctx.block_size > 0);
 
-    if (ctx.block_size <= 0) {
-        for (auto request_it : running_) {
-            auto& state = *request_it;
-            if (is_schedulable_state(state)) send_error_event(state, ErrorCode::InternalError);
-        }
-        co_return std::move(ctx.batch);
+    if (block_shortage_pending_) {
+        // A previous build step could not allocate KV blocks for a running
+        // sequence. Handle it now: free a skipped sequence first, otherwise
+        // suspend a running prefill (preferred) / decode sequence. The
+        // suspended sequence's work was not added to the previous batch.
+        block_shortage_pending_ = false;
+        if (!co_await evict_one_skipped()) co_await suspend_one_running();
     }
 
     build_running_batch(ctx);
 
-    while (accepting_.load() && ctx.token_budget > 0 &&
+    while (accepting_.load() && !admission_paused_ && ctx.token_budget > 0 &&
            running_.size() < static_cast<std::size_t>(engine_config_.max_running_requests) &&
            (!skip_.empty() || !waiting_.empty())) {
         if (!skip_.empty()) {
             if (co_await admit_one_skipped(ctx)) continue;
         }
         if (waiting_.empty() || !co_await admit_one_waiting(ctx)) break;
+    }
+
+    if (admission_paused_) {
+        // A running sequence was suspended during admission. Drop any work we
+        // built for it earlier in this step; its scheduling state is gone.
+        std::erase_if(ctx.batch.items, [&](const WorkItem& item) {
+            return !by_seq_id_.contains(work_sequence_id(item));
+        });
     }
 
     co_return std::move(ctx.batch);
@@ -385,8 +427,8 @@ void Scheduler::build_running_batch(BatchBuildContext& ctx) {
     }
 }
 
-bool Scheduler::build_state_work(BatchBuildContext& ctx, RequestState& state) {
-    if (!state.scheduling) return false;
+void Scheduler::build_state_work(BatchBuildContext& ctx, RequestState& state) {
+    if (!state.scheduling) return;
     auto& scheduling = *state.scheduling;
 
     auto select_sampling = [&](const RequestState& state) {
@@ -396,25 +438,25 @@ bool Scheduler::build_state_work(BatchBuildContext& ctx, RequestState& state) {
         }
     };
 
-    if (ctx.token_budget <= 0 || !is_schedulable_state(state)) return false;
+    if (ctx.token_budget <= 0 || !is_schedulable_state(state)) return;
 
     if (generated_token_count(state) >= state.sampling.max_tokens) {
         send_terminal_event(state);
-        return false;
+        return;
     }
 
     if (is_prefill_phase(scheduling.cursor.phase)) {
         const int prompt_len = static_cast<int>(state.prompt_tokens.size());
         const int prompt_start =
             scheduling.cursor.prefill_cursor + scheduling.reservation.reserved_prompt_tokens;
-        if (prompt_start >= prompt_len) return false;
+        if (prompt_start >= prompt_len) return;
 
         int chunk_len = prompt_len - prompt_start;
         if (engine_config_.max_seq_prefill_tokens > 0) {
             chunk_len = std::min(chunk_len, engine_config_.max_seq_prefill_tokens);
         }
         chunk_len = std::min(chunk_len, ctx.token_budget);
-        if (chunk_len <= 0) return false;
+        if (chunk_len <= 0) return;
         select_sampling(state);
 
         const bool final_chunk = prompt_start + chunk_len >= prompt_len;
@@ -433,24 +475,21 @@ bool Scheduler::build_state_work(BatchBuildContext& ctx, RequestState& state) {
         scheduling.reservation.reserved_kv_tokens += chunk_len;
         if (needs_sample) ++scheduling.reservation.reserved_generation_tokens;
         ++scheduling.reservation.execution_leases;
-        return true;
+        return;
     }
 
-    if (!is_decode_phase(scheduling.cursor.phase)) return false;
+    if (!is_decode_phase(scheduling.cursor.phase)) return;
     select_sampling(state);
     if (generated_token_count(state) + scheduling.reservation.reserved_generation_tokens >=
         state.sampling.max_tokens)
-        return false;
+        return;
 
     int32_t input_token = 0;
     bool write_kv = true;
     bool late_bind = false;
     if (scheduling.cursor.phase == GenerationPhase::Bootstrap) {
-        if (scheduling.reservation.reserved_generation_tokens > 0) return false;
-        if (state.prompt_tokens.empty()) {
-            send_error_event(state, ErrorCode::BatchTranslationFailed);
-            return false;
-        }
+        if (scheduling.reservation.reserved_generation_tokens > 0) return;
+        assert(!state.prompt_tokens.empty());
         input_token = state.prompt_tokens.back();
         write_kv = false;
     } else {
@@ -465,7 +504,7 @@ bool Scheduler::build_state_work(BatchBuildContext& ctx, RequestState& state) {
     if (committed_context + scheduling.reservation.reserved_generation_tokens >=
         state.max_context_len) {
         if (scheduling.reservation.reserved_generation_tokens == 0) send_terminal_event(state);
-        return false;
+        return;
     }
 
     const int context_len =
@@ -475,7 +514,10 @@ bool Scheduler::build_state_work(BatchBuildContext& ctx, RequestState& state) {
         (required_tokens + block_pool_.block_size() - 1) / block_pool_.block_size();
     if (required_blocks > scheduling.block_table.size()) {
         auto blocks = block_pool_.allocate_blocks(required_blocks - scheduling.block_table.size());
-        if (!blocks) return false;
+        if (!blocks) {
+            block_shortage_pending_ = true;
+            return;
+        }
         for (int i = 0; i < blocks->size(); ++i) scheduling.block_table.push_back((*blocks)[i]);
     }
 
@@ -485,7 +527,6 @@ bool Scheduler::build_state_work(BatchBuildContext& ctx, RequestState& state) {
     ++scheduling.reservation.reserved_generation_tokens;
     if (write_kv) ++scheduling.reservation.reserved_kv_tokens;
     ++scheduling.reservation.execution_leases;
-    return true;
 }
 
 bool Scheduler::has_schedulable_work() const {
@@ -534,6 +575,7 @@ void Scheduler::prepare_for_wait(RequestState& state) {
 
 void Scheduler::release_scheduling_blocks(RequestState& state) {
     if (!state.scheduling) return;
+    by_seq_id_.erase(state.scheduling->seq_id);
     block_pool_.release_blocks(state.scheduling->block_table);
     state.scheduling.reset();
 }
@@ -543,9 +585,7 @@ asio::awaitable<void> Scheduler::release_and_move_to_wait(const RequestPtr& requ
     if (!state.scheduling) co_return;
 
     prepare_for_wait(state);
-    const SequenceId seq_id = state.scheduling->seq_id;
     release_scheduling_blocks(state);
-    by_seq_id_.erase(seq_id);
     for (auto rit = running_.begin(); rit != running_.end(); ++rit) {
         if (rit->get() == request.get()) {
             running_.erase(rit);
@@ -609,7 +649,6 @@ void Scheduler::retire_work(const WorkItem& original, const WorkItemResult& work
     // but its result is intentionally ignored.
     if (work_result.stale || !is_schedulable_state(state)) return;
 
-    bool final_prefill = false;
     const int context_before = std::visit(
         [](const auto& work) { return work.expected_context_len.value_or(0); }, original);
     const int kv_tokens = kv_token_count(original);
@@ -617,14 +656,13 @@ void Scheduler::retire_work(const WorkItem& original, const WorkItemResult& work
         const auto& chunk = std::get<PrefillChunk>(original);
         const int prompt_len = static_cast<int>(state.prompt_tokens.size());
         const bool replay_prefill = scheduling.cursor.phase == GenerationPhase::ReplayPrefill;
-        if (work_result.tokens_consumed != chunk.prompt_span.length ||
-            work_result.tokens_consumed <= 0 ||
-            scheduling.cursor.prefill_cursor != chunk.prompt_span.start ||
-            scheduling.cursor.prefill_cursor + work_result.tokens_consumed > prompt_len) {
-            send_error_event(state, ErrorCode::BatchTranslationFailed);
-            return;
-        }
-        final_prefill =
+
+        assert(work_result.tokens_consumed == chunk.prompt_span.length);
+        assert(work_result.tokens_consumed > 0);
+        assert(scheduling.cursor.prefill_cursor == chunk.prompt_span.start);
+        assert(scheduling.cursor.prefill_cursor + work_result.tokens_consumed <= prompt_len);
+
+        const bool final_prefill =
             scheduling.cursor.prefill_cursor + work_result.tokens_consumed >= prompt_len;
         scheduling.cursor.prefill_cursor += work_result.tokens_consumed;
         scheduling.executed_frontier =
@@ -632,21 +670,15 @@ void Scheduler::retire_work(const WorkItem& original, const WorkItemResult& work
         if (final_prefill) scheduling.cursor.phase = GenerationPhase::Decode;
 
         if (!final_prefill) {
-            if (!work_result.sampled_tokens.empty() || work_result.eos)
-                send_error_event(state, ErrorCode::BatchTranslationFailed);
+            assert(work_result.sampled_tokens.empty() && !work_result.eos);
             return;
         }
 
         const bool replay_without_sample = replay_prefill && !state.generated_tokens.empty() &&
                                            work_result.sampled_tokens.empty() && !work_result.eos;
-        if (work_result.sampled_tokens.empty() && !work_result.eos && !replay_without_sample) {
-            send_error_event(state, ErrorCode::BatchTranslationFailed);
-            return;
-        }
-    } else if (work_result.tokens_consumed != 1) {
-        send_error_event(state, ErrorCode::BatchTranslationFailed);
-        return;
+        assert(!work_result.sampled_tokens.empty() || work_result.eos || replay_without_sample);
     } else {
+        assert(work_result.tokens_consumed == 1);
         scheduling.executed_frontier =
             std::max(scheduling.executed_frontier, context_before + kv_tokens);
     }
@@ -694,18 +726,17 @@ void Scheduler::retire_work(const WorkItem& original, const WorkItemResult& work
     }
 }
 
-void Scheduler::mark_dispatch_failed(const ScheduledBatch& batch, ErrorCode err) {
+void Scheduler::fail_batch(const ScheduledBatch& batch, ErrorCode err) {
     for (const auto& item : batch.items) {
-        const SequenceId seq_id = work_sequence_id(item);
-        auto it = by_seq_id_.find(seq_id);
+        auto it = by_seq_id_.find(work_sequence_id(item));
         if (it == by_seq_id_.end()) continue;
         retire_reservation(*it->second, item);
-        if (err != ErrorCode::KVBlockExhausted) send_error_event(*it->second, err);
+        if (it->second->status == RequestStatus::Active) send_error_event(*it->second, err);
     }
 }
 
 void Scheduler::erase_request(const RequestPtr& request) {
-    if (request->scheduling) by_seq_id_.erase(request->scheduling->seq_id);
+    assert(!request->scheduling && "release_scheduling_blocks must be called before erase");
     requests_.erase(request->request_id);
 }
 
@@ -721,11 +752,10 @@ asio::awaitable<void> Scheduler::cleanup_terminal_requests() {
     for (auto running_it : to_release) {
         auto request_it = *running_it;
         auto& state = *request_it;
-        const SequenceId seq_id = state.scheduling->seq_id;
         release_scheduling_blocks(state);
-        by_seq_id_.erase(seq_id);
         running_.erase(running_it);
         erase_request(request_it);
+        admission_paused_ = false;  // a running sequence completed and freed blocks
     }
 
     co_await cleanup_terminal_queue(skip_);
@@ -733,64 +763,17 @@ asio::awaitable<void> Scheduler::cleanup_terminal_requests() {
 }
 
 asio::awaitable<void> Scheduler::cleanup_terminal_queue(std::deque<RequestPtr>& queue) {
-    std::vector<std::deque<RequestPtr>::iterator> to_release;
-    for (auto it = queue.begin(); it != queue.end(); ++it) {
-        if ((*it)->status != RequestStatus::Active) to_release.push_back(it);
-    }
-    for (auto it : to_release) {
-        auto request = *it;
-        if (request->scheduling) {
-            const SequenceId seq_id = request->scheduling->seq_id;
-            release_scheduling_blocks(*request);
-            by_seq_id_.erase(seq_id);
+    std::deque<RequestPtr> active;
+    for (auto& request : queue) {
+        if (request->status == RequestStatus::Active) {
+            active.push_back(std::move(request));
+            continue;
         }
-        queue.erase(it);
+        release_scheduling_blocks(*request);
         erase_request(request);
     }
+    queue = std::move(active);
     co_return;
-}
-
-asio::awaitable<void> Scheduler::fail_batch(const ScheduledBatch& batch, ErrorCode err) {
-    std::unordered_set<SequenceId> seen;
-    for (const auto& item : batch.items) {
-        const SequenceId seq_id = work_sequence_id(item);
-        if (!seen.insert(seq_id).second) continue;
-        auto it = by_seq_id_.find(seq_id);
-        if (it == by_seq_id_.end()) continue;
-        retire_reservation(*it->second, item);
-        if (it->second->status == RequestStatus::Active) send_error_event(*it->second, err);
-    }
-    co_return;
-}
-
-asio::awaitable<void> Scheduler::handle_batch_error(const ScheduledBatch& batch, ErrorCode err) {
-    if (err != ErrorCode::KVBlockExhausted) {
-        co_await fail_batch(batch, err);
-        co_return;
-    }
-
-    // Free lower-priority skipped sequences before evicting running ones.
-    while (co_await evict_one_skipped()) {
-    }
-
-    std::unordered_set<SequenceId> seen;
-    std::vector<RequestPtr> to_wait;
-    for (const auto& item : batch.items) {
-        const SequenceId seq_id = work_sequence_id(item);
-        if (!seen.insert(seq_id).second) continue;
-        auto it = by_seq_id_.find(seq_id);
-        if (it == by_seq_id_.end()) continue;
-        auto request = it->second;
-        auto& state = *request;
-        if (!state.scheduling) continue;
-        retire_reservation(state, item);
-        if (state.scheduling->reservation.execution_leases == 0 &&
-            state.status == RequestStatus::Active) {
-            to_wait.push_back(std::move(request));
-        }
-    }
-
-    for (auto& request : to_wait) co_await release_and_move_to_wait(request);
 }
 
 asio::awaitable<void> Scheduler::preempt_one_for_admission() {
@@ -810,9 +793,7 @@ asio::awaitable<void> Scheduler::preempt_one_for_admission() {
 
 void Scheduler::fail_all_waiting(ErrorCode err) {
     auto fail_one = [&](const RequestPtr& request_it) {
-        if (request_it->scheduling) {
-            release_scheduling_blocks(*request_it);
-        }
+        release_scheduling_blocks(*request_it);
         send_event(request_it->sink, std::unexpected(err));
         erase_request(request_it);
     };
@@ -848,7 +829,8 @@ asio::awaitable<void> Scheduler::cleanup_all_running(ErrorCode shutdown_err) {
 }
 
 asio::awaitable<void> Scheduler::wait_for_work() {
-    if (!accepting_.load() || !waiting_.empty() || has_schedulable_work()) co_return;
+    if (!accepting_.load() || has_schedulable_work()) co_return;
+    if (!admission_paused_ && !waiting_.empty()) co_return;
     idle_timer_.expires_after(std::chrono::hours(24));
     auto [ec] = co_await idle_timer_.async_wait(as_tuple(deferred));
     (void)ec;
