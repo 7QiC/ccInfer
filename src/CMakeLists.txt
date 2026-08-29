@@ -72,7 +72,6 @@ add_library(ccinfer_engine STATIC
     engine/engine_core.cpp
     executor/single_device_executor.cpp
     worker/worker.cpp
-    worker/batch_translator.cpp
     scheduler/scheduler.cpp
 )
 target_include_directories(ccinfer_engine

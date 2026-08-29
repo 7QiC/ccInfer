@@ -23,7 +23,7 @@ target_compile_definitions(test_tokenizer_alignment PRIVATE
     REFERENCE_PATH="${CMAKE_SOURCE_DIR}/tests/unit/tokenizer_alignment_reference.json")
 gtest_discover_tests(test_tokenizer_alignment)
 
-ccinfer_add_unit_test(test_batch_translator CUDA::cudart)
+ccinfer_add_unit_test(test_worker CUDA::cudart)
 ccinfer_add_unit_test(test_scheduler)
 ccinfer_add_unit_test(test_prefix_cache)
 ccinfer_add_unit_test(test_rope_cache CUDA::cudart)
