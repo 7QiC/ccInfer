@@ -61,7 +61,7 @@ Result<RopeCache> RopeCache::create(int max_position, int rotary_dim, float rope
     auto sync_r = backend.synchronize();
     if (!sync_r) return std::unexpected(sync_r.error());
 
-    return std::move(cache);
+    return cache;
 }
 
 Tensor RopeCache::tensor() const {

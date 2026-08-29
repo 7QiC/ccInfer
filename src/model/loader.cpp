@@ -1,14 +1,14 @@
 #include "model/loader.h"
 
+#include <cstring>
 #include <fcntl.h>
+#include <string>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
-
-#include <cstring>
-#include <nlohmann/json.hpp>
-#include <string>
 #include <utility>
+
+#include <nlohmann/json.hpp>
 
 namespace ccinfer {
 
@@ -68,7 +68,7 @@ Result<WeightLoader> WeightLoader::create(const std::string& path) {
     loader.fd_ = open(path.c_str(), O_RDONLY);
     if (loader.fd_ < 0) return std::unexpected(ErrorCode::ModelLoadFailed);
 
-    struct stat st {};
+    struct stat st{};
     if (fstat(loader.fd_, &st) < 0) return std::unexpected(ErrorCode::ModelLoadFailed);
     if (st.st_size <= 0) return std::unexpected(ErrorCode::ModelLoadFailed);
 
@@ -82,7 +82,7 @@ Result<WeightLoader> WeightLoader::create(const std::string& path) {
     auto r = loader.parse();
     if (!r) return std::unexpected(r.error());
 
-    return std::move(loader);
+    return loader;
 }
 
 Result<void> WeightLoader::parse() {
