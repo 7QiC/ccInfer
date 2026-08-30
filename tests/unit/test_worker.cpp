@@ -8,14 +8,6 @@
 
 namespace ccinfer {
 
-struct WorkerTestAccess {
-    static Result<PhysicalBatch> translate(Backend& backend, int block_size,
-                                           const ScheduledBatch& batch) {
-        Worker::BatchTranslator translator(backend, block_size);
-        return translator.translate(batch);
-    }
-};
-
 namespace {
 
 class WorkerBatchTranslatorTest : public ::testing::Test {
@@ -37,7 +29,7 @@ TEST_F(WorkerBatchTranslatorTest, TranslatesSchedulerPreparedPrefill) {
     batch.batch_id = 1;
     batch.items.push_back(
         PrefillChunk{1, TokenSpan{0, 16}, 0, false, std::vector<int32_t>(16, 1), blocks});
-    auto result = WorkerTestAccess::translate(*backend_, kKVBlockSize, batch);
+    auto result = Worker::BatchTranslator(*backend_, kKVBlockSize).translate(batch);
     ASSERT_TRUE(result);
     EXPECT_EQ(result->num_tokens, 16);
     EXPECT_EQ(result->batch_size, 1);
@@ -53,7 +45,7 @@ TEST_F(WorkerBatchTranslatorTest, TranslatesDecodeWithoutAllocating) {
     ScheduledBatch batch;
     batch.batch_id = 2;
     batch.items.push_back(DecodeOneToken{1, 42, 16, true, false, blocks});
-    auto result = WorkerTestAccess::translate(*backend_, kKVBlockSize, batch);
+    auto result = Worker::BatchTranslator(*backend_, kKVBlockSize).translate(batch);
     ASSERT_TRUE(result);
     EXPECT_EQ(result->num_tokens, 1);
     EXPECT_EQ(result->context_lens.valid(), true);

@@ -18,20 +18,27 @@
 #include "cache/block_storage.h"
 #include "common/channel.h"
 #include "common/error_code.h"
-#include "common/physical_batch.h"
 #include "common/types.h"
 #include "config/config.h"
 #include "facade/log.h"
+#include "worker/model_runner.h"
 
 namespace ccinfer {
 
 namespace asio = boost::asio;
 
-class Model;
-struct WorkerTestAccess;
-
 class Worker {
 public:
+    class BatchTranslator {
+    public:
+        BatchTranslator(Backend& backend, int block_size);
+        Result<PhysicalBatch> translate(const ScheduledBatch& batch) const;
+
+    private:
+        Backend& backend_;
+        int block_size_;
+    };
+
     explicit Worker(asio::io_context& io);
     ~Worker();
 
@@ -44,18 +51,6 @@ public:
     Result<BatchFuture> enqueue_execute_batch(ScheduledBatch batch);
 
 private:
-    friend struct WorkerTestAccess;
-
-    class BatchTranslator {
-    public:
-        BatchTranslator(Backend& backend, int block_size);
-        Result<PhysicalBatch> translate(const ScheduledBatch& batch) const;
-
-    private:
-        Backend& backend_;
-        int block_size_;
-    };
-
     struct PendingBatch {
         ScheduledBatch batch;
         std::shared_ptr<BatchChannel> chan;
