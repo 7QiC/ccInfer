@@ -35,3 +35,10 @@ Tests use GTest, one test file per module, named `test_<module>.cpp`. Unit tests
 ## Commit & Pull Request Guidelines
 
 History follows Conventional Commits: `feat:`, `fix:`, `refactor:`, `perf:`, `test:`, `docs:`, `chore:`. Use a lowercase imperative subject under 72 characters, e.g. `feat: add prefix-cache LRU eviction`. Keep PRs to one logical change, describe what and why, link the relevant issue, and include benchmark or correctness evidence for performance changes.
+
+## Git Operations
+
+- Never run repository-mutating git operations (commit, push, branch, tag, reset, revert, merge, stash, etc.) without the user's explicit request or consent. The user may say "commit" / "push" directly, which authorizes that specific operation only.
+- Read-only git commands (`git status`, `git log`, `git diff`, `git show`) are always allowed.
+- When the user requests a commit or push, stage only the files the user asked for; do not add unrelated working-tree changes.
+- If a requested git operation would include unrelated changes, stop and ask before proceeding.
