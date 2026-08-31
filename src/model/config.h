@@ -162,9 +162,10 @@ struct ModelConfig {
         if (cfg.n_kv_heads_ > cfg.n_q_heads_ || cfg.n_q_heads_ % cfg.n_kv_heads_ != 0) {
             return std::unexpected(ErrorCode::ModelConfigInvalid);
         }
-        if (static_cast<int64_t>(cfg.n_q_heads_) * cfg.head_dim_ != cfg.d_model_) {
-            return std::unexpected(ErrorCode::ModelConfigInvalid);
-        }
+        // Qwen3 supports an explicit head_dim that is independent of d_model:
+        // q/k/v projection dimensions are (n_q_heads * head_dim) and
+        // (n_kv_heads * head_dim), which need not equal d_model.
+        // Example: Qwen3-0.6B has hidden_size=1024, n_q_heads=16, head_dim=128.
 
         return cfg;
     }

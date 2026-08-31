@@ -149,11 +149,13 @@ std::vector<float> run_prefill_logits(Backend& backend, const ModelConfig& confi
 
     const int T = static_cast<int>(token_ids.size());
     const int V = config.vocab_size_;
-    auto output_logits = alloc_buf(backend, static_cast<size_t>(T) * V * sizeof(float));
+    auto output_logits = alloc_buf(backend, static_cast<size_t>(V) * sizeof(float));
 
     ForwardInput fwd_in{};
     fwd_in.token_ids = Tensor(fixture.token_ids, ccop::DType::kInt32, {T});
     fwd_in.num_tokens_ = T;
+    fwd_in.logits_indices_host = {T - 1};
+    fwd_in.num_logits_ = 1;
     fwd_in.positions = Tensor(fixture.positions, ccop::DType::kInt32, {T});
     fwd_in.max_position_id_ = T - 1;
     fwd_in.mode_ = ForwardMode::Prefill;
@@ -167,7 +169,7 @@ std::vector<float> run_prefill_logits(Backend& backend, const ModelConfig& confi
     fwd_in.max_blocks_per_req_ = fixture.max_blocks_per_req;
 
     ForwardOutput fwd_out{};
-    fwd_out.logits = Tensor(output_logits, ccop::DType::kFloat32, {T, V});
+    fwd_out.logits = Tensor(output_logits, ccop::DType::kFloat32, {1, V});
 
     auto fwd_result = (*model)->forward(fwd_in, fwd_out, backend);
     if (!fwd_result) {
@@ -177,9 +179,7 @@ std::vector<float> run_prefill_logits(Backend& backend, const ModelConfig& confi
     backend.synchronize();
 
     std::vector<float> logits(static_cast<size_t>(V));
-    cudaMemcpy(logits.data(),
-               static_cast<float*>(output_logits->data()) + static_cast<int64_t>(T - 1) * V,
-               V * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(logits.data(), output_logits->data(), V * sizeof(float), cudaMemcpyDeviceToHost);
     return logits;
 }
 
@@ -265,6 +265,8 @@ std::vector<float> run_decode_step(Backend& backend, const ModelConfig& config,
     ForwardInput fwd_in{};
     fwd_in.token_ids = Tensor(f.token_ids, ccop::DType::kInt32, {1});
     fwd_in.num_tokens_ = 1;
+    fwd_in.logits_indices_host = {0};
+    fwd_in.num_logits_ = 1;
     fwd_in.positions = Tensor(f.positions, ccop::DType::kInt32, {1});
     fwd_in.max_position_id_ = pos;
     fwd_in.mode_ = ForwardMode::Decode;
@@ -327,8 +329,7 @@ std::vector<int32_t> run_greedy_generation(Backend& backend, const ModelConfig& 
     const int V = config.vocab_size_;
 
     {
-        auto prefill_logits_buf =
-            alloc_buf(backend, static_cast<size_t>(prompt_len) * V * sizeof(float));
+        auto prefill_logits_buf = alloc_buf(backend, static_cast<size_t>(V) * sizeof(float));
 
         std::vector<int32_t> positions_host(static_cast<size_t>(prompt_len));
         std::vector<int32_t> slot_mapping_host(static_cast<size_t>(prompt_len));
@@ -358,6 +359,8 @@ std::vector<int32_t> run_greedy_generation(Backend& backend, const ModelConfig& 
         ForwardInput fwd_in{};
         fwd_in.token_ids = Tensor(pf_token_ids, ccop::DType::kInt32, {prompt_len});
         fwd_in.num_tokens_ = prompt_len;
+        fwd_in.logits_indices_host = {prompt_len - 1};
+        fwd_in.num_logits_ = 1;
         fwd_in.positions = Tensor(pf_pos, ccop::DType::kInt32, {prompt_len});
         fwd_in.max_position_id_ = prompt_len - 1;
         fwd_in.mode_ = ForwardMode::Prefill;
@@ -370,7 +373,7 @@ std::vector<int32_t> run_greedy_generation(Backend& backend, const ModelConfig& 
         fwd_in.max_blocks_per_req_ = f.max_blocks_per_req;
 
         ForwardOutput fwd_out{};
-        fwd_out.logits = Tensor(prefill_logits_buf, ccop::DType::kFloat32, {prompt_len, V});
+        fwd_out.logits = Tensor(prefill_logits_buf, ccop::DType::kFloat32, {1, V});
 
         if (!(*model)->forward(fwd_in, fwd_out, backend)) {
             fprintf(stderr, "run_greedy_generation: prefill failed\n");
@@ -382,10 +385,8 @@ std::vector<int32_t> run_greedy_generation(Backend& backend, const ModelConfig& 
         f.next_slot = prompt_len;
 
         std::vector<float> last_logits(static_cast<size_t>(V));
-        cudaMemcpy(last_logits.data(),
-                   static_cast<float*>(prefill_logits_buf->data()) +
-                       static_cast<int64_t>(prompt_len - 1) * V,
-                   V * sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(last_logits.data(), prefill_logits_buf->data(), V * sizeof(float),
+                   cudaMemcpyDeviceToHost);
         int32_t first_token = argmax(last_logits);
 
         std::vector<int32_t> generated;

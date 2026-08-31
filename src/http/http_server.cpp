@@ -437,7 +437,11 @@ std::string HttpServer::make_sse_frame(const GeneratedToken& tok, const std::str
     } else {
         choice["delta"] = nlohmann::json::object();
     }
-    choice["finish_reason"] = tok.finished ? "stop" : nullptr;
+    if (tok.finished) {
+        choice["finish_reason"] = "stop";
+    } else {
+        choice["finish_reason"] = nullptr;
+    }
     j["choices"].push_back(std::move(choice));
 
     return "data: " + j.dump() + "\n\n";

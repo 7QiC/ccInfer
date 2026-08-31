@@ -35,6 +35,29 @@ TEST(ModelConfigTest, FromQwen3Json) {
     EXPECT_FLOAT_EQ(cfg->rms_norm_eps_, 1e-5f);
 }
 
+TEST(ModelConfigTest, AcceptsExplicitHeadDimDifferentFromHiddenSize) {
+    // Qwen3-0.6B style: n_q_heads * head_dim != hidden_size is valid because
+    // Qwen3 projections are sized by (n_heads * head_dim), not hidden_size.
+    nlohmann::json j = {{"architectures", {"Qwen3ForCausalLM"}},
+                        {"hidden_size", 1024},
+                        {"num_attention_heads", 16},
+                        {"num_key_value_heads", 8},
+                        {"num_hidden_layers", 28},
+                        {"intermediate_size", 3072},
+                        {"vocab_size", 151936},
+                        {"max_position_embeddings", 40960},
+                        {"head_dim", 128},
+                        {"rope_theta", 1000000.0},
+                        {"rms_norm_eps", 1e-6}};
+
+    auto cfg = ModelConfig::from_json(j);
+    ASSERT_TRUE(cfg.has_value());
+    EXPECT_EQ(cfg->d_model_, 1024);
+    EXPECT_EQ(cfg->n_q_heads_, 16);
+    EXPECT_EQ(cfg->head_dim_, 128);
+}
+
+
 TEST(ModelConfigTest, UnknownArchitecture) {
     nlohmann::json j = {{"architectures", {"UnknownModel"}}, {"hidden_size", 1024},
                         {"num_attention_heads", 8},          {"num_hidden_layers", 8},
