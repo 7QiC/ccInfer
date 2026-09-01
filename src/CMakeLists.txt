@@ -1,6 +1,15 @@
 # Layered static libraries. The public `engine` target keeps existing consumers
 # (server/tests) working while allowing finer-grained rebuilds and dependencies.
 
+add_library(ccinfer_quant STATIC
+    quant/q8_0/q8_0.cpp
+    quant/q8_0/q8_0_reference.cpp
+)
+target_include_directories(ccinfer_quant
+    PUBLIC
+        ${CMAKE_SOURCE_DIR}/src
+)
+
 add_library(ccinfer_core STATIC
     backend/cuda/backend_cuda.cpp
     core/tensor.cpp
