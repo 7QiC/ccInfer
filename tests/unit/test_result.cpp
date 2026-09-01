@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "common/error_code.h"
+#include "base/error.h"
 
 using namespace ccinfer;
 

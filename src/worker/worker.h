@@ -16,10 +16,11 @@
 
 #include "backend/backend.h"
 #include "cache/block_storage.h"
-#include "common/channel.h"
-#include "common/error_code.h"
-#include "common/types.h"
-#include "config/config.h"
+#include "base/channel.h"
+#include "base/error.h"
+#include "base/types.h"
+#include "config/engine_config.h"
+#include "config/model_config.h"
 #include "facade/log.h"
 #include "worker/model_runner.h"
 
@@ -45,7 +46,8 @@ public:
     Worker(const Worker&) = delete;
     Worker& operator=(const Worker&) = delete;
 
-    Result<void> init(const Config& config);
+    Result<void> init(const std::string& model_path, const ModelConfig& model,
+                      const EngineConfig& engine);
     void shutdown();
 
     Result<BatchFuture> enqueue_execute_batch(ScheduledBatch batch);
@@ -66,7 +68,8 @@ private:
     void process_command(PendingBatch pending);
     void process_batch(PendingBatch pending);
 
-    Result<void> init_resources(const Config& config);
+    Result<void> init_resources(const std::string& model_path, const ModelConfig& model,
+                                const EngineConfig& engine);
     void reset_resources();
 
     ResolvedBatch resolve_batch(const ScheduledBatch& batch) const;

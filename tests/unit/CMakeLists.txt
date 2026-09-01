@@ -8,6 +8,8 @@ add_executable(test_q8_0 test_q8_0.cpp)
 target_link_libraries(test_q8_0 PRIVATE ccinfer_quant gtest_main)
 gtest_discover_tests(test_q8_0)
 
+ccinfer_add_unit_test(test_precision)
+
 ccinfer_add_unit_test(test_result)
 ccinfer_add_unit_test(test_block)
 ccinfer_add_unit_test(test_block_pool)

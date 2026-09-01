@@ -9,7 +9,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "common/error_code.h"
+#include "base/error.h"
 
 namespace ccinfer {
 

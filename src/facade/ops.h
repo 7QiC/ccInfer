@@ -26,7 +26,7 @@
 #include <ccop/ops/write_kv_cache.h>
 #include <ccop/tensor.h>
 
-#include "common/error_code.h"
+#include "base/error.h"
 
 namespace ccinfer {
 

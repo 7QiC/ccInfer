@@ -14,8 +14,10 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/signal_set.hpp>
 
-#include "common/error_code.h"
-#include "config/config.h"
+#include "base/error.h"
+#include "config/engine_config.h"
+#include "config/model_config.h"
+#include "checkpoint/huggingface/config_loader.h"
 #include "executor/executor.h"
 #include "http/http_server.h"
 #include "scheduler/scheduler.h"
@@ -35,7 +37,7 @@ bool parse_nonnegative_int(const char* text, int& value) {
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0
               << " --model-path PATH [--port PORT] [--device N] [--max-blocks N] "
-                 "[--block-size N] [--max-sequences N] [--max-running-requests N] "
+                 "[--kv-block-size N] [--max-sequences N] [--max-running-requests N] "
                  "[--max-concurrent-batches N] [--max-pending-requests N] "
                  "[--max-token-budget N] [--max-seq-prefill-tokens N] "
                  "[--max-context-len N]\n";
@@ -66,8 +68,8 @@ int main(int argc, char* argv[]) {
                 std::cerr << "Invalid max blocks: " << argv[i] << std::endl;
                 return 1;
             }
-        } else if (arg == "--block-size" && i + 1 < argc) {
-            if (!parse_nonnegative_int(argv[++i], engine_config.block_size)) {
+        } else if (arg == "--kv-block-size" && i + 1 < argc) {
+            if (!parse_nonnegative_int(argv[++i], engine_config.kv_block_size)) {
                 std::cerr << "Invalid block size: " << argv[i] << std::endl;
                 return 1;
             }
@@ -121,13 +123,20 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    auto config_r = ccinfer::Config::load(model_path, engine_config);
-    if (!config_r) {
-        std::cerr << "Configuration load failed: " << ccinfer::error_message(config_r.error())
+    auto engine_r = engine_config.validate();
+    if (!engine_r) {
+        std::cerr << "Invalid engine config: " << ccinfer::error_message(engine_r.error())
                   << std::endl;
         return 1;
     }
-    auto config = std::move(*config_r);
+
+    auto model_r = ccinfer::HfConfigLoader::load(model_path + "/config.json");
+    if (!model_r) {
+        std::cerr << "Model config load failed: " << ccinfer::error_message(model_r.error())
+                  << std::endl;
+        return 1;
+    }
+    auto model_config = std::move(*model_r);
 
     // Infrastructure — work guards prevent run() from returning early
     // when there is temporarily no work.
@@ -137,12 +146,12 @@ int main(int argc, char* argv[]) {
     auto scheduler_guard = boost::asio::make_work_guard(scheduler_io);
 
     auto executor = ccinfer::Executor::create(scheduler_io);
-    if (auto r = executor->init(config); !r) {
+    if (auto r = executor->init(model_path, model_config, engine_config); !r) {
         std::cerr << "Executor init failed: " << ccinfer::error_message(r.error()) << std::endl;
         return 1;
     }
 
-    auto tok_r = ccinfer::create_tokenizer(config.model_path_);
+    auto tok_r = ccinfer::create_tokenizer(model_path);
     if (!tok_r) {
         std::cerr << "Tokenizer init failed: " << ccinfer::error_message(tok_r.error())
                   << std::endl;
@@ -151,7 +160,7 @@ int main(int argc, char* argv[]) {
     }
     auto tokenizer = std::move(*tok_r);
 
-    ccinfer::Scheduler scheduler(scheduler_io, *executor, config.engine_);
+    ccinfer::Scheduler scheduler(scheduler_io, *executor, engine_config);
     scheduler.start();
     std::thread sched_thread([&scheduler_io] { scheduler_io.run(); });
 

@@ -48,7 +48,7 @@ Scheduler::Scheduler(asio::io_context& io, Executor& executor, EngineConfig conf
       engine_config_(config),
       idle_timer_(io),
       core_(std::make_unique<EngineCore>(io, *this, executor, config)),
-      block_pool_(config.max_blocks, config.block_size),
+      block_pool_(config.max_blocks, config.kv_block_size),
       shutdown_future_(shutdown_promise_.get_future().share()) {}
 
 Scheduler::~Scheduler() = default;

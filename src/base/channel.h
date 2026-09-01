@@ -5,7 +5,7 @@
 #include <boost/asio/experimental/channel.hpp>
 #include <boost/system/error_code.hpp>
 
-#include "common/types.h"
+#include "base/types.h"
 
 namespace ccinfer {
 

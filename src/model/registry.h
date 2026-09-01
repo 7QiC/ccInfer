@@ -4,8 +4,8 @@
 #include <string>
 #include <unordered_map>
 
-#include "common/error_code.h"
-#include "model/config.h"
+#include "base/error.h"
+#include "config/model_config.h"
 #include "model/model.h"
 
 namespace ccinfer {

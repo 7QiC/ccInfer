@@ -2,26 +2,29 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/io_context.hpp>
 
-#include "common/channel.h"
-#include "common/error_code.h"
-#include "common/types.h"
+#include "base/channel.h"
+#include "base/error.h"
+#include "base/types.h"
 
 namespace ccinfer {
 
 namespace asio = boost::asio;
 
-struct Config;
+struct EngineConfig;
+struct ModelConfig;
 
 class Executor {
 public:
     virtual ~Executor() = default;
 
-    virtual Result<void> init(const Config& config) = 0;
+    virtual Result<void> init(const std::string& model_path, const ModelConfig& model,
+                              const EngineConfig& engine) = 0;
     virtual void shutdown() = 0;
 
     // Dispatch is non-blocking. Implementations execute queued batches in FIFO

@@ -45,10 +45,6 @@ Result<void> merge_qkv(Tensor& qkv, const Tensor& q, const Tensor& k, const Tens
 
 Result<Qwen3Weights> Qwen3Weights::load(Backend& backend, const ModelConfig& config,
                                         const WeightLoader& loader) {
-    if (config.weight_dtype_ != ccop::DType::kBFloat16) {
-        return std::unexpected(ErrorCode::ModelUnsupportedDType);
-    }
-
     const int D = config.d_model_;
     const int nq = config.n_q_heads_;
     const int nkv = config.n_kv_heads_;

@@ -10,9 +10,9 @@
 
 #include "backend/backend.h"
 #include "cache/block_storage.h"
-#include "common/error_code.h"
-#include "core/traits.h"
-#include "model/config.h"
+#include "base/error.h"
+#include "runtime/precision.h"
+#include "config/model_config.h"
 #include "model/model.h"
 
 namespace ccinfer {
@@ -62,13 +62,12 @@ public:
                                                          Backend& backend,
                                                          BlockStorage& block_storage,
                                                          const SamplingParams& sampling = {}) {
-        static_assert(runner_traits_valid_v<Traits>, "RunnerTraits has unknown dtype tags");
+        static_assert(execution_traits_valid_v<Traits>, "ExecutionTraits has unknown dtype tags");
 
-        // Only BF16 weights / activations / KV + FP32 logits.
-        if constexpr (!std::is_same_v<typename Traits::WeightTag, ccop::BFloat16Tag> ||
-                      !std::is_same_v<typename Traits::KVTag, ccop::BFloat16Tag> ||
-                      !std::is_same_v<typename Traits::ActivationTag, ccop::BFloat16Tag> ||
-                      !std::is_same_v<typename Traits::LogitsTag, ccop::Float32Tag>) {
+        // Only BF16 activations / KV + FP32 logits are currently supported.
+        if constexpr (Traits::activation_dtype != ccop::DType::kBFloat16 ||
+                      Traits::kv_dtype != ccop::DType::kBFloat16 ||
+                      Traits::logits_dtype != ccop::DType::kFloat32) {
             (void)Traits{};
             return std::unexpected(ErrorCode::Unsupported);
         }

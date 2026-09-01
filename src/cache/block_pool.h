@@ -8,8 +8,8 @@
 #include "cache/block.h"
 #include "cache/cache_stats.h"
 #include "cache/prefix_cache.h"
-#include "common/block_table.h"
-#include "common/error_code.h"
+#include "cache/block_table.h"
+#include "base/error.h"
 
 namespace ccinfer {
 
@@ -56,7 +56,7 @@ private:
     LruList lru_list_;
     PrefixCache prefix_cache_;
     int max_blocks_ = 0;
-    int block_size_ = kKVBlockSize;
+    int block_size_ = 0;
     mutable std::mutex mutex_;
 };
 

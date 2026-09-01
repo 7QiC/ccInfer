@@ -2,16 +2,16 @@
 
 #include <string>
 
-#include "cache/block.h"
-#include "common/error_code.h"
-#include "model/config.h"
+#include "base/error.h"
 
 namespace ccinfer {
 
+// ccInfer runtime resource/policy configuration. It contains no model
+// architecture fields.
 struct EngineConfig {
     int device_id = 0;
     int max_blocks = 1024;
-    int block_size = kKVBlockSize;
+    int kv_block_size = 128;
     int max_sequences = 64;
     int max_running_requests = 16;
     int max_concurrent_batches = 2;
@@ -23,12 +23,11 @@ struct EngineConfig {
     Result<void> validate() const;
 };
 
-struct Config {
-    std::string model_path_;
-    ModelConfig model_;
-    EngineConfig engine_;
-
-    static Result<Config> load(const std::string& model_path, EngineConfig engine = {});
+// Startup-only aggregate for main/http wiring. It intentionally does not own a
+// ModelConfig; ModelConfig is produced by Checkpoint/HF/GGUF loaders.
+struct LaunchConfig {
+    std::string model_path;
+    EngineConfig engine;
 };
 
 }  // namespace ccinfer

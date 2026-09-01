@@ -4,8 +4,8 @@
 #include <cstdint>
 #include <memory>
 
-#include "common/error_code.h"
-#include "core/tensor.h"
+#include "base/error.h"
+#include "runtime/tensor.h"
 
 namespace ccinfer {
 

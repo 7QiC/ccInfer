@@ -16,7 +16,8 @@
 #include "cache/block.h"
 #include "cache/block_pool.h"
 #include "cache/block_storage.h"
-#include "model/config.h"
+#include "config/model_config.h"
+#include "checkpoint/huggingface/config_loader.h"
 #include "model/loader.h"
 #include "model/registry.h"
 #include "tokenizer/byte_level_bpe_tokenizer.h"
@@ -419,9 +420,7 @@ protected:
 
         dir_ = model_dir();
 
-        auto cfg_json = nlohmann::json::parse(read_file(dir_ + "/config.json"), nullptr, false);
-        ASSERT_FALSE(cfg_json.is_discarded());
-        auto cfg_result = ModelConfig::from_json(cfg_json);
+        auto cfg_result = HfConfigLoader::load(dir_ + "/config.json");
         ASSERT_TRUE(cfg_result);
         config_ = *cfg_result;
 

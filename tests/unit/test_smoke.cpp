@@ -4,15 +4,15 @@
 #include <gtest/gtest.h>
 
 #include "backend/backend.h"
-#include "common/error_code.h"
-#include "core/tensor.h"
-#include "model/config.h"
+#include "base/error.h"
+#include "runtime/tensor.h"
 
 using namespace ccinfer;
 
 TEST(SmokeTest, GPUAccessible) {
     int device;
     cudaError_t err = cudaGetDevice(&device);
+    if (err != cudaSuccess) GTEST_SKIP() << "CUDA unavailable";
     ASSERT_EQ(err, cudaSuccess);
 }
 

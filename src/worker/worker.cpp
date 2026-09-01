@@ -11,8 +11,8 @@
 #include <boost/asio/post.hpp>
 
 #include "backend/backend.h"
-#include "common/asio_error.h"
-#include "core/traits.h"
+#include "base/asio_error.h"
+#include "runtime/precision.h"
 #include "model/loader.h"
 #include "model/registry.h"
 #include "worker/model_runner.h"
@@ -163,10 +163,11 @@ Worker::Worker(asio::io_context& io) : io_(io) {}
 
 Worker::~Worker() { shutdown(); }
 
-Result<void> Worker::init(const Config& config) {
+Result<void> Worker::init(const std::string& model_path, const ModelConfig& model,
+                          const EngineConfig& engine) {
     if (running_.load() || worker_thread_.joinable())
         return std::unexpected(ErrorCode::InvalidArgument);
-    auto result = init_resources(config);
+    auto result = init_resources(model_path, model, engine);
     if (!result) {
         reset_resources();
         return result;
@@ -284,7 +285,7 @@ void Worker::process_batch(PendingBatch pending) {
         for (const auto& item : resolved.batch.items)
             failed_sequences_.insert(work_sequence_id(item));
     };
-    BatchTranslator translator(*backend_, engine_config_.block_size);
+    BatchTranslator translator(*backend_, engine_config_.kv_block_size);
     auto physical = translator.translate(resolved.batch);
     if (!physical) {
         fail_sequences();
@@ -294,7 +295,7 @@ void Worker::process_batch(PendingBatch pending) {
 
     BatchResult result;
     result.batch_id = pending.batch.batch_id;
-    auto execution = ModelRunner::inference<BF16RunnerTraits>(
+    auto execution = ModelRunner::inference<Qwen3ExecutionTraits>(
         *model_, *physical, *backend_, *block_storage_, resolved.batch.sampling);
     if (!execution) {
         fail_sequences();
@@ -330,26 +331,27 @@ void Worker::process_batch(PendingBatch pending) {
     resolve(pending.chan, Result<BatchResult>(std::move(result)));
 }
 
-Result<void> Worker::init_resources(const Config& config) {
+Result<void> Worker::init_resources(const std::string& model_path, const ModelConfig& model,
+                                    const EngineConfig& engine) {
     try {
-        engine_config_ = config.engine_;
+        engine_config_ = engine;
         auto backend = Backend::create(engine_config_.device_id);
         if (!backend) return std::unexpected(backend.error());
         backend_ = std::move(*backend);
         static std::once_flag register_flag;
         std::call_once(register_flag, register_builtin_models);
-        auto loader = WeightLoader::create(config.model_path_ + "/model.safetensors");
+        auto loader = WeightLoader::create(model_path + "/model.safetensors");
         if (!loader) return std::unexpected(loader.error());
-        auto model = ModelRegistry::instance().create(config.model_, *loader, *backend_);
-        if (!model) return std::unexpected(model.error());
-        model_ = std::move(*model);
+        auto model_handle = ModelRegistry::instance().create(model, *loader, *backend_);
+        if (!model_handle) return std::unexpected(model_handle.error());
+        model_ = std::move(*model_handle);
         auto storage =
-            BlockStorage::create(*backend_, config.model_.n_layers_, engine_config_.max_blocks,
-                                 engine_config_.block_size, config.model_.n_kv_heads_,
-                                 config.model_.head_dim_, ccop::DType::kBFloat16);
+            BlockStorage::create(*backend_, model.n_layers_, engine_config_.max_blocks,
+                                 engine_config_.kv_block_size, model.n_kv_heads_,
+                                 model.head_dim_, ccop::DType::kBFloat16);
         if (!storage) return std::unexpected(storage.error());
         block_storage_ = std::move(*storage);
-        assert(block_storage_->block_size() == engine_config_.block_size);
+        assert(block_storage_->block_size() == engine_config_.kv_block_size);
         initialized_ = true;
         return {};
     } catch (...) {

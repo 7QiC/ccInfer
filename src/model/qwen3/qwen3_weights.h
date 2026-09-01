@@ -5,9 +5,9 @@
 #include <cuda_bf16.h>
 
 #include "backend/backend.h"
-#include "common/error_code.h"
-#include "core/tensor.h"
-#include "model/config.h"
+#include "base/error.h"
+#include "runtime/tensor.h"
+#include "config/model_config.h"
 #include "model/loader.h"
 
 namespace ccinfer {

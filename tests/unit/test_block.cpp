@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "cache/block.h"
-#include "common/block_table.h"
+#include "cache/block_table.h"
 
 namespace ccinfer {
 namespace {

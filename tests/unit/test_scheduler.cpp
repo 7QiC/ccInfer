@@ -14,7 +14,8 @@
 #include <boost/asio/use_future.hpp>
 #include <gtest/gtest.h>
 
-#include "common/channel.h"
+#include "base/channel.h"
+#include "config/model_config.h"
 #include "scheduler/scheduler.h"
 
 namespace ccinfer {
@@ -45,7 +46,9 @@ class FakeExecutor final : public Executor {
 public:
     explicit FakeExecutor(boost::asio::io_context& io) : io_(io) {}
 
-    Result<void> init(const Config&) override { return {}; }
+    Result<void> init(const std::string&, const ModelConfig&, const EngineConfig&) override {
+        return {};
+    }
     void shutdown() override {}
 
     Result<BatchFuture> execute_batch(ScheduledBatch batch) override {
@@ -113,6 +116,7 @@ protected:
     void SetUp() override {
         config_.max_token_budget = 4096;
         config_.max_seq_prefill_tokens = 512;
+        config_.kv_block_size = kKVBlockSize;  // keep existing scheduler unit tests on 16-token blocks
         scheduler_ = std::make_unique<Scheduler>(io_, executor_, config_);
     }
 

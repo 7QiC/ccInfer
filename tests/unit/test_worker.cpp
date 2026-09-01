@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include "backend/backend.h"
+#include "cache/block.h"
 #include "worker/worker.h"
 
 namespace ccinfer {

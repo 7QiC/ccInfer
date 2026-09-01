@@ -4,7 +4,7 @@
 #include <memory>
 
 #include "backend/buffer.h"
-#include "common/error_code.h"
+#include "base/error.h"
 #include "facade/ops.h"
 
 namespace ccinfer {

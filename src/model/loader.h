@@ -14,8 +14,8 @@
 #include <cuda_fp16.h>
 
 #include "backend/backend.h"
-#include "common/error_code.h"
-#include "core/tensor.h"
+#include "base/error.h"
+#include "runtime/tensor.h"
 
 namespace ccinfer {
 

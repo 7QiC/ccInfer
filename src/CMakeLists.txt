@@ -12,7 +12,7 @@ target_include_directories(ccinfer_quant
 
 add_library(ccinfer_core STATIC
     backend/cuda/backend_cuda.cpp
-    core/tensor.cpp
+    runtime/tensor.cpp
 )
 target_include_directories(ccinfer_core
     PUBLIC
@@ -52,11 +52,14 @@ target_link_libraries(ccinfer_cache
 )
 
 add_library(ccinfer_model STATIC
+    config/model_config.cpp
+    config/engine_config.cpp
     model/loader.cpp
     model/registry.cpp
     model/rope/rope_cache.cpp
     model/qwen3/qwen3_model.cpp
     model/qwen3/qwen3_weights.cpp
+    checkpoint/huggingface/config_loader.cpp
 )
 target_include_directories(ccinfer_model
     PUBLIC
@@ -77,7 +80,6 @@ target_link_libraries(ccinfer_model
 )
 
 add_library(ccinfer_engine STATIC
-    config/config.cpp
     engine/engine_core.cpp
     executor/single_device_executor.cpp
     worker/worker.cpp

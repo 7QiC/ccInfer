@@ -2,7 +2,7 @@
 
 #include <memory>
 
-#include "model/config.h"
+#include "config/model_config.h"
 #include "model/model.h"
 #include "model/qwen3/qwen3_weights.h"
 #include "model/rope/rope_cache.h"

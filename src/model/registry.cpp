@@ -2,7 +2,7 @@
 
 #include <utility>
 
-#include "common/error_code.h"
+#include "base/error.h"
 #include "model/qwen3/qwen3_model.h"
 
 namespace ccinfer {

@@ -16,8 +16,8 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/streambuf.hpp>
 
-#include "common/channel.h"
-#include "common/error_code.h"
+#include "base/channel.h"
+#include "base/error.h"
 
 namespace ccinfer {
 

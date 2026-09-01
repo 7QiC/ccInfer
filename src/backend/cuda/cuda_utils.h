@@ -4,7 +4,7 @@
 
 #include <cuda_runtime.h>
 
-#include "common/error_code.h"
+#include "base/error.h"
 #include "facade/log.h"
 
 namespace ccinfer {

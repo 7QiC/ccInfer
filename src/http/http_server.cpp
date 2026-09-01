@@ -23,7 +23,7 @@
 #include <boost/asio/write.hpp>
 #include <nlohmann/json.hpp>
 
-#include "common/types.h"
+#include "base/types.h"
 #include "scheduler/scheduler.h"
 #include "tokenizer/tokenizer.h"
 

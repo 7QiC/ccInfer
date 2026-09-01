@@ -1,4 +1,4 @@
-#include "core/tensor.h"
+#include "runtime/tensor.h"
 
 #include <algorithm>
 #include <array>
@@ -8,7 +8,7 @@
 #include <utility>
 
 #include "backend/backend.h"
-#include "common/error_code.h"
+#include "base/error.h"
 
 namespace ccinfer {
 

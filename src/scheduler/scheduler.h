@@ -16,8 +16,8 @@
 #include <boost/asio/steady_timer.hpp>
 
 #include "cache/block_pool.h"
-#include "common/types.h"
-#include "config/config.h"
+#include "base/types.h"
+#include "config/engine_config.h"
 #include "executor/executor.h"
 
 namespace ccinfer {

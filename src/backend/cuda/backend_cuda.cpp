@@ -8,7 +8,7 @@
 
 #include "backend/backend.h"
 #include "backend/cuda/cuda_utils.h"
-#include "common/error_code.h"
+#include "base/error.h"
 
 namespace ccinfer {
 

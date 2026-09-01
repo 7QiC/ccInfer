@@ -5,8 +5,8 @@
 #include <boost/asio/as_tuple.hpp>
 #include <boost/asio/deferred.hpp>
 
-#include "common/asio_error.h"
-#include "common/channel.h"
+#include "base/asio_error.h"
+#include "base/channel.h"
 #include "worker/worker.h"
 
 namespace ccinfer {
@@ -21,7 +21,10 @@ SingleDeviceExecutor::SingleDeviceExecutor(boost::asio::io_context& io)
 
 SingleDeviceExecutor::~SingleDeviceExecutor() { shutdown(); }
 
-Result<void> SingleDeviceExecutor::init(const Config& config) { return worker_->init(config); }
+Result<void> SingleDeviceExecutor::init(const std::string& model_path, const ModelConfig& model,
+                                        const EngineConfig& engine) {
+    return worker_->init(model_path, model, engine);
+}
 
 void SingleDeviceExecutor::shutdown() { worker_->shutdown(); }
 

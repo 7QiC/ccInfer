@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "backend/backend.h"
-#include "core/tensor.h"
+#include "runtime/tensor.h"
 
 using namespace ccinfer;
 
