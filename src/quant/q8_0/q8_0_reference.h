@@ -1,24 +1,24 @@
 #pragma once
 
+#include <cstdint>
 #include <span>
 
 #include "base/error.h"
-#include "quant/q8_0/q8_0.h"
+#include "ccop/quant.h"
 
 namespace ccinfer {
 
-// CPU correctness reference for Q8_0. Not used by the production inference hot
-// path. M1 uses dequantize reference for the GGUF->dense->cuBLAS path and M3
-// uses it as a correctness oracle for the developer-written ccop Q8_0 kernel.
-//
-// Both functions require block-aligned logical dimensions:
-//   - quantize: src.size() % kQ8_0BlockSize == 0
-//   - dequantize: dst.size() == src.size() * kQ8_0BlockSize
-// Invalid inputs return ErrorCode::InvalidArgument instead of silently padding.
-Result<void> dequantize_q8_0_reference(std::span<const Q8_0Block> src,
+// IEEE 754 binary16/binary32 helpers used by the CPU Q8_0 reference.
+float q8_0_f16_to_float(std::uint16_t value) noexcept;
+std::uint16_t q8_0_float_to_f16(float value) noexcept;
+
+// CPU Q8_0 correctness reference. Uses the canonical ccop::Q8_0Block ABI.
+// Both functions require block-aligned logical dimensions and do not silently
+// pad partial blocks.
+Result<void> dequantize_q8_0_reference(std::span<const ccop::Q8_0Block> src,
                                        std::span<float> dst) noexcept;
 
 Result<void> quantize_q8_0_reference(std::span<const float> src,
-                                     std::span<Q8_0Block> dst) noexcept;
+                                     std::span<ccop::Q8_0Block> dst) noexcept;
 
 }  // namespace ccinfer

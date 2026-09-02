@@ -23,6 +23,7 @@ public:
                                        bool skip_special_tokens = true) const = 0;
 
     virtual int32_t eos_token_id() const noexcept = 0;
+    virtual int32_t pad_token_id() const noexcept = 0;
 
     virtual int32_t vocab_size() const noexcept = 0;
 };

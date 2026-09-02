@@ -21,6 +21,10 @@ public:
 
     Result<void> load(const std::string& path) override;
 
+    Result<void> load_from_vocab_and_merges(
+        const std::vector<std::string>& tokens, const std::vector<std::string>& merges,
+        const std::vector<int32_t>& token_types, int32_t eos_token_id, int32_t pad_token_id);
+
     Result<std::vector<int32_t>> encode(std::string_view text,
                                         bool add_special_tokens = false) const override;
 
@@ -28,6 +32,7 @@ public:
                                bool skip_special_tokens = true) const override;
 
     int32_t eos_token_id() const noexcept override { return eos_token_id_; }
+    int32_t pad_token_id() const noexcept override { return pad_token_id_; }
 
     int32_t vocab_size() const noexcept override { return max_token_id_ + 1; }
 
@@ -77,6 +82,7 @@ private:
 
     int32_t max_token_id_ = -1;
     int32_t eos_token_id_ = -1;
+    int32_t pad_token_id_ = -1;
     int32_t unk_token_id_ = -1;
 };
 

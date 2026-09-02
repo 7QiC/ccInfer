@@ -146,6 +146,52 @@ Result<void> ByteLevelBpeTokenizer::load(const std::string& path) {
     return {};
 }
 
+Result<void> ByteLevelBpeTokenizer::load_from_vocab_and_merges(
+    const std::vector<std::string>& tokens, const std::vector<std::string>& merges,
+    const std::vector<int32_t>& token_types, int32_t eos_token_id, int32_t pad_token_id) {
+    vocab_.clear();
+    id_to_token_.clear();
+    merge_rank_.clear();
+    special_token_to_id_.clear();
+    id_to_special_token_.clear();
+    max_token_id_ = -1;
+    eos_token_id_ = -1;
+    pad_token_id_ = -1;
+    unk_token_id_ = -1;
+
+    for (std::size_t i = 0; i < tokens.size(); ++i) {
+        const int32_t id = static_cast<int32_t>(i);
+        vocab_[tokens[i]] = id;
+        id_to_token_[id] = tokens[i];
+        if (id > max_token_id_) max_token_id_ = id;
+
+        if (i < token_types.size()) {
+            const int32_t type = token_types[i];
+            if (type >= 3) {
+                special_token_to_id_[tokens[i]] = id;
+                id_to_special_token_[id] = tokens[i];
+            } else if (type == 2 && unk_token_id_ < 0) {
+                unk_token_id_ = id;
+            }
+        }
+    }
+
+    int32_t rank = 0;
+    for (const std::string& merge : merges) {
+        const auto pos = merge.find(' ');
+        if (pos == std::string::npos) continue;
+        Pair pair{merge.substr(0, pos), merge.substr(pos + 1)};
+        merge_rank_[pair] = rank++;
+    }
+
+    eos_token_id_ = eos_token_id;
+    pad_token_id_ = pad_token_id;
+    build_byte_maps();
+
+    if (vocab_.empty()) return std::unexpected(ErrorCode::ModelLoadFailed);
+    return {};
+}
+
 Result<void> ByteLevelBpeTokenizer::parse_vocab(const nlohmann::json& model) {
     if (!model.contains("vocab") || !model["vocab"].is_object()) {
         return std::unexpected(ErrorCode::ModelLoadFailed);

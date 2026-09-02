@@ -2,12 +2,47 @@
 # (server/tests) working while allowing finer-grained rebuilds and dependencies.
 
 add_library(ccinfer_quant STATIC
-    quant/q8_0/q8_0.cpp
     quant/q8_0/q8_0_reference.cpp
 )
 target_include_directories(ccinfer_quant
     PUBLIC
         ${CMAKE_SOURCE_DIR}/src
+)
+target_link_libraries(ccinfer_quant
+    PUBLIC
+        ccop::ccop
+)
+
+add_library(ccinfer_config STATIC
+    config/model_config.cpp
+    config/engine_config.cpp
+)
+target_include_directories(ccinfer_config
+    PUBLIC
+        ${CMAKE_SOURCE_DIR}/src
+)
+
+add_library(ccinfer_checkpoint STATIC
+    checkpoint/checkpoint.cpp
+    checkpoint/gguf/reader.cpp
+    checkpoint/gguf/weight_source.cpp
+    checkpoint/gguf/config_loader.cpp
+    checkpoint/gguf/checkpoint.cpp
+    checkpoint/huggingface/reader.cpp
+    checkpoint/huggingface/weight_source.cpp
+    checkpoint/huggingface/config_loader.cpp
+    checkpoint/huggingface/checkpoint.cpp
+)
+target_include_directories(ccinfer_checkpoint
+    PUBLIC
+        ${CMAKE_SOURCE_DIR}/src
+)
+target_link_libraries(ccinfer_checkpoint
+    PUBLIC
+        ccinfer_config
+        ccinfer_quant
+        ccop::ccop
+        nlohmann_json::nlohmann_json
 )
 
 add_library(ccinfer_core STATIC
@@ -52,14 +87,12 @@ target_link_libraries(ccinfer_cache
 )
 
 add_library(ccinfer_model STATIC
-    config/model_config.cpp
-    config/engine_config.cpp
     model/loader.cpp
     model/registry.cpp
     model/rope/rope_cache.cpp
     model/qwen3/qwen3_model.cpp
     model/qwen3/qwen3_weights.cpp
-    checkpoint/huggingface/config_loader.cpp
+    model/weight.cpp
 )
 target_include_directories(ccinfer_model
     PUBLIC
@@ -70,8 +103,10 @@ target_include_directories(ccinfer_model
 )
 target_link_libraries(ccinfer_model
     PUBLIC
+        ccinfer_config
         ccinfer_cache
         ccinfer_core
+        ccinfer_quant
         nlohmann_json::nlohmann_json
         spdlog::spdlog
     PRIVATE
@@ -95,6 +130,7 @@ target_include_directories(ccinfer_engine
 target_link_libraries(ccinfer_engine
     PUBLIC
         ccinfer_model
+        ccinfer_checkpoint
         ccinfer_cache
         ccinfer_core
         fmt::fmt
@@ -106,6 +142,7 @@ target_link_libraries(ccinfer_engine
 
 add_library(tokenizer STATIC
     tokenizer/byte_level_bpe_tokenizer.cpp
+    tokenizer/gguf_tokenizer.cpp
 )
 
 target_include_directories(tokenizer
@@ -115,6 +152,7 @@ target_include_directories(tokenizer
 
 target_link_libraries(tokenizer
     PUBLIC
+        ccinfer_checkpoint
         nlohmann_json::nlohmann_json
 )
 
