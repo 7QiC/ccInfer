@@ -87,7 +87,6 @@ target_link_libraries(ccinfer_cache
 )
 
 add_library(ccinfer_model STATIC
-    model/loader.cpp
     model/registry.cpp
     model/rope/rope_cache.cpp
     model/qwen3/qwen3_model.cpp

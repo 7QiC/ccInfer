@@ -17,7 +17,7 @@
 #include "base/error.h"
 #include "config/engine_config.h"
 #include "config/model_config.h"
-#include "checkpoint/huggingface/config_loader.h"
+#include "checkpoint/checkpoint.h"
 #include "executor/executor.h"
 #include "http/http_server.h"
 #include "scheduler/scheduler.h"
@@ -130,7 +130,13 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    auto model_r = ccinfer::HfConfigLoader::load(model_path + "/config.json");
+    auto checkpoint_r = ccinfer::Checkpoint::open(model_path);
+    if (!checkpoint_r) {
+        std::cerr << "Checkpoint open failed: " << ccinfer::error_message(checkpoint_r.error())
+                  << std::endl;
+        return 1;
+    }
+    auto model_r = (*checkpoint_r)->load_config();
     if (!model_r) {
         std::cerr << "Model config load failed: " << ccinfer::error_message(model_r.error())
                   << std::endl;

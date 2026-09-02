@@ -31,10 +31,14 @@ public:
     // Uninitialized device tensor (torch.empty style).
     static Result<Tensor> empty(Backend& backend, ccop::DType dtype,
                                 std::initializer_list<std::int64_t> shape);
+    static Result<Tensor> empty(Backend& backend, ccop::DType dtype,
+                                std::span<const std::int64_t> shape);
 
     // Allocates a device tensor and copies host data into it.
     static Result<Tensor> from_host(Backend& backend, const void* src, ccop::DType dtype,
                                     std::initializer_list<std::int64_t> shape);
+    static Result<Tensor> from_host(Backend& backend, const void* src, ccop::DType dtype,
+                                    std::span<const std::int64_t> shape);
 
     // Wraps a sub-range of an existing Buffer at an explicit byte offset.
     static Tensor from_buffer(std::shared_ptr<Buffer> buffer, void* data, ccop::DType dtype,

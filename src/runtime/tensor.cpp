@@ -21,10 +21,10 @@ bool data_in_buffer(const Buffer* buffer, const void* data, std::size_t bytes) n
            (ptr - base) <= buffer->bytes() - bytes;
 }
 
-Result<std::size_t> checked_nbytes(ccop::DType dtype, std::initializer_list<std::int64_t> shape) {
+Result<std::size_t> checked_nbytes_span(ccop::DType dtype, std::span<const std::int64_t> shape) {
     const std::size_t elem_size = ccop::dtype_size(dtype);
     if (elem_size == 0) return std::unexpected(ErrorCode::Unsupported);
-    if (shape.size() == 0 || shape.size() > static_cast<std::size_t>(ccop::kTensorMaxRank)) {
+    if (shape.empty() || shape.size() > static_cast<std::size_t>(ccop::kTensorMaxRank)) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
     constexpr std::size_t kMax = std::numeric_limits<std::size_t>::max();
@@ -51,15 +51,27 @@ Tensor::Tensor(std::shared_ptr<Buffer> buffer, ccop::DType dtype,
 
 Result<Tensor> Tensor::empty(Backend& backend, ccop::DType dtype,
                              std::initializer_list<std::int64_t> shape) {
-    auto bytes = checked_nbytes(dtype, shape);
+    return empty(backend, dtype, std::span<const std::int64_t>(shape.begin(), shape.size()));
+}
+
+Result<Tensor> Tensor::empty(Backend& backend, ccop::DType dtype,
+                             std::span<const std::int64_t> shape) {
+    auto bytes = checked_nbytes_span(dtype, shape);
     if (!bytes) return std::unexpected(bytes.error());
-    auto buffer = backend.allocate_buffer(*bytes);
-    if (!buffer) return std::unexpected(buffer.error());
-    return Tensor(std::move(*buffer), dtype, shape);
+    auto buffer_r = backend.allocate_buffer(*bytes);
+    if (!buffer_r) return std::unexpected(buffer_r.error());
+    auto buffer = std::move(*buffer_r);
+    return from_buffer(buffer, buffer->data(), dtype, shape);
 }
 
 Result<Tensor> Tensor::from_host(Backend& backend, const void* src, ccop::DType dtype,
                                  std::initializer_list<std::int64_t> shape) {
+    return from_host(backend, src, dtype,
+                     std::span<const std::int64_t>(shape.begin(), shape.size()));
+}
+
+Result<Tensor> Tensor::from_host(Backend& backend, const void* src, ccop::DType dtype,
+                                 std::span<const std::int64_t> shape) {
     if (src == nullptr) return std::unexpected(ErrorCode::InvalidArgument);
     auto tensor = empty(backend, dtype, shape);
     if (!tensor) return std::unexpected(tensor.error());

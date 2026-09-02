@@ -1,5 +1,6 @@
 #include "model/qwen3/qwen3_weights.h"
 
+#include <cassert>
 #include <cstddef>
 #include <limits>
 #include <memory>
@@ -44,7 +45,7 @@ Result<void> merge_qkv(Tensor& qkv, const Tensor& q, const Tensor& k, const Tens
 }  // namespace
 
 Result<Qwen3Weights> Qwen3Weights::load(Backend& backend, const ModelConfig& config,
-                                        const WeightLoader& loader) {
+                                        WeightSource& weights) {
     const int D = config.d_model_;
     const int nq = config.n_q_heads_;
     const int nkv = config.n_kv_heads_;
@@ -58,9 +59,19 @@ Result<Qwen3Weights> Qwen3Weights::load(Backend& backend, const ModelConfig& con
     Qwen3Weights w;
 
     auto load_tensor = [&](const std::string& name, std::vector<int64_t> shape) -> Result<Tensor> {
-        auto r = loader.load_tensor<__nv_bfloat16>(backend, name, std::move(shape));
-        if (!r) return std::unexpected(r.error());
-        return std::move(*r);
+        auto info_r = weights.info(name);
+        if (!info_r) return std::unexpected(info_r.error());
+        const auto& info = *info_r;
+        if (info.logical_shape != shape) return std::unexpected(ErrorCode::ModelShapeMismatch);
+
+        const auto* dtype = std::get_if<ccop::DType>(&info.storage_type);
+        if (dtype == nullptr || *dtype != ccop::DType::kBFloat16) {
+            return std::unexpected(ErrorCode::ModelUnsupportedDType);
+        }
+
+        auto raw = weights.read(name);
+        if (!raw) return std::unexpected(raw.error());
+        return Tensor::from_host(backend, raw->data(), *dtype, shape);
     };
 
     auto embed = load_tensor("model.embed_tokens.weight", {vocab, D});
@@ -117,13 +128,13 @@ Result<Qwen3Weights> Qwen3Weights::load(Backend& backend, const ModelConfig& con
         if (!mqkv) return std::unexpected(mqkv.error());
 
         // QK norm (Qwen3-specific).
-        if (loader.has(p + ".self_attn.q_norm.weight")) {
+        if (weights.has(p + ".self_attn.q_norm.weight")) {
             auto qn = load_tensor(p + ".self_attn.q_norm.weight", {hd});
             if (!qn) return std::unexpected(qn.error());
             lw.q_norm = std::move(*qn);
         }
 
-        if (loader.has(p + ".self_attn.k_norm.weight")) {
+        if (weights.has(p + ".self_attn.k_norm.weight")) {
             auto kn = load_tensor(p + ".self_attn.k_norm.weight", {hd});
             if (!kn) return std::unexpected(kn.error());
             lw.k_norm = std::move(*kn);

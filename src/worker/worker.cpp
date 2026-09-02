@@ -13,7 +13,7 @@
 #include "backend/backend.h"
 #include "base/asio_error.h"
 #include "runtime/precision.h"
-#include "model/loader.h"
+#include "checkpoint/checkpoint.h"
 #include "model/registry.h"
 #include "worker/model_runner.h"
 
@@ -340,9 +340,10 @@ Result<void> Worker::init_resources(const std::string& model_path, const ModelCo
         backend_ = std::move(*backend);
         static std::once_flag register_flag;
         std::call_once(register_flag, register_builtin_models);
-        auto loader = WeightLoader::create(model_path + "/model.safetensors");
-        if (!loader) return std::unexpected(loader.error());
-        auto model_handle = ModelRegistry::instance().create(model, *loader, *backend_);
+        auto checkpoint = Checkpoint::open(model_path);
+        if (!checkpoint) return std::unexpected(checkpoint.error());
+        auto model_handle =
+            ModelRegistry::instance().create(model, (*checkpoint)->weights(), *backend_);
         if (!model_handle) return std::unexpected(model_handle.error());
         model_ = std::move(*model_handle);
         auto storage =

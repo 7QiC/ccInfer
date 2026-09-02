@@ -17,8 +17,7 @@
 #include "cache/block_pool.h"
 #include "cache/block_storage.h"
 #include "config/model_config.h"
-#include "checkpoint/huggingface/config_loader.h"
-#include "model/loader.h"
+#include "checkpoint/checkpoint.h"
 #include "model/registry.h"
 #include "tokenizer/byte_level_bpe_tokenizer.h"
 
@@ -39,17 +38,6 @@ std::string model_dir() {
 }
 
 bool model_available() { return !model_dir().empty(); }
-
-std::string read_file(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) return {};
-    std::string content;
-    f.seekg(0, std::ios::end);
-    content.resize(static_cast<size_t>(f.tellg()));
-    f.seekg(0, std::ios::beg);
-    f.read(content.data(), static_cast<std::streamsize>(content.size()));
-    return content;
-}
 
 // Mini paged-KV-cache harness for correctness testing.
 //
@@ -134,9 +122,9 @@ ForwardFixture prepare_single_prefill(Backend& backend, const ModelConfig& confi
 // Run a single-prompt prefill through Qwen3Model and return the last-token
 // FP32 logits.  Returns an empty vector on any error (message printed to stderr).
 std::vector<float> run_prefill_logits(Backend& backend, const ModelConfig& config,
-                                      const WeightLoader& loader,
+                                      WeightSource& weights,
                                       const std::vector<int32_t>& token_ids) {
-    auto model = ModelRegistry::instance().create(config, loader, backend);
+    auto model = ModelRegistry::instance().create(config, weights, backend);
     if (!model) {
         fprintf(stderr, "run_prefill_logits: ModelRegistry::create failed\n");
         return {};
@@ -311,10 +299,10 @@ int32_t argmax(const std::vector<float>& v) {
 // Run full greedy generation: prefill + decode loop.
 // Returns generated NEW token IDs (excluding prompt).  Empty on error.
 std::vector<int32_t> run_greedy_generation(Backend& backend, const ModelConfig& config,
-                                           const WeightLoader& loader,
+                                           WeightSource& weights,
                                            const std::vector<int32_t>& prompt_tokens,
                                            int max_new_tokens) {
-    auto model = ModelRegistry::instance().create(config, loader, backend);
+    auto model = ModelRegistry::instance().create(config, weights, backend);
     if (!model) {
         fprintf(stderr, "run_greedy_generation: ModelRegistry::create failed\n");
         return {};
@@ -420,15 +408,15 @@ protected:
 
         dir_ = model_dir();
 
-        auto cfg_result = HfConfigLoader::load(dir_ + "/config.json");
+        auto checkpoint_result = Checkpoint::open(dir_);
+        ASSERT_TRUE(checkpoint_result);
+        checkpoint_ = std::move(*checkpoint_result);
+
+        auto cfg_result = checkpoint_->load_config();
         ASSERT_TRUE(cfg_result);
         config_ = *cfg_result;
 
         ASSERT_TRUE(tokenizer_.load(dir_ + "/tokenizer.json"));
-
-        auto loader_result = WeightLoader::create(dir_ + "/model.safetensors");
-        ASSERT_TRUE(loader_result);
-        loader_ = std::make_unique<WeightLoader>(std::move(*loader_result));
 
         auto b = Backend::create(0);
         if (!b) GTEST_SKIP() << "CUDA unavailable";
@@ -446,7 +434,7 @@ protected:
     std::string dir_;
     ModelConfig config_;
     ByteLevelBpeTokenizer tokenizer_;
-    std::unique_ptr<WeightLoader> loader_;
+    std::unique_ptr<Checkpoint> checkpoint_;
     std::unique_ptr<Backend> backend_;
     cudaStream_t stream_{};
 };
@@ -458,7 +446,7 @@ TEST_F(LogitsMatchTest, SingleToken) {
     const auto& token_ids = *ids_result;
     ASSERT_GT(token_ids.size(), 0);
     const int V = config_.vocab_size_;
-    auto logits = run_prefill_logits(*backend_, config_, *loader_, token_ids);
+    auto logits = run_prefill_logits(*backend_, config_, checkpoint_->weights(), token_ids);
     ASSERT_FALSE(logits.empty()) << "Forward pass failed";
 
     std::string ref_path = dir_ + "/ref_logits_single.bin";
@@ -494,7 +482,7 @@ TEST_F(LogitsMatchTest, CompareWithReference) {
     const auto& token_ids = *ids_result;
     ASSERT_GT(token_ids.size(), 0);
     const int V = config_.vocab_size_;
-    auto logits = run_prefill_logits(*backend_, config_, *loader_, token_ids);
+    auto logits = run_prefill_logits(*backend_, config_, checkpoint_->weights(), token_ids);
     ASSERT_FALSE(logits.empty()) << "Forward pass failed";
 
     std::string ref_path = dir_ + "/ref_logits.bin";
@@ -555,7 +543,7 @@ TEST_F(LogitsMatchTest, TopKAgreement) {
     const auto& token_ids = *ids_result;
     ASSERT_GT(token_ids.size(), 0);
     const int V = config_.vocab_size_;
-    auto logits = run_prefill_logits(*backend_, config_, *loader_, token_ids);
+    auto logits = run_prefill_logits(*backend_, config_, checkpoint_->weights(), token_ids);
     ASSERT_FALSE(logits.empty()) << "Forward pass failed";
 
     std::vector<int> idx(static_cast<size_t>(V));
@@ -615,7 +603,7 @@ TEST_F(LogitsMatchTest, GreedyGenerationMatches) {
         }
 
         auto cc_gen =
-            run_greedy_generation(*backend_, config_, *loader_, prompt_tokens, tc.max_tokens);
+            run_greedy_generation(*backend_, config_, checkpoint_->weights(), prompt_tokens, tc.max_tokens);
         ASSERT_FALSE(cc_gen.empty()) << "Generation failed for: " << tc.prompt;
 
         printf("  Prompt tokens: ");

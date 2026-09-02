@@ -12,7 +12,7 @@ namespace ccinfer {
 class Qwen3Model final : public Model {
 public:
     static Result<std::unique_ptr<Model>> create(const ModelConfig& config,
-                                                 const WeightLoader& loader,
+                                                 WeightSource& weights,
                                                  Backend& backend);
 
     Qwen3Model(ModelConfig config, Qwen3Weights weights, RopeCache rope_cache);

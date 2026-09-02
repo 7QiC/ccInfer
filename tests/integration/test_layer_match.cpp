@@ -19,8 +19,8 @@
 #include "cache/block_storage.h"
 #include "facade/ops.h"
 #include "config/model_config.h"
-#include "checkpoint/huggingface/config_loader.h"
-#include "model/loader.h"
+#include "checkpoint/checkpoint.h"
+#include "model/weight_source.h"
 #include "model/rope/rope_cache.h"
 #include "tokenizer/byte_level_bpe_tokenizer.h"
 
@@ -53,6 +53,20 @@ std::string read_file(const std::string& path) {
     return content;
 }
 
+Result<Tensor> load_dense_bf16(WeightSource& weights, Backend& backend, const std::string& name,
+                              std::vector<int64_t> shape) {
+    auto info_r = weights.info(name);
+    if (!info_r) return std::unexpected(info_r.error());
+    const auto* dtype = std::get_if<ccop::DType>(&info_r->storage_type);
+    if (dtype == nullptr || *dtype != ccop::DType::kBFloat16) {
+        return std::unexpected(ErrorCode::ModelUnsupportedDType);
+    }
+    if (info_r->logical_shape != shape) return std::unexpected(ErrorCode::ModelShapeMismatch);
+    auto raw = weights.read(name);
+    if (!raw) return std::unexpected(raw.error());
+    return Tensor::from_host(backend, raw->data(), ccop::DType::kBFloat16, shape);
+}
+
 void save_bin(const std::string& path, const float* data, size_t n) {
     std::ofstream f(path, std::ios::binary);
     f.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(n * sizeof(float)));
@@ -79,15 +93,15 @@ protected:
         backend_ = std::move(*b);
         dir_ = model_dir();
 
-        auto cfg_result = HfConfigLoader::load(dir_ + "/config.json");
+        auto checkpoint_result = Checkpoint::open(dir_);
+        ASSERT_TRUE(checkpoint_result);
+        checkpoint_ = std::move(*checkpoint_result);
+
+        auto cfg_result = checkpoint_->load_config();
         ASSERT_TRUE(cfg_result);
         config_ = *cfg_result;
 
         ASSERT_TRUE(tokenizer_.load(dir_ + "/tokenizer.json"));
-
-        auto loader_result = WeightLoader::create(dir_ + "/model.safetensors");
-        ASSERT_TRUE(loader_result);
-        loader_ = std::make_unique<WeightLoader>(std::move(*loader_result));
     }
 
     void TearDown() override {
@@ -100,7 +114,7 @@ protected:
     std::string dir_;
     ModelConfig config_;
     ByteLevelBpeTokenizer tokenizer_;
-    std::unique_ptr<WeightLoader> loader_;
+    std::unique_ptr<Checkpoint> checkpoint_;
     std::unique_ptr<Backend> backend_;
     cudaStream_t stream_{};
 };
@@ -125,11 +139,11 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
     const ccop::ExecutionContext ctx{stream_, backend_->context().blas_handle};
 
     auto embed =
-        loader_->load_tensor<__nv_bfloat16>(*backend_, "model.embed_tokens.weight", {V, D});
+        load_dense_bf16(checkpoint_->weights(), *backend_, "model.embed_tokens.weight", {V, D});
     ASSERT_TRUE(embed);
-    auto rms_final = loader_->load_tensor<__nv_bfloat16>(*backend_, "model.norm.weight", {D});
+    auto rms_final = load_dense_bf16(checkpoint_->weights(), *backend_, "model.norm.weight", {D});
     ASSERT_TRUE(rms_final);
-    auto lm_head = loader_->load_tensor<__nv_bfloat16>(*backend_, "lm_head.weight", {V, D});
+    auto lm_head = load_dense_bf16(checkpoint_->weights(), *backend_, "lm_head.weight", {V, D});
     ASSERT_TRUE(lm_head);
 
     auto rc = RopeCache::create(config_.max_seq_len_, hd, config_.rope_theta_, *backend_);
@@ -242,24 +256,24 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
         const std::string p = "model.layers." + std::to_string(l);
 
         auto rms_attn =
-            loader_->load_tensor<__nv_bfloat16>(*backend_, p + ".input_layernorm.weight", {D});
+            load_dense_bf16(checkpoint_->weights(), *backend_, p + ".input_layernorm.weight", {D});
         ASSERT_TRUE(rms_attn);
-        auto qkv_w = loader_->load_tensor<__nv_bfloat16>(*backend_, p + ".self_attn.q_proj.weight",
+        auto qkv_w = load_dense_bf16(checkpoint_->weights(), *backend_, p + ".self_attn.q_proj.weight",
                                                          {nq * hd, D});
-        auto k_w = loader_->load_tensor<__nv_bfloat16>(*backend_, p + ".self_attn.k_proj.weight",
+        auto k_w = load_dense_bf16(checkpoint_->weights(), *backend_, p + ".self_attn.k_proj.weight",
                                                        {nkv * hd, D});
-        auto v_w = loader_->load_tensor<__nv_bfloat16>(*backend_, p + ".self_attn.v_proj.weight",
+        auto v_w = load_dense_bf16(checkpoint_->weights(), *backend_, p + ".self_attn.v_proj.weight",
                                                        {nkv * hd, D});
-        auto o_w = loader_->load_tensor<__nv_bfloat16>(*backend_, p + ".self_attn.o_proj.weight",
+        auto o_w = load_dense_bf16(checkpoint_->weights(), *backend_, p + ".self_attn.o_proj.weight",
                                                        {D, nq * hd});
-        auto rms_ffn = loader_->load_tensor<__nv_bfloat16>(
-            *backend_, p + ".post_attention_layernorm.weight", {D});
+        auto rms_ffn =
+            load_dense_bf16(checkpoint_->weights(), *backend_, p + ".post_attention_layernorm.weight", {D});
         auto gate_w =
-            loader_->load_tensor<__nv_bfloat16>(*backend_, p + ".mlp.gate_proj.weight", {d_ff, D});
+            load_dense_bf16(checkpoint_->weights(), *backend_, p + ".mlp.gate_proj.weight", {d_ff, D});
         auto up_w =
-            loader_->load_tensor<__nv_bfloat16>(*backend_, p + ".mlp.up_proj.weight", {d_ff, D});
+            load_dense_bf16(checkpoint_->weights(), *backend_, p + ".mlp.up_proj.weight", {d_ff, D});
         auto down_w =
-            loader_->load_tensor<__nv_bfloat16>(*backend_, p + ".mlp.down_proj.weight", {D, d_ff});
+            load_dense_bf16(checkpoint_->weights(), *backend_, p + ".mlp.down_proj.weight", {D, d_ff});
         ASSERT_TRUE(qkv_w && k_w && v_w && o_w && rms_ffn && gate_w && up_w && down_w);
 
         const size_t q_elems = static_cast<size_t>(nq * hd) * D;
@@ -276,10 +290,10 @@ TEST_F(LayerMatchTest, DumpLayerOutputs) {
 
         std::shared_ptr<Buffer> q_norm_buf, k_norm_buf;
         auto qn =
-            loader_->load_tensor<__nv_bfloat16>(*backend_, p + ".self_attn.q_norm.weight", {hd});
+            load_dense_bf16(checkpoint_->weights(), *backend_, p + ".self_attn.q_norm.weight", {hd});
         if (qn) q_norm_buf = qn->buffer();
         auto kn =
-            loader_->load_tensor<__nv_bfloat16>(*backend_, p + ".self_attn.k_norm.weight", {hd});
+            load_dense_bf16(checkpoint_->weights(), *backend_, p + ".self_attn.k_norm.weight", {hd});
         if (kn) k_norm_buf = kn->buffer();
 
         ASSERT_TRUE(map_result(ccop::rms_norm(&normed, hidden, *rms_attn, eps, ctx)).has_value());

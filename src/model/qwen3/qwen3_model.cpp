@@ -10,17 +10,17 @@
 
 namespace ccinfer {
 
-Result<std::unique_ptr<Model>> Qwen3Model::create(const ModelConfig& config,
-                                                  const WeightLoader& loader, Backend& backend) {
-    auto weights = Qwen3Weights::load(backend, config, loader);
-    if (!weights) return std::unexpected(weights.error());
+Result<std::unique_ptr<Model>> Qwen3Model::create(const ModelConfig& config, WeightSource& weights,
+                                                  Backend& backend) {
+    auto loaded = Qwen3Weights::load(backend, config, weights);
+    if (!loaded) return std::unexpected(loaded.error());
 
     auto rope_cache =
         RopeCache::create(config.max_seq_len_, config.head_dim_, config.rope_theta_, backend);
     if (!rope_cache) return std::unexpected(rope_cache.error());
 
     std::unique_ptr<Model> model =
-        std::make_unique<Qwen3Model>(config, std::move(*weights), std::move(*rope_cache));
+        std::make_unique<Qwen3Model>(config, std::move(*loaded), std::move(*rope_cache));
     return model;
 }
 

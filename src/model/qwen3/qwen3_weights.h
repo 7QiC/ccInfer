@@ -8,7 +8,7 @@
 #include "base/error.h"
 #include "runtime/tensor.h"
 #include "config/model_config.h"
-#include "model/loader.h"
+#include "model/weight_source.h"
 
 namespace ccinfer {
 
@@ -31,7 +31,7 @@ struct Qwen3Weights {
     std::vector<Qwen3LayerWeights> layers_;
 
     static Result<Qwen3Weights> load(Backend& backend, const ModelConfig& config,
-                                     const WeightLoader& loader);
+                                     WeightSource& weights);
 };
 
 }  // namespace ccinfer

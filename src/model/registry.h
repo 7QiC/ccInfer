@@ -7,13 +7,12 @@
 #include "base/error.h"
 #include "config/model_config.h"
 #include "model/model.h"
+#include "model/weight_source.h"
 
 namespace ccinfer {
 
-class WeightLoader;
-
 using ModelCreator = Result<std::unique_ptr<Model>> (*)(const ModelConfig& config,
-                                                        const WeightLoader& loader,
+                                                        WeightSource& weights,
                                                         Backend& backend);
 
 class ModelRegistry {
@@ -22,7 +21,7 @@ public:
 
     void register_model(std::string arch, ModelCreator creator);
 
-    Result<std::unique_ptr<Model>> create(const ModelConfig& config, const WeightLoader& loader,
+    Result<std::unique_ptr<Model>> create(const ModelConfig& config, WeightSource& weights,
                                           Backend& backend) const;
 
 private:
