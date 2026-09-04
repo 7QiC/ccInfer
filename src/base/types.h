@@ -11,8 +11,8 @@
 #include <boost/asio/experimental/channel.hpp>
 #include <boost/system/error_code.hpp>
 
-#include "cache/block_table.h"
 #include "base/error.h"
+#include "block/block_table.h"
 
 namespace ccinfer {
 

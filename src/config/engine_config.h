@@ -20,6 +20,10 @@ struct EngineConfig {
     int max_seq_prefill_tokens = 512;
     int default_max_context_len = 2048;
 
+    // Number of leading full-KV-block frontiers that may hold immutable GDN
+    // state snapshots. 0 disables state prefix caching; 3 is the M1 default.
+    int state_prefix_cache_blocks = 3;
+
     Result<void> validate() const;
 };
 

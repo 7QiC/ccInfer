@@ -38,6 +38,7 @@ struct SchedulerTestAccess {
     static void cancel_on_scheduler_thread(Scheduler& s, const std::string& id) {
         s.cancel_on_scheduler_thread(id);
     }
+    static auto cleanup_terminal_requests(Scheduler& s) { return s.cleanup_terminal_requests(); }
 };
 
 namespace {
@@ -60,6 +61,8 @@ public:
         if (auto_complete_) asio::post(io_, [this] { complete_oldest(); });
         return future;
     }
+
+    void release_sequence(SequenceId seq) override { released_sequences_.push_back(seq); }
 
     asio::awaitable<Result<BatchResult>> collect_batch(BatchFuture future) override {
         auto [ec, result] = co_await future->async_receive(asio::as_tuple(asio::deferred));
@@ -109,6 +112,7 @@ public:
     std::size_t max_queued_batches_{0};
     std::deque<ScheduledBatch> batches_;
     std::deque<BatchFuture> futures_;
+    std::vector<SequenceId> released_sequences_;
 };
 
 class SchedulerTest : public ::testing::Test {
@@ -116,7 +120,8 @@ protected:
     void SetUp() override {
         config_.max_token_budget = 4096;
         config_.max_seq_prefill_tokens = 512;
-        config_.kv_block_size = kKVBlockSize;  // keep existing scheduler unit tests on 16-token blocks
+        config_.kv_block_size =
+            kKVBlockSize;  // keep existing scheduler unit tests on 16-token blocks
         scheduler_ = std::make_unique<Scheduler>(io_, executor_, config_);
     }
 
@@ -131,6 +136,23 @@ protected:
             asio::co_spawn(io_, SchedulerTestAccess::schedule_step(*scheduler_), asio::use_future);
         io_.run();
         return future.get();
+    }
+
+    void run_cleanup_terminal_requests() {
+        io_.restart();
+        auto future = asio::co_spawn(
+            io_, SchedulerTestAccess::cleanup_terminal_requests(*scheduler_), asio::use_future);
+        io_.run();
+        future.get();
+    }
+
+    void run_update_from_output(const ScheduledBatch& batch, BatchResult result) {
+        io_.restart();
+        auto future =
+            asio::co_spawn(io_, SchedulerTestAccess::update_from_output(*scheduler_, batch, result),
+                           asio::use_future);
+        io_.run();
+        future.get();
     }
 };
 
@@ -508,6 +530,45 @@ TEST_F(SchedulerTest, RetiresPrefillBeforeSchedulingDependentDecode) {
     const auto& second = std::get<DecodeOneToken>(next.items.front());
     EXPECT_TRUE(second.write_kv);
     EXPECT_TRUE(second.late_bind);
+}
+
+TEST_F(SchedulerTest, TerminalCleanupReleasesSequenceOnlyAfterExecutionLeasesDrain) {
+    auto& request = add_running(*scheduler_, make_decode(7));
+    auto batch0 = schedule_step();
+    auto batch1 = schedule_step();
+    ASSERT_EQ(batch0.items.size(), 1u);
+    ASSERT_EQ(batch1.items.size(), 1u);
+    EXPECT_EQ(request.scheduling->reservation.execution_leases, 2);
+
+    // Failure is marked; cleanup must NOT release while leases are outstanding.
+    request.status = RequestStatus::Failed;
+    run_cleanup_terminal_requests();
+    EXPECT_TRUE(executor_.released_sequences_.empty());
+    EXPECT_TRUE(request.scheduling.has_value());
+
+    auto retire_one = [&](const ScheduledBatch& batch) {
+        BatchResult result;
+        result.batch_id = batch.batch_id;
+        WorkItemResult wr;
+        wr.item_index = 0;
+        wr.seq_id = work_sequence_id(batch.items.front());
+        wr.kind = WorkKind::DecodeOneToken;
+        wr.sampled_tokens = {42};
+        wr.tokens_consumed = 1;
+        result.items.push_back(std::move(wr));
+        run_update_from_output(batch, std::move(result));
+    };
+
+    retire_one(batch0);
+    EXPECT_EQ(request.scheduling->reservation.execution_leases, 1);
+    run_cleanup_terminal_requests();
+    EXPECT_TRUE(executor_.released_sequences_.empty());
+
+    retire_one(batch1);
+    EXPECT_EQ(request.scheduling->reservation.execution_leases, 0);
+    run_cleanup_terminal_requests();
+    ASSERT_EQ(executor_.released_sequences_.size(), 1u);
+    EXPECT_EQ(executor_.released_sequences_.front(), 7u);
 }
 
 }  // namespace

@@ -14,9 +14,9 @@
 
 #include "backend/backend.h"
 #include "backend/cuda/cuda_utils.h"
-#include "cache/block.h"
-#include "cache/block_pool.h"
-#include "cache/block_storage.h"
+#include "block/block.h"
+#include "block/block_pool.h"
+#include "block/block_storage.h"
 #include "facade/ops.h"
 #include "config/model_config.h"
 #include "checkpoint/checkpoint.h"

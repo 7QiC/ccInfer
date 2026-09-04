@@ -24,6 +24,7 @@ public:
 
     Result<BatchFuture> execute_batch(ScheduledBatch batch) override;
     asio::awaitable<Result<BatchResult>> collect_batch(BatchFuture future) override;
+    void release_sequence(SequenceId seq) override;
 
 private:
     std::unique_ptr<Worker> worker_;

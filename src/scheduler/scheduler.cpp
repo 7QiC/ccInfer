@@ -752,6 +752,7 @@ asio::awaitable<void> Scheduler::cleanup_terminal_requests() {
     for (auto running_it : to_release) {
         auto request_it = *running_it;
         auto& state = *request_it;
+        if (state.scheduling) executor_.release_sequence(state.scheduling->seq_id);
         release_scheduling_blocks(state);
         running_.erase(running_it);
         erase_request(request_it);
@@ -768,6 +769,9 @@ asio::awaitable<void> Scheduler::cleanup_terminal_queue(std::deque<RequestPtr>& 
         if (request->status == RequestStatus::Active) {
             active.push_back(std::move(request));
             continue;
+        }
+        if (request->scheduling && request->scheduling->reservation.execution_leases == 0) {
+            executor_.release_sequence(request->scheduling->seq_id);
         }
         release_scheduling_blocks(*request);
         erase_request(request);

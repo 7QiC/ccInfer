@@ -9,11 +9,11 @@
 #include <vector>
 
 #include "backend/backend.h"
-#include "cache/block_storage.h"
 #include "base/error.h"
-#include "runtime/precision.h"
+#include "block/block_storage.h"
 #include "config/model_config.h"
 #include "model/model.h"
+#include "runtime/precision.h"
 
 namespace ccinfer {
 
@@ -38,6 +38,11 @@ struct PhysicalBatch {
     // request i; -1 means no sampling.
     Tensor logits_indices;  // [batch_size], int32
 
+    // state_mapping_[i] is the active GDN state slot for item i; invalid for
+    // Qwen3. It intentionally does not carry a StateStorage* (model receives
+    // the storage pointer through ModelRunner::inference).
+    Tensor state_mapping;  // [batch_size], int32
+
     ForwardMode mode = ForwardMode::Prefill;
     std::vector<SequenceId> item_seq_ids;
     std::vector<WorkKind> item_kinds;
@@ -61,6 +66,7 @@ public:
     static Result<std::vector<WorkItemResult>> inference(Model& model, const PhysicalBatch& batch,
                                                          Backend& backend,
                                                          BlockStorage& block_storage,
+                                                         StateStorage* state_storage = nullptr,
                                                          const SamplingParams& sampling = {}) {
         static_assert(execution_traits_valid_v<Traits>, "ExecutionTraits has unknown dtype tags");
 
@@ -108,6 +114,8 @@ public:
         input.num_tokens_ = T;
         input.max_position_id_ = batch.max_position_id;
         input.block_storage_ = &block_storage;
+        input.state_mapping = batch.state_mapping;
+        input.state_storage_ = state_storage;
         input.slot_mapping = batch.slot_mapping;
         input.block_table = batch.block_table;
         input.query_start_loc = batch.query_start_loc;

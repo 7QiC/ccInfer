@@ -2,7 +2,7 @@
 
 #include <gtest/gtest.h>
 
-#include "cache/block_pool.h"
+#include "block/block_pool.h"
 
 namespace ccinfer {
 namespace {

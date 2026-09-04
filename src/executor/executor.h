@@ -32,6 +32,12 @@ public:
     virtual Result<BatchFuture> execute_batch(ScheduledBatch batch) = 0;
     virtual asio::awaitable<Result<BatchResult>> collect_batch(BatchFuture future) = 0;
 
+    // Releases sequence-owned execution resources (e.g. active GDN state).
+    // Default no-op keeps test doubles source-compatible. Scheduler calls this
+    // only after the sequence is terminal/failed and its authoritative
+    // execution_leases has reached zero.
+    virtual void release_sequence(SequenceId) {}
+
     static std::unique_ptr<Executor> create(boost::asio::io_context& io);
 };
 

@@ -5,8 +5,8 @@
 #include <gtest/gtest.h>
 
 #include "backend/backend.h"
-#include "cache/block.h"
-#include "cache/block_storage.h"
+#include "block/block.h"
+#include "block/block_storage.h"
 
 namespace ccinfer {
 namespace {

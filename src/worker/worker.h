@@ -15,13 +15,14 @@
 #include <boost/asio/post.hpp>
 
 #include "backend/backend.h"
-#include "cache/block_storage.h"
 #include "base/channel.h"
 #include "base/error.h"
 #include "base/types.h"
+#include "block/block_storage.h"
 #include "config/engine_config.h"
 #include "config/model_config.h"
 #include "facade/log.h"
+#include "state/state_pool.h"
 #include "worker/model_runner.h"
 
 namespace ccinfer {
@@ -32,12 +33,13 @@ class Worker {
 public:
     class BatchTranslator {
     public:
-        BatchTranslator(Backend& backend, int block_size);
+        BatchTranslator(Backend& backend, int block_size, StatePool* state_pool = nullptr);
         Result<PhysicalBatch> translate(const ScheduledBatch& batch) const;
 
     private:
         Backend& backend_;
         int block_size_;
+        StatePool* state_pool_;
     };
 
     explicit Worker(asio::io_context& io);
@@ -51,6 +53,11 @@ public:
     void shutdown();
 
     Result<BatchFuture> enqueue_execute_batch(ScheduledBatch batch);
+
+    // Releases the sequence's active GDN state. Callers (Scheduler cleanup)
+    // must only call this after the sequence is terminal/failed/preempted and
+    // its authoritative execution_leases has reached zero.
+    Result<void> release_sequence(SequenceId seq);
 
 private:
     struct PendingBatch {
@@ -87,12 +94,16 @@ private:
     // request lifecycle remain independent of these maps.
     std::unordered_map<SequenceId, int32_t> latest_tokens_;
     std::unordered_set<SequenceId> failed_sequences_;
+    // Active GDN state release is driven by the Scheduler's authoritative
+    // SequenceReservation::execution_leases via Executor::release_sequence.
+    // Worker itself does not keep a second lease authority.
     bool initialized_ = false;
     EngineConfig engine_config_;
 
     std::unique_ptr<Backend> backend_;
     std::unique_ptr<Model> model_;
     std::unique_ptr<BlockStorage> block_storage_;
+    std::unique_ptr<StatePool> state_pool_;
 };
 
 }  // namespace ccinfer

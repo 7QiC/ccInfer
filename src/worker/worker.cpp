@@ -19,8 +19,8 @@
 #include "worker/model_runner.h"
 
 namespace ccinfer {
-Worker::BatchTranslator::BatchTranslator(Backend& backend, int block_size)
-    : backend_(backend), block_size_(block_size) {}
+Worker::BatchTranslator::BatchTranslator(Backend& backend, int block_size, StatePool* state_pool)
+    : backend_(backend), block_size_(block_size), state_pool_(state_pool) {}
 
 Result<PhysicalBatch> Worker::BatchTranslator::translate(const ScheduledBatch& batch) const {
     assert(block_size_ > 0);
@@ -115,6 +115,14 @@ Result<PhysicalBatch> Worker::BatchTranslator::translate(const ScheduledBatch& b
     }
     query_start[count] = offset;
 
+    std::vector<int32_t> state_slots(count, -1);
+    if (state_pool_ != nullptr) {
+        for (std::size_t i = 0; i < count; ++i) {
+            const auto slot = state_pool_->active_slot_of(item_seq_ids[i]);
+            state_slots[i] = slot.has_value() ? *slot : -1;
+        }
+    }
+
     PhysicalBatch result;
     result.num_tokens = total_tokens;
     result.batch_size = static_cast<int>(count);
@@ -155,6 +163,11 @@ Result<PhysicalBatch> Worker::BatchTranslator::translate(const ScheduledBatch& b
     auto logits_r = upload(logits_indices, {static_cast<std::int64_t>(count)});
     if (!logits_r) return std::unexpected(logits_r.error());
     result.logits_indices = std::move(*logits_r);
+    if (state_pool_ != nullptr) {
+        auto state_mapping_r = upload(state_slots, {static_cast<std::int64_t>(count)});
+        if (!state_mapping_r) return std::unexpected(state_mapping_r.error());
+        result.state_mapping = std::move(*state_mapping_r);
+    }
     auto sync_r = backend_.synchronize();
     if (!sync_r) return std::unexpected(sync_r.error());
     return result;
@@ -272,6 +285,10 @@ Worker::ResolvedBatch Worker::resolve_batch(const ScheduledBatch& batch) const {
 void Worker::process_batch(PendingBatch pending) {
     assert(initialized_ && backend_ && block_storage_);
     assert(!pending.batch.items.empty());
+
+    // Worker does not own an execution lease authority. Scheduler's
+    // SequenceReservation::execution_leases is authoritative; active GDN state
+    // is released only through Executor::release_sequence after leases drain.
     auto resolved = resolve_batch(pending.batch);
     if (resolved.batch.items.empty()) {
         BatchResult result;
@@ -283,10 +300,23 @@ void Worker::process_batch(PendingBatch pending) {
 
     assert(model_);
     auto fail_sequences = [&] {
-        for (const auto& item : resolved.batch.items)
+        for (const auto& item : resolved.batch.items) {
             failed_sequences_.insert(work_sequence_id(item));
+        }
     };
-    BatchTranslator translator(*backend_, engine_config_.kv_block_size);
+
+    if (state_pool_) {
+        for (const auto& item : resolved.batch.items) {
+            auto r = state_pool_->acquire_active(work_sequence_id(item));
+            if (!r) {
+                fail_sequences();
+                resolve(pending.chan, Result<BatchResult>(std::unexpected(r.error())));
+                return;
+            }
+        }
+    }
+
+    BatchTranslator translator(*backend_, engine_config_.kv_block_size, state_pool_.get());
     auto physical = translator.translate(resolved.batch);
     if (!physical) {
         fail_sequences();
@@ -297,7 +327,8 @@ void Worker::process_batch(PendingBatch pending) {
     BatchResult result;
     result.batch_id = pending.batch.batch_id;
     auto execution = ModelRunner::inference<Qwen3ExecutionTraits>(
-        *model_, *physical, *backend_, *block_storage_, resolved.batch.sampling);
+        *model_, *physical, *backend_, *block_storage_,
+        state_pool_ ? &state_pool_->storage() : nullptr, resolved.batch.sampling);
     if (!execution) {
         fail_sequences();
         resolve(pending.chan, Result<BatchResult>(std::unexpected(execution.error())));
@@ -355,11 +386,25 @@ Result<void> Worker::init_resources(const std::string& model_path, const ModelCo
         if (!storage) return std::unexpected(storage.error());
         block_storage_ = std::move(*storage);
         assert(block_storage_->block_size() == engine_config_.kv_block_size);
+
+        if (model.arch_ == ModelArch::Qwen3_5) {
+            auto state_pool = StatePool::create(*backend_, model, engine_config_.max_sequences,
+                                                engine_config_.state_prefix_cache_blocks,
+                                                engine_config_.state_prefix_cache_blocks);
+            if (!state_pool) return std::unexpected(state_pool.error());
+            state_pool_ = std::move(*state_pool);
+        }
+
         initialized_ = true;
         return {};
     } catch (...) {
         return std::unexpected(ErrorCode::InternalError);
     }
+}
+
+Result<void> Worker::release_sequence(SequenceId seq) {
+    if (state_pool_) return state_pool_->release_active(seq);
+    return {};
 }
 
 void Worker::reset_resources() {
@@ -368,6 +413,7 @@ void Worker::reset_resources() {
     failed_sequences_.clear();
     model_.reset();
     block_storage_.reset();
+    state_pool_.reset();
     backend_.reset();
 }
 

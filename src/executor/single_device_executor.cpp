@@ -43,6 +43,12 @@ asio::awaitable<Result<BatchResult>> SingleDeviceExecutor::collect_batch(BatchFu
     co_return std::move(*result);
 }
 
+void SingleDeviceExecutor::release_sequence(SequenceId seq) {
+    // Result is intentionally ignored: release is idempotent cleanup, and the
+    // caller (Scheduler) has already retired the authoritative execution lease.
+    (void)worker_->release_sequence(seq);
+}
+
 std::unique_ptr<Executor> Executor::create(boost::asio::io_context& io) {
     return std::make_unique<SingleDeviceExecutor>(io);
 }

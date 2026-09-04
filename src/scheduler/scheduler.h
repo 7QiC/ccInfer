@@ -15,7 +15,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
 
-#include "cache/block_pool.h"
+#include "block/block_pool.h"
 #include "base/types.h"
 #include "config/engine_config.h"
 #include "executor/executor.h"

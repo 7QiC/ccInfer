@@ -8,7 +8,7 @@ namespace ccinfer {
 // Logical KV block table shared by the Scheduler, Worker, and BlockPool. The
 // BlockPool owns block metadata and reference counts; this table is the
 // scheduler-owned mirror passed with each work item. Kept in its own header so
-// base/types.h and cache/block_pool.h can use it without pulling in the rest
+// base/types.h and block/block_pool.h can use it without pulling in the rest
 // of either module.
 //
 // WorkItem stores this by value as a snapshot. The scheduler may append blocks

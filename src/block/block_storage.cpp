@@ -1,4 +1,4 @@
-#include "cache/block_storage.h"
+#include "block/block_storage.h"
 
 #include <cassert>
 #include <limits>

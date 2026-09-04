@@ -66,8 +66,6 @@ target_link_libraries(ccinfer_core
 )
 
 add_library(ccinfer_cache STATIC
-    cache/block_pool.cpp
-    cache/block_storage.cpp
     cache/prefix_cache.cpp
 )
 target_include_directories(ccinfer_cache
@@ -78,6 +76,47 @@ target_include_directories(ccinfer_cache
         ${CUDAToolkit_INCLUDE_DIRS}
 )
 target_link_libraries(ccinfer_cache
+    PUBLIC
+        ccinfer_core
+        ccop::ccop
+        spdlog::spdlog
+    PRIVATE
+        CUDA::cudart
+)
+
+add_library(ccinfer_block STATIC
+    block/block_pool.cpp
+    block/block_storage.cpp
+)
+target_include_directories(ccinfer_block
+    PUBLIC
+        ${CMAKE_SOURCE_DIR}/src
+        ${Boost_INCLUDE_DIRS}
+    PRIVATE
+        ${CUDAToolkit_INCLUDE_DIRS}
+)
+target_link_libraries(ccinfer_block
+    PUBLIC
+        ccinfer_cache
+        ccinfer_core
+        ccop::ccop
+        spdlog::spdlog
+    PRIVATE
+        CUDA::cudart
+)
+
+add_library(ccinfer_state STATIC
+    state/state_storage.cpp
+    state/state_pool.cpp
+)
+target_include_directories(ccinfer_state
+    PUBLIC
+        ${CMAKE_SOURCE_DIR}/src
+        ${Boost_INCLUDE_DIRS}
+    PRIVATE
+        ${CUDAToolkit_INCLUDE_DIRS}
+)
+target_link_libraries(ccinfer_state
     PUBLIC
         ccinfer_core
         ccop::ccop
@@ -104,7 +143,7 @@ target_include_directories(ccinfer_model
 target_link_libraries(ccinfer_model
     PUBLIC
         ccinfer_config
-        ccinfer_cache
+        ccinfer_block
         ccinfer_core
         ccinfer_quant
         nlohmann_json::nlohmann_json
@@ -131,7 +170,9 @@ target_link_libraries(ccinfer_engine
     PUBLIC
         ccinfer_model
         ccinfer_checkpoint
+        ccinfer_block
         ccinfer_cache
+        ccinfer_state
         ccinfer_core
         fmt::fmt
         nlohmann_json::nlohmann_json

@@ -6,7 +6,7 @@
 #include <vector>
 
 #include "backend/backend.h"
-#include "cache/block_storage.h"
+#include "block/block_storage.h"
 
 namespace ccinfer {
 

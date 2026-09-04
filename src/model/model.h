@@ -9,6 +9,7 @@ namespace ccinfer {
 struct ModelConfig;
 class BlockStorage;
 class Backend;
+class StateStorage;
 
 struct ForwardInput {
     // Exactly one of input_embeds / token_ids must be valid.
@@ -29,6 +30,12 @@ struct ForwardInput {
     Tensor context_lens;     // [batch]
     int batch_size_ = 0;
     int max_blocks_per_req_ = 0;
+
+    // GDN state: state_mapping_[i] is the active state slot for batch item i
+    // (-1 for Qwen3 or when no state is used). The physical storage is passed
+    // separately so PhysicalBatch stays metadata-only.
+    Tensor state_mapping;  // [batch_size], int32
+    StateStorage* state_storage_ = nullptr;
 
     // CPU-side rows of the hidden tensor that need logits. The model computes
     // only these rows so the full [T, V] logits buffer is never materialized.

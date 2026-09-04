@@ -5,10 +5,10 @@
 #include <mutex>
 #include <vector>
 
-#include "cache/block.h"
+#include "block/block.h"
 #include "cache/cache_stats.h"
 #include "cache/prefix_cache.h"
-#include "cache/block_table.h"
+#include "block/block_table.h"
 #include "base/error.h"
 
 namespace ccinfer {
