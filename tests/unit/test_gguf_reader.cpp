@@ -15,7 +15,8 @@ namespace {
 
 class ScopedTempFile {
 public:
-    explicit ScopedTempFile(const std::string& name) : path_(std::filesystem::temp_directory_path() / name) {
+    explicit ScopedTempFile(const std::string& name)
+        : path_(std::filesystem::temp_directory_path() / name) {
         std::filesystem::remove(path_);
     }
     ~ScopedTempFile() { std::filesystem::remove(path_); }
@@ -30,14 +31,19 @@ void write_string(std::ofstream& f, const std::string& s) {
     f.write(s.data(), static_cast<std::streamsize>(s.size()));
 }
 
-void write_u32(std::ofstream& f, uint32_t v) { f.write(reinterpret_cast<const char*>(&v), sizeof(v)); }
-void write_u64(std::ofstream& f, uint64_t v) { f.write(reinterpret_cast<const char*>(&v), sizeof(v)); }
+void write_u32(std::ofstream& f, uint32_t v) {
+    f.write(reinterpret_cast<const char*>(&v), sizeof(v));
+}
+void write_u64(std::ofstream& f, uint64_t v) {
+    f.write(reinterpret_cast<const char*>(&v), sizeof(v));
+}
 
 void write_metadata(std::ofstream& f, const std::string& key, uint32_t type,
                     const std::vector<uint8_t>& value) {
     write_string(f, key);
     write_u32(f, type);
-    f.write(reinterpret_cast<const char*>(value.data()), static_cast<std::streamsize>(value.size()));
+    f.write(reinterpret_cast<const char*>(value.data()),
+            static_cast<std::streamsize>(value.size()));
 }
 
 std::vector<uint8_t> scalar_u32(uint32_t v) {
@@ -81,8 +87,7 @@ TEST(GGUFReaderTest, SyntheticMetadataAndTensors) {
 
     write_metadata(f, "general.architecture", 8, scalar_string("qwen35"));
     write_metadata(f, "qwen35.block_count", 4, scalar_u32(25));
-    write_metadata(f, "qwen35.rope.dimension_sections", 9,
-                   array_u32(4, {11, 11, 10, 0}));
+    write_metadata(f, "qwen35.rope.dimension_sections", 9, array_u32(4, {11, 11, 10, 0}));
 
     write_string(f, "token_embd.weight");
     write_u32(f, 2);
@@ -90,6 +95,11 @@ TEST(GGUFReaderTest, SyntheticMetadataAndTensors) {
     write_u64(f, 2);
     write_u32(f, 8);  // Q8_0
     write_u64(f, 0);
+
+    // GGUF tensor data section is aligned to 32 bytes.
+    const auto end = f.tellp();
+    const std::streamoff align = (32 - static_cast<std::streamoff>(end) % 32) % 32;
+    for (std::streamoff i = 0; i < align; ++i) f.put(0);
 
     const std::vector<uint8_t> tensor_data(2 * 34, 0xAB);
     f.write(reinterpret_cast<const char*>(tensor_data.data()),
@@ -190,6 +200,15 @@ TEST(GGUFReaderTest, RealArtifactSmoke) {
     EXPECT_EQ(reader.metadata_count(), 48u);
     EXPECT_EQ(reader.metadata("general.architecture")->as_string(), "qwen35");
     EXPECT_TRUE(reader.has_nextn_tensors());
+
+    // Validates 32-byte data-section alignment for real files: without it the
+    // first tensor (output_norm.weight, 2048 F32 = 8192 bytes) starts 15 bytes
+    // too early.
+    auto norm_info = reader.find_tensor("output_norm.weight");
+    ASSERT_TRUE(norm_info.has_value());
+    auto raw_r = reader.raw_tensor_data(*norm_info);
+    ASSERT_TRUE(raw_r.has_value());
+    EXPECT_EQ(raw_r->size(), 8192u);
 }
 
 }  // namespace

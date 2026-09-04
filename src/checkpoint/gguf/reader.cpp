@@ -27,7 +27,6 @@ Result<void> require_bytes(size_t size, size_t offset, size_t needed) {
     return {};
 }
 
-
 template <typename T>
 Result<T> read_raw(const uint8_t* data, size_t size, size_t& offset) {
     auto r = require_bytes(size, offset, sizeof(T));
@@ -98,7 +97,6 @@ Result<std::string> read_string(const uint8_t* data, size_t size, size_t& offset
     offset += len;
     return s;
 }
-
 
 bool supported_tensor_type(GGUFTensorType type) {
     switch (type) {
@@ -269,7 +267,7 @@ Result<std::unique_ptr<GGUFReader>> GGUFReader::create(const std::string& path) 
     int fd = open(path.c_str(), O_RDONLY);
     if (fd < 0) return std::unexpected(ErrorCode::ModelLoadFailed);
 
-    struct stat st {};
+    struct stat st{};
     if (fstat(fd, &st) < 0 || st.st_size <= 0) {
         close(fd);
         return std::unexpected(ErrorCode::ModelLoadFailed);
@@ -359,7 +357,10 @@ Result<void> GGUFReader::parse(const uint8_t* data, size_t size) {
         tensor_infos_.push_back(std::move(info));
     }
 
-    data_start_ = offset;
+    // GGUF writers align the tensor data section to 32 bytes. Tensor offsets in
+    // tensor infos are relative to this aligned section, so mirror the writer's
+    // alignment before exposing raw tensor data.
+    data_start_ = (offset + static_cast<std::size_t>(31)) & ~static_cast<std::size_t>(31);
     if (data_start_ > size) return std::unexpected(ErrorCode::ModelLoadFailed);
     return {};
 }

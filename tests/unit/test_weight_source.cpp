@@ -7,17 +7,18 @@
 
 #include <gtest/gtest.h>
 
+#include "ccop/tensor.h"
 #include "checkpoint/gguf/weight_source.h"
 #include "checkpoint/huggingface/weight_source.h"
 #include "model/weight_source.h"
-#include "ccop/tensor.h"
 
 namespace ccinfer {
 namespace {
 
 class ScopedTempFile {
 public:
-    explicit ScopedTempFile(const std::string& name) : path_(std::filesystem::temp_directory_path() / name) {
+    explicit ScopedTempFile(const std::string& name)
+        : path_(std::filesystem::temp_directory_path() / name) {
         std::filesystem::remove(path_);
     }
     ~ScopedTempFile() { std::filesystem::remove(path_); }
@@ -31,8 +32,12 @@ void write_string(std::ofstream& f, const std::string& s) {
     f.write(reinterpret_cast<const char*>(&len), sizeof(len));
     f.write(s.data(), static_cast<std::streamsize>(s.size()));
 }
-void write_u32(std::ofstream& f, uint32_t v) { f.write(reinterpret_cast<const char*>(&v), sizeof(v)); }
-void write_u64(std::ofstream& f, uint64_t v) { f.write(reinterpret_cast<const char*>(&v), sizeof(v)); }
+void write_u32(std::ofstream& f, uint32_t v) {
+    f.write(reinterpret_cast<const char*>(&v), sizeof(v));
+}
+void write_u64(std::ofstream& f, uint64_t v) {
+    f.write(reinterpret_cast<const char*>(&v), sizeof(v));
+}
 
 TEST(WeightSourceTest, GgufDenseAndQuantized) {
     const std::string path = ScopedTempFile("ccinfer-test-weight-source.gguf").path();
@@ -50,15 +55,20 @@ TEST(WeightSourceTest, GgufDenseAndQuantized) {
     write_u32(f, 2);
     write_u64(f, 32);
     write_u64(f, 2);
-    write_u32(f, 8);   // Q8_0
+    write_u32(f, 8);  // Q8_0
     write_u64(f, 0);
 
     // Tensor 2: F32 [3]
     write_string(f, "f32_tensor");
     write_u32(f, 1);
     write_u64(f, 3);
-    write_u32(f, 0);   // F32
+    write_u32(f, 0);  // F32
     write_u64(f, 68);
+
+    // GGUF tensor data section is aligned to 32 bytes.
+    const auto end = f.tellp();
+    const std::streamoff align = (32 - static_cast<std::streamoff>(end) % 32) % 32;
+    for (std::streamoff i = 0; i < align; ++i) f.put(0);
 
     std::vector<uint8_t> data(68 + 12);
     for (uint8_t& b : data) b = 0x42;
