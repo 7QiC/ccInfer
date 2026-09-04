@@ -15,9 +15,9 @@
 #include <boost/asio/signal_set.hpp>
 
 #include "base/error.h"
+#include "checkpoint/checkpoint.h"
 #include "config/engine_config.h"
 #include "config/model_config.h"
-#include "checkpoint/checkpoint.h"
 #include "executor/executor.h"
 #include "http/http_server.h"
 #include "scheduler/scheduler.h"

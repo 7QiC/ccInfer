@@ -10,6 +10,8 @@
 #include <nlohmann/json.hpp>
 
 #include "base/error.h"
+#include "checkpoint/gguf/reader.h"
+#include "tokenizer/gguf_tokenizer.h"
 
 namespace ccinfer {
 
@@ -596,11 +598,17 @@ Result<std::string> ByteLevelBpeTokenizer::decode(const std::vector<int32_t>& to
     return result;
 }
 
-Result<std::unique_ptr<Tokenizer>> create_tokenizer(const std::string& model_dir) {
+Result<std::unique_ptr<Tokenizer>> create_tokenizer(const std::string& model_path) {
     namespace fs = std::filesystem;
 
-    const fs::path dir(model_dir);
-    const fs::path tokenizer_json = dir / "tokenizer.json";
+    const fs::path path(model_path);
+    if (path.extension() == ".gguf") {
+        auto reader_r = GGUFReader::create(model_path);
+        if (!reader_r) return std::unexpected(reader_r.error());
+        return create_tokenizer_from_gguf(**reader_r);
+    }
+
+    const fs::path tokenizer_json = path / "tokenizer.json";
 
     if (fs::exists(tokenizer_json)) {
         auto tokenizer = std::make_unique<ByteLevelBpeTokenizer>();
