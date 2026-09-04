@@ -13,14 +13,20 @@
 #include <ccop/dtype.h>
 #include <ccop/error.h>
 #include <ccop/execution_context.h>
+#include <ccop/ops/causal_conv1d.h>
 #include <ccop/ops/decode_attention.h>
 #include <ccop/ops/element_add.h>
 #include <ccop/ops/embed.h>
+#include <ccop/ops/gated_delta_rule.h>
+#include <ccop/ops/gdn_decay.h>
 #include <ccop/ops/gemm.h>
 #include <ccop/ops/greedy_sample.h>
+#include <ccop/ops/l2_norm.h>
+#include <ccop/ops/mul.h>
 #include <ccop/ops/prefill_attention.h>
 #include <ccop/ops/rms_norm.h>
 #include <ccop/ops/rope.h>
+#include <ccop/ops/sigmoid.h>
 #include <ccop/ops/silu_mul.h>
 #include <ccop/ops/split_qkv.h>
 #include <ccop/ops/write_kv_cache.h>
@@ -40,14 +46,20 @@ static_assert(requires {
     typename ccop::Device;
     typename ccop::ExecutionContext;
     typename ccop::Tensor;
+    ccop::causal_conv1d;
     ccop::decode_attention;
     ccop::element_add;
     ccop::embed;
+    ccop::gated_delta_rule;
+    ccop::gdn_decay;
     ccop::gemm;
     ccop::greedy_sample;
+    ccop::l2_norm;
+    ccop::mul;
     ccop::prefill_attention;
     ccop::rms_norm;
     ccop::rope;
+    ccop::sigmoid;
     ccop::silu_mul;
     ccop::split_qkv;
     ccop::write_kv_cache;
