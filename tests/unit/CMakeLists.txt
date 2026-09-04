@@ -40,6 +40,7 @@ ccinfer_add_unit_test(test_device_buffer CUDA::cudart)
 ccinfer_add_unit_test(test_tensor CUDA::cudart)
 ccinfer_add_unit_test(test_config)
 ccinfer_add_unit_test(test_kv_layer_mapping)
+ccinfer_add_unit_test(test_qwen35_weights CUDA::cudart)
 ccinfer_add_unit_test(test_smoke CUDA::cudart)
 
 add_executable(test_tokenizer test_tokenizer.cpp)
