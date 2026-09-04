@@ -3,30 +3,23 @@
 #include <cstdint>
 #include <span>
 #include <string_view>
-#include <variant>
 #include <vector>
 
 #include "base/error.h"
-#include "facade/ops.h"
-#include "ccop/quant.h"
+#include "ccop/tensor.h"
 
 namespace ccinfer {
 
-// Storage representation of a tensor: either a dense ccop dtype or a quantized
-// block format. This deliberately keeps Q8_0 from being treated as a dense
-// dtype.
-using TensorStorageType = std::variant<ccop::DType, ccop::QuantType>;
-
 struct WeightSourceTensorInfo {
     std::vector<int64_t> logical_shape;
-    TensorStorageType storage_type;
+    ccop::TensorType type;
     uint64_t offset = 0;
     uint64_t size_bytes = 0;
 };
 
 // Format-agnostic tensor source. Implementations expose only existence, shape,
-// storage kind, and raw bytes; they do not allocate device memory or interpret
-// Qwen tensor names.
+// storage representation, and raw bytes; they do not allocate device memory or
+// interpret Qwen tensor names.
 class WeightSource {
 public:
     virtual ~WeightSource() = default;

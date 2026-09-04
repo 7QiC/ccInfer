@@ -26,7 +26,7 @@ Result<WeightSourceTensorInfo> SafetensorsWeightSource::info(std::string_view na
 
     WeightSourceTensorInfo out;
     out.logical_shape = tensor->shape_;
-    out.storage_type = tensor->dtype_;
+    out.type = tensor->dtype_;
     out.offset = tensor->offset_;
     out.size_bytes = tensor->size_bytes_;
     return out;

@@ -57,7 +57,7 @@ Result<Tensor> load_dense_bf16(WeightSource& weights, Backend& backend, const st
                               std::vector<int64_t> shape) {
     auto info_r = weights.info(name);
     if (!info_r) return std::unexpected(info_r.error());
-    const auto* dtype = std::get_if<ccop::DType>(&info_r->storage_type);
+    const auto* dtype = std::get_if<ccop::DType>(&info_r->type);
     if (dtype == nullptr || *dtype != ccop::DType::kBFloat16) {
         return std::unexpected(ErrorCode::ModelUnsupportedDType);
     }

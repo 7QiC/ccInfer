@@ -62,7 +62,7 @@ Result<Qwen3Weights> Qwen3Weights::load(Backend& backend, const ModelConfig& con
         const auto& info = *info_r;
         if (info.logical_shape != shape) return std::unexpected(ErrorCode::ModelShapeMismatch);
 
-        const auto* dtype = std::get_if<ccop::DType>(&info.storage_type);
+        const auto* dtype = std::get_if<ccop::DType>(&info.type);
         if (dtype == nullptr || *dtype != ccop::DType::kBFloat16) {
             return std::unexpected(ErrorCode::ModelUnsupportedDType);
         }

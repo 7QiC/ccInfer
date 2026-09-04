@@ -1,5 +1,6 @@
 #include "checkpoint/gguf/reader.h"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstring>
@@ -391,7 +392,13 @@ Result<uint64_t> GGUFReader::tensor_bytes(const GGUFTensorInfo& info) const {
             return static_cast<uint64_t>(n) * 2;
         }
         case GGUFTensorType::kQ8_0: {
-            auto bytes = ccop::q8_0_storage_bytes(info.dims);
+            // GGUF raw dims are in reverse logical order: ne[0] is the
+            // block-aligned innermost dimension. q8_0_storage_bytes expects a
+            // canonical logical row-major shape (LAST dim block-aligned), so
+            // reverse the raw dims before computing physical bytes.
+            auto logical = info.dims;
+            std::reverse(logical.begin(), logical.end());
+            auto bytes = ccop::q8_0_storage_bytes(logical);
             if (!bytes.has_value()) return std::unexpected(ErrorCode::ModelShapeMismatch);
             return static_cast<uint64_t>(*bytes);
         }

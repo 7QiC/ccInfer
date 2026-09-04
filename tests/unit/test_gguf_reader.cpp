@@ -86,8 +86,8 @@ TEST(GGUFReaderTest, SyntheticMetadataAndTensors) {
 
     write_string(f, "token_embd.weight");
     write_u32(f, 2);
+    write_u64(f, 32);  // GGUF ne[0] is the block-aligned innermost dim
     write_u64(f, 2);
-    write_u64(f, 32);
     write_u32(f, 8);  // Q8_0
     write_u64(f, 0);
 
@@ -117,8 +117,8 @@ TEST(GGUFReaderTest, SyntheticMetadataAndTensors) {
     auto tensor = reader.find_tensor("token_embd.weight");
     ASSERT_TRUE(tensor.has_value());
     ASSERT_EQ(tensor->dims.size(), 2u);
-    EXPECT_EQ(tensor->dims[0], 2);
-    EXPECT_EQ(tensor->dims[1], 32);
+    EXPECT_EQ(tensor->dims[0], 32);
+    EXPECT_EQ(tensor->dims[1], 2);
     auto bytes_r = reader.tensor_bytes(*tensor);
     ASSERT_TRUE(bytes_r.has_value());
     EXPECT_EQ(*bytes_r, 68u);
