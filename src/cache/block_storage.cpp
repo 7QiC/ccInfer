@@ -60,20 +60,20 @@ Tensor BlockStorage::v_block_tensor(int layer) {
                                dtype_, {max_blocks_, block_size_, num_kv_heads_, head_dim_});
 }
 
-Result<std::unique_ptr<BlockStorage>> BlockStorage::create(Backend& backend, int num_layers,
+Result<std::unique_ptr<BlockStorage>> BlockStorage::create(Backend& backend, int num_kv_layers,
                                                            int max_blocks, int block_size,
                                                            int num_kv_heads, int head_dim,
                                                            ccop::DType dtype) {
     auto storage = std::make_unique<BlockStorage>();
-    auto r =
-        storage->init(backend, num_layers, max_blocks, block_size, num_kv_heads, head_dim, dtype);
+    auto r = storage->init(backend, num_kv_layers, max_blocks, block_size, num_kv_heads, head_dim,
+                           dtype);
     if (!r) return std::unexpected(r.error());
     return storage;
 }
 
-Result<void> BlockStorage::init(Backend& backend, int num_layers, int max_blocks, int block_size,
+Result<void> BlockStorage::init(Backend& backend, int num_kv_layers, int max_blocks, int block_size,
                                 int num_kv_heads, int head_dim, ccop::DType dtype) {
-    if (num_layers <= 0 || max_blocks <= 0 || block_size <= 0 || num_kv_heads <= 0 ||
+    if (num_kv_layers <= 0 || max_blocks <= 0 || block_size <= 0 || num_kv_heads <= 0 ||
         head_dim <= 0 || dtype == ccop::DType::kUnknown) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
@@ -98,7 +98,7 @@ Result<void> BlockStorage::init(Backend& backend, int num_layers, int max_blocks
     }
 
     std::size_t total_elements;
-    if (!checked_mul(static_cast<std::size_t>(num_layers), elements_per_layer, total_elements)) {
+    if (!checked_mul(static_cast<std::size_t>(num_kv_layers), elements_per_layer, total_elements)) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
 
@@ -137,7 +137,7 @@ Result<void> BlockStorage::init(Backend& backend, int num_layers, int max_blocks
     block_size_ = block_size;
     num_kv_heads_ = num_kv_heads;
     head_dim_ = head_dim;
-    num_layers_ = num_layers;
+    num_layers_ = num_kv_layers;
     return {};
 }
 

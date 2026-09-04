@@ -12,7 +12,7 @@ namespace ccinfer {
 namespace {
 
 TEST(BlockStorageTest, LayerOffsetsAreCorrect) {
-    constexpr int kNumLayers = 3;
+    constexpr int kNumKvLayers = 3;
     constexpr int kMaxBlocks = 2;
     constexpr int kNvKVHeads = 1;
     constexpr int kHeadDim = 4;
@@ -20,7 +20,7 @@ TEST(BlockStorageTest, LayerOffsetsAreCorrect) {
     auto backend_r = Backend::create(0);
     if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
     auto& backend = **backend_r;
-    auto s_r = BlockStorage::create(backend, kNumLayers, kMaxBlocks, kKVBlockSize, kNvKVHeads,
+    auto s_r = BlockStorage::create(backend, kNumKvLayers, kMaxBlocks, kKVBlockSize, kNvKVHeads,
                                     kHeadDim, ccop::DType::kBFloat16);
     ASSERT_TRUE(s_r.has_value());
     auto& storage = **s_r;
@@ -44,7 +44,7 @@ TEST(BlockStorageTest, LayerOffsetsAreCorrect) {
 }
 
 TEST(BlockStorageTest, LayersAreIndependent) {
-    constexpr int kNumLayers = 2;
+    constexpr int kNumKvLayers = 2;
     constexpr int kMaxBlocks = 1;
     constexpr int kNvKVHeads = 1;
     constexpr int kHeadDim = 4;
@@ -52,7 +52,7 @@ TEST(BlockStorageTest, LayersAreIndependent) {
     auto backend_r = Backend::create(0);
     if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
     auto& backend = **backend_r;
-    auto s_r = BlockStorage::create(backend, kNumLayers, kMaxBlocks, kKVBlockSize, kNvKVHeads,
+    auto s_r = BlockStorage::create(backend, kNumKvLayers, kMaxBlocks, kKVBlockSize, kNvKVHeads,
                                     kHeadDim, ccop::DType::kBFloat16);
     ASSERT_TRUE(s_r.has_value());
     auto& storage = **s_r;
@@ -109,7 +109,7 @@ TEST(BlockStorageTest, LayersAreIndependent) {
 }
 
 TEST(BlockStorageTest, ZeroInitialized) {
-    constexpr int kNumLayers = 1;
+    constexpr int kNumKvLayers = 1;
     constexpr int kMaxBlocks = 4;
     constexpr int kNvKVHeads = 2;
     constexpr int kHeadDim = 32;
@@ -117,7 +117,7 @@ TEST(BlockStorageTest, ZeroInitialized) {
     auto backend_r = Backend::create(0);
     if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
     auto& backend = **backend_r;
-    auto s_r = BlockStorage::create(backend, kNumLayers, kMaxBlocks, kKVBlockSize, kNvKVHeads,
+    auto s_r = BlockStorage::create(backend, kNumKvLayers, kMaxBlocks, kKVBlockSize, kNvKVHeads,
                                     kHeadDim, ccop::DType::kBFloat16);
     ASSERT_TRUE(s_r.has_value());
     auto& storage = **s_r;

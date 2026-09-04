@@ -12,9 +12,10 @@
 
 #include "backend/backend.h"
 #include "base/asio_error.h"
-#include "runtime/precision.h"
 #include "checkpoint/checkpoint.h"
+#include "model/qwen35/qwen35_model.h"
 #include "model/registry.h"
+#include "runtime/precision.h"
 #include "worker/model_runner.h"
 
 namespace ccinfer {
@@ -346,10 +347,11 @@ Result<void> Worker::init_resources(const std::string& model_path, const ModelCo
             ModelRegistry::instance().create(model, (*checkpoint)->weights(), *backend_);
         if (!model_handle) return std::unexpected(model_handle.error());
         model_ = std::move(*model_handle);
-        auto storage =
-            BlockStorage::create(*backend_, model.n_layers_, engine_config_.max_blocks,
-                                 engine_config_.kv_block_size, model.n_kv_heads_,
-                                 model.head_dim_, ccop::DType::kBFloat16);
+        const int num_kv_layers =
+            model.arch_ == ModelArch::Qwen3_5 ? qwen35::num_kv_layers(model) : model.n_layers_;
+        auto storage = BlockStorage::create(*backend_, num_kv_layers, engine_config_.max_blocks,
+                                            engine_config_.kv_block_size, model.n_kv_heads_,
+                                            model.head_dim_, ccop::DType::kBFloat16);
         if (!storage) return std::unexpected(storage.error());
         block_storage_ = std::move(*storage);
         assert(block_storage_->block_size() == engine_config_.kv_block_size);

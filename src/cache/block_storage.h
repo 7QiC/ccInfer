@@ -21,18 +21,21 @@ public:
     BlockStorage(const BlockStorage&) = delete;
     BlockStorage& operator=(const BlockStorage&) = delete;
 
-    static Result<std::unique_ptr<BlockStorage>> create(Backend& backend, int num_layers,
+    // num_kv_layers is the number of layers that own KV cache (full-attention
+    // layers for Qwen3.5; all decoder layers for Qwen3).
+    static Result<std::unique_ptr<BlockStorage>> create(Backend& backend, int num_kv_layers,
                                                         int max_blocks, int block_size,
                                                         int num_kv_heads, int head_dim,
                                                         ccop::DType dtype);
 
-    // Slot-major 3D view of one layer: [max_slots, num_kv_heads, head_dim].
+    // Slot-major 3D view of one KV layer: [max_slots, num_kv_heads, head_dim].
     Tensor k_layer_tensor(int layer);
     Tensor v_layer_tensor(int layer);
-    // Paged 4D view of one layer: [max_blocks, block_size, num_kv_heads, head_dim].
+    // Paged 4D view of one KV layer: [max_blocks, block_size, num_kv_heads, head_dim].
     Tensor k_block_tensor(int layer);
     Tensor v_block_tensor(int layer);
 
+    // Number of KV layers allocated (not necessarily decoder layers).
     int num_layers() const { return num_layers_; }
     int max_blocks() const { return max_blocks_; }
     int block_size() const { return block_size_; }
@@ -44,7 +47,7 @@ public:
     ccop::DType dtype() const { return dtype_; }
 
 private:
-    Result<void> init(Backend& backend, int num_layers, int max_blocks, int block_size,
+    Result<void> init(Backend& backend, int num_kv_layers, int max_blocks, int block_size,
                       int num_kv_heads, int head_dim, ccop::DType dtype);
 
     std::shared_ptr<Buffer> k_data_;
