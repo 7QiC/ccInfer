@@ -2,8 +2,6 @@
 
 #include <vector>
 
-#include <cuda_bf16.h>
-
 #include "backend/backend.h"
 #include "base/error.h"
 #include "runtime/tensor.h"

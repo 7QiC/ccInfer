@@ -8,8 +8,6 @@
 #include <utility>
 #include <vector>
 
-#include <cuda_bf16.h>
-
 namespace ccinfer {
 
 namespace {
@@ -28,12 +26,12 @@ Result<void> merge_qkv(Tensor& qkv, const Tensor& q, const Tensor& k, const Tens
     if (!qkv_r) return std::unexpected(qkv_r.error());
     auto qkv_buffer = std::move(*qkv_r);
 
-    auto* dst = static_cast<__nv_bfloat16*>(qkv_buffer->data());
+    auto* dst = static_cast<char*>(qkv_buffer->data());
     auto r = backend.memcpy_d2d(dst, q.data(), q_bytes);
     if (!r) return r;
-    r = backend.memcpy_d2d(dst + q_bytes / sizeof(__nv_bfloat16), k.data(), k_bytes);
+    r = backend.memcpy_d2d(dst + q_bytes, k.data(), k_bytes);
     if (!r) return r;
-    r = backend.memcpy_d2d(dst + (q_bytes + k_bytes) / sizeof(__nv_bfloat16), v.data(), v_bytes);
+    r = backend.memcpy_d2d(dst + q_bytes + k_bytes, v.data(), v_bytes);
     if (!r) return r;
 
     auto sync_r = backend.synchronize();
