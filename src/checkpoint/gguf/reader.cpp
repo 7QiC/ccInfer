@@ -237,10 +237,10 @@ std::optional<uint64_t> GGUFMetadataValue::as_u64() const {
 }
 
 std::optional<int64_t> GGUFMetadataValue::as_i64() const {
-    if (const auto* v = std::get_if<int64_t>(&value)) return *v;
-    if (const auto* v = std::get_if<int32_t>(&value)) return *v;
-    if (const auto* v = std::get_if<int16_t>(&value)) return *v;
-    if (const auto* v = std::get_if<int8_t>(&value)) return *v;
+    if (const auto* v = std::get_if<int64_t>(&value)) return std::optional<int64_t>{*v};
+    if (const auto* v = std::get_if<int32_t>(&value)) return std::optional<int64_t>{*v};
+    if (const auto* v = std::get_if<int16_t>(&value)) return std::optional<int64_t>{*v};
+    if (const auto* v = std::get_if<int8_t>(&value)) return std::optional<int64_t>{*v};
     return as_u64().transform([](uint64_t x) { return static_cast<int64_t>(x); });
 }
 
