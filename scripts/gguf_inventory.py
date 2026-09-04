@@ -164,6 +164,11 @@ def parse_gguf(path: str):
     if offset > len(data):
         raise ValueError("tensor table extends past end of file")
 
+    # GGUF writers align the tensor data section to 32 bytes. Tensor offsets
+    # are relative to this aligned data section start, not to the unaligned end
+    # of the tensor info table.
+    data_start = (offset + 31) & ~31
+
     return {
         "path": str(path),
         "version": version,
@@ -172,6 +177,8 @@ def parse_gguf(path: str):
         "metadata": metadata,
         "tensors": tensors,
         "file_size": len(data),
+        "data_start": data_start,
+        "data_alignment": 32,
     }
 
 
