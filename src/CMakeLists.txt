@@ -91,7 +91,6 @@ add_library(ccinfer_model STATIC
     model/rope/rope_cache.cpp
     model/qwen3/qwen3_model.cpp
     model/qwen3/qwen3_weights.cpp
-    model/weight.cpp
 )
 target_include_directories(ccinfer_model
     PUBLIC

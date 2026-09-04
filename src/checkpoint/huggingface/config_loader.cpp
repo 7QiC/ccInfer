@@ -109,8 +109,8 @@ Result<ModelConfig> from_json_impl(const nlohmann::json& j) {
     }
 
     // torch_dtype is intentionally not stored in ModelConfig:
-    // ModelConfig only describes architecture. Weight storage and execution
-    // dtype are represented independently by Weight / runtime precision.
+    // ModelConfig only describes architecture. Weight storage representation
+    // and execution dtype are carried by Tensor / runtime precision.
 
     auto validation = cfg.validate();
     if (!validation) return std::unexpected(validation.error());

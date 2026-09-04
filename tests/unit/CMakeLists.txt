@@ -32,8 +32,6 @@ add_executable(test_checkpoint test_checkpoint.cpp)
 target_link_libraries(test_checkpoint PRIVATE ccinfer_checkpoint gtest_main)
 gtest_discover_tests(test_checkpoint)
 
-ccinfer_add_unit_test(test_weight)
-
 ccinfer_add_unit_test(test_result)
 ccinfer_add_unit_test(test_block)
 ccinfer_add_unit_test(test_block_pool)
