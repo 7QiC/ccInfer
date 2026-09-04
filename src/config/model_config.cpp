@@ -8,8 +8,8 @@ Result<void> ModelConfig::validate() const {
     if (arch_ == ModelArch::Unknown) {
         return std::unexpected(ErrorCode::ModelUnsupportedArch);
     }
-    if (n_layers_ <= 0 || n_q_heads_ <= 0 || n_kv_heads_ <= 0 || head_dim_ <= 0 ||
-        d_model_ <= 0 || d_ff_ <= 0 || vocab_size_ <= 0 || max_seq_len_ <= 0) {
+    if (n_layers_ <= 0 || n_q_heads_ <= 0 || n_kv_heads_ <= 0 || head_dim_ <= 0 || d_model_ <= 0 ||
+        d_ff_ <= 0 || vocab_size_ <= 0 || max_seq_len_ <= 0) {
         return std::unexpected(ErrorCode::ModelConfigInvalid);
     }
     if (n_kv_heads_ > n_q_heads_ || n_q_heads_ % n_kv_heads_ != 0) {
@@ -22,7 +22,12 @@ Result<void> ModelConfig::validate() const {
 
     if (arch_ == ModelArch::Qwen3_5) {
         if (full_attention_interval_ <= 0 || ssm_conv_kernel_ <= 0 || ssm_state_size_ <= 0 ||
-            ssm_group_count_ <= 0 || ssm_time_step_rank_ <= 0 || ssm_inner_size_ <= 0) {
+            ssm_group_count_ <= 0 || ssm_time_step_rank_ <= 0 || ssm_inner_size_ <= 0 ||
+            rotary_dim_ <= 0 || rotary_dim_ > head_dim_ || rotary_dim_ % 2 != 0) {
+            return std::unexpected(ErrorCode::ModelConfigInvalid);
+        }
+        if (ssm_inner_size_ % ssm_time_step_rank_ != 0 ||
+            ssm_inner_size_ / ssm_time_step_rank_ != ssm_state_size_) {
             return std::unexpected(ErrorCode::ModelConfigInvalid);
         }
 

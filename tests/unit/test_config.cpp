@@ -32,6 +32,7 @@ TEST(HfConfigLoaderTest, FromQwen3Json) {
     EXPECT_EQ(cfg->d_ff_, 5632);
     EXPECT_EQ(cfg->vocab_size_, 128256);
     EXPECT_EQ(cfg->max_seq_len_, 32768);
+    EXPECT_EQ(cfg->rotary_dim_, cfg->head_dim_);
     EXPECT_EQ(cfg->rope_theta_, 500000.0f);
     EXPECT_FLOAT_EQ(cfg->rms_norm_eps_, 1e-5f);
 }
@@ -130,16 +131,16 @@ TEST(HfConfigLoaderTest, LoadsFromConfigJsonPath) {
 }
 
 TEST(ModelConfigTest, ValidateAcceptsCanonicalQwen3) {
-    ModelConfig config = HfConfigLoader::load_from_json(
-                             nlohmann::json{{"architectures", {"Qwen3ForCausalLM"}},
-                                            {"hidden_size", 1024},
-                                            {"num_attention_heads", 16},
-                                            {"num_key_value_heads", 8},
-                                            {"num_hidden_layers", 28},
-                                            {"intermediate_size", 3072},
-                                            {"vocab_size", 151936},
-                                            {"max_position_embeddings", 4096}})
-                             .value();
+    ModelConfig config =
+        HfConfigLoader::load_from_json(nlohmann::json{{"architectures", {"Qwen3ForCausalLM"}},
+                                                      {"hidden_size", 1024},
+                                                      {"num_attention_heads", 16},
+                                                      {"num_key_value_heads", 8},
+                                                      {"num_hidden_layers", 28},
+                                                      {"intermediate_size", 3072},
+                                                      {"vocab_size", 151936},
+                                                      {"max_position_embeddings", 4096}})
+            .value();
     EXPECT_TRUE(config.validate().has_value());
 }
 
@@ -196,16 +197,16 @@ TEST(EngineConfigTest, RejectsContextLargerThanCache) {
 }
 
 TEST(ConfigBoundaryTest, MaxSeqLenIsDistinctFromRuntimeContextLimit) {
-    auto model = HfConfigLoader::load_from_json(
-                     nlohmann::json{{"architectures", {"Qwen3ForCausalLM"}},
-                                    {"hidden_size", 2048},
-                                    {"num_attention_heads", 16},
-                                    {"num_key_value_heads", 4},
-                                    {"num_hidden_layers", 16},
-                                    {"intermediate_size", 5632},
-                                    {"vocab_size", 128256},
-                                    {"max_position_embeddings", 4096}})
-                     .value();
+    auto model =
+        HfConfigLoader::load_from_json(nlohmann::json{{"architectures", {"Qwen3ForCausalLM"}},
+                                                      {"hidden_size", 2048},
+                                                      {"num_attention_heads", 16},
+                                                      {"num_key_value_heads", 4},
+                                                      {"num_hidden_layers", 16},
+                                                      {"intermediate_size", 5632},
+                                                      {"vocab_size", 128256},
+                                                      {"max_position_embeddings", 4096}})
+            .value();
     EngineConfig engine;
 
     EXPECT_EQ(model.max_seq_len_, 4096);

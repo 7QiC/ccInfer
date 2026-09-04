@@ -95,6 +95,7 @@ Result<ModelConfig> from_json_impl(const nlohmann::json& j) {
     if (auto r = get_optional_int("head_dim", cfg.head_dim_); !r) {
         return std::unexpected(r.error());
     }
+    cfg.rotary_dim_ = cfg.head_dim_;  // Qwen3 applies full RoPE over head_dim.
 
     cfg.max_seq_len_ = 2048;
     if (auto r = get_optional_int("max_position_embeddings", cfg.max_seq_len_); !r) {

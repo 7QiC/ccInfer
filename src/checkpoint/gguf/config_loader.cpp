@@ -74,19 +74,35 @@ Result<ModelConfig> GgufConfigLoader::load(const GGUFReader& reader) {
     cfg.full_attention_interval_ = *full_attention_interval;
     cfg.nextn_predict_layers_ = *nextn_predict_layers;
 
-    if (auto ssm_conv = get_int("qwen35.ssm.conv_kernel")) cfg.ssm_conv_kernel_ = *ssm_conv;
-    else return std::unexpected(ErrorCode::ModelConfigInvalid);
-    if (auto ssm_state = get_int("qwen35.ssm.state_size")) cfg.ssm_state_size_ = *ssm_state;
-    else return std::unexpected(ErrorCode::ModelConfigInvalid);
-    if (auto ssm_group = get_int("qwen35.ssm.group_count")) cfg.ssm_group_count_ = *ssm_group;
-    else return std::unexpected(ErrorCode::ModelConfigInvalid);
-    if (auto ssm_rank = get_int("qwen35.ssm.time_step_rank")) cfg.ssm_time_step_rank_ = *ssm_rank;
-    else return std::unexpected(ErrorCode::ModelConfigInvalid);
-    if (auto ssm_inner = get_int("qwen35.ssm.inner_size")) cfg.ssm_inner_size_ = *ssm_inner;
-    else return std::unexpected(ErrorCode::ModelConfigInvalid);
+    if (auto ssm_conv = get_int("qwen35.ssm.conv_kernel"))
+        cfg.ssm_conv_kernel_ = *ssm_conv;
+    else
+        return std::unexpected(ErrorCode::ModelConfigInvalid);
+    if (auto ssm_state = get_int("qwen35.ssm.state_size"))
+        cfg.ssm_state_size_ = *ssm_state;
+    else
+        return std::unexpected(ErrorCode::ModelConfigInvalid);
+    if (auto ssm_group = get_int("qwen35.ssm.group_count"))
+        cfg.ssm_group_count_ = *ssm_group;
+    else
+        return std::unexpected(ErrorCode::ModelConfigInvalid);
+    if (auto ssm_rank = get_int("qwen35.ssm.time_step_rank"))
+        cfg.ssm_time_step_rank_ = *ssm_rank;
+    else
+        return std::unexpected(ErrorCode::ModelConfigInvalid);
+    if (auto ssm_inner = get_int("qwen35.ssm.inner_size"))
+        cfg.ssm_inner_size_ = *ssm_inner;
+    else
+        return std::unexpected(ErrorCode::ModelConfigInvalid);
 
-    if (auto freq = metadata_f32(reader, "qwen35.rope.freq_base")) cfg.rope_theta_ = *freq;
-    else return std::unexpected(ErrorCode::ModelConfigInvalid);
+    if (auto freq = metadata_f32(reader, "qwen35.rope.freq_base"))
+        cfg.rope_theta_ = *freq;
+    else
+        return std::unexpected(ErrorCode::ModelConfigInvalid);
+    if (auto rope_dim = get_int("qwen35.rope.dimension_count"))
+        cfg.rotary_dim_ = *rope_dim;
+    else
+        return std::unexpected(ErrorCode::ModelConfigInvalid);
     if (auto eps = metadata_f32(reader, "qwen35.attention.layer_norm_rms_epsilon")) {
         cfg.rms_norm_eps_ = *eps;
     } else {
@@ -96,7 +112,8 @@ Result<ModelConfig> GgufConfigLoader::load(const GGUFReader& reader) {
     // Decoder layer sequence: main layers first, then MTP predictor layers.
     cfg.layer_types_.reserve(static_cast<std::size_t>(*block_count));
     for (int i = 0; i < cfg.n_layers_; ++i) {
-        if (*full_attention_interval > 0 && i % *full_attention_interval == *full_attention_interval - 1) {
+        if (*full_attention_interval > 0 &&
+            i % *full_attention_interval == *full_attention_interval - 1) {
             cfg.layer_types_.push_back(LayerType::FullAttention);
         } else {
             cfg.layer_types_.push_back(LayerType::GatedDeltaNet);

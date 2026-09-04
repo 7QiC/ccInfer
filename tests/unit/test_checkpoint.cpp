@@ -17,8 +17,12 @@ void write_string(std::ofstream& f, const std::string& s) {
     f.write(reinterpret_cast<const char*>(&len), sizeof(len));
     f.write(s.data(), static_cast<std::streamsize>(s.size()));
 }
-void write_u32(std::ofstream& f, uint32_t v) { f.write(reinterpret_cast<const char*>(&v), sizeof(v)); }
-void write_u64(std::ofstream& f, uint64_t v) { f.write(reinterpret_cast<const char*>(&v), sizeof(v)); }
+void write_u32(std::ofstream& f, uint32_t v) {
+    f.write(reinterpret_cast<const char*>(&v), sizeof(v));
+}
+void write_u64(std::ofstream& f, uint64_t v) {
+    f.write(reinterpret_cast<const char*>(&v), sizeof(v));
+}
 
 std::vector<uint8_t> scalar_u32(uint32_t v) {
     std::vector<uint8_t> bytes(sizeof(v));
@@ -78,7 +82,7 @@ void write_gguf_qwen35(const std::string& path) {
     f.write("GGUF", 4);
     write_u32(f, 3);
     write_u64(f, 1);
-    write_u64(f, 1 + 16);  // arch + 16 qwen35 metadata
+    write_u64(f, 1 + 17);  // arch + 17 qwen35 metadata
 
     const auto arch = scalar_string("qwen35");
     write_string(f, "general.architecture");
@@ -102,11 +106,13 @@ void write_gguf_qwen35(const std::string& path) {
         {"qwen35.ssm.time_step_rank", 4, scalar_u32(16)},
         {"qwen35.ssm.inner_size", 4, scalar_u32(2048)},
         {"qwen35.rope.freq_base", 6, scalar_f32(10000000.0f)},
+        {"qwen35.rope.dimension_count", 4, scalar_u32(64)},
     };
     for (const auto& e : entries) {
         write_string(f, e.key);
         write_u32(f, e.type);
-        f.write(reinterpret_cast<const char*>(e.value.data()), static_cast<std::streamsize>(e.value.size()));
+        f.write(reinterpret_cast<const char*>(e.value.data()),
+                static_cast<std::streamsize>(e.value.size()));
     }
 
     write_string(f, "token_embd.weight");
@@ -115,6 +121,11 @@ void write_gguf_qwen35(const std::string& path) {
     write_u64(f, 32);
     write_u32(f, 8);  // Q8_0
     write_u64(f, 0);
+
+    // GGUF tensor data section is aligned to 32 bytes.
+    const auto end = f.tellp();
+    const std::streamoff align = (32 - static_cast<std::streamoff>(end) % 32) % 32;
+    for (std::streamoff i = 0; i < align; ++i) f.put(0);
     f.close();
 }
 

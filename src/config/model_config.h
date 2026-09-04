@@ -23,6 +23,7 @@ struct ModelConfig {
     int n_kv_heads_ = 0;
     int d_model_ = 0;
     int head_dim_ = 0;
+    int rotary_dim_ = 0;
     int d_ff_ = 0;
     int vocab_size_ = 0;
 

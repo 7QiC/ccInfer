@@ -10,13 +10,15 @@
 
 #include "checkpoint/gguf/config_loader.h"
 #include "checkpoint/gguf/reader.h"
+#include "model/qwen35/qwen35_model.h"
 
 namespace ccinfer {
 namespace {
 
 class ScopedTempFile {
 public:
-    explicit ScopedTempFile(const std::string& name) : path_(std::filesystem::temp_directory_path() / name) {
+    explicit ScopedTempFile(const std::string& name)
+        : path_(std::filesystem::temp_directory_path() / name) {
         std::filesystem::remove(path_);
     }
     ~ScopedTempFile() { std::filesystem::remove(path_); }
@@ -30,8 +32,12 @@ void write_string(std::ofstream& f, const std::string& s) {
     f.write(reinterpret_cast<const char*>(&len), sizeof(len));
     f.write(s.data(), static_cast<std::streamsize>(s.size()));
 }
-void write_u32(std::ofstream& f, uint32_t v) { f.write(reinterpret_cast<const char*>(&v), sizeof(v)); }
-void write_u64(std::ofstream& f, uint64_t v) { f.write(reinterpret_cast<const char*>(&v), sizeof(v)); }
+void write_u32(std::ofstream& f, uint32_t v) {
+    f.write(reinterpret_cast<const char*>(&v), sizeof(v));
+}
+void write_u64(std::ofstream& f, uint64_t v) {
+    f.write(reinterpret_cast<const char*>(&v), sizeof(v));
+}
 
 std::vector<uint8_t> scalar_u32(uint32_t v) {
     std::vector<uint8_t> bytes(sizeof(v));
@@ -63,18 +69,20 @@ void write_gguf(const std::string& path, const std::string& arch,
     std::ofstream f(path, std::ios::binary);
     f.write("GGUF", 4);
     write_u32(f, 3);
-    write_u64(f, 1);  // token_embd
+    write_u64(f, 1);                                        // token_embd
     write_u64(f, static_cast<uint64_t>(extra.size() + 1));  // metadata
 
     write_string(f, "general.architecture");
     write_u32(f, 8);
     auto arch_bytes = scalar_string(arch);
-    f.write(reinterpret_cast<const char*>(arch_bytes.data()), static_cast<std::streamsize>(arch_bytes.size()));
+    f.write(reinterpret_cast<const char*>(arch_bytes.data()),
+            static_cast<std::streamsize>(arch_bytes.size()));
 
     for (const auto& e : extra) {
         write_string(f, e.key);
         write_u32(f, e.type);
-        f.write(reinterpret_cast<const char*>(e.value.data()), static_cast<std::streamsize>(e.value.size()));
+        f.write(reinterpret_cast<const char*>(e.value.data()),
+                static_cast<std::streamsize>(e.value.size()));
     }
 
     write_string(f, "token_embd.weight");
@@ -83,6 +91,11 @@ void write_gguf(const std::string& path, const std::string& arch,
     write_u64(f, 100);
     write_u32(f, 8);  // Q8_0
     write_u64(f, 0);
+
+    // GGUF tensor data section is aligned to 32 bytes.
+    const auto end = f.tellp();
+    const std::streamoff align = (32 - static_cast<std::streamoff>(end) % 32) % 32;
+    for (std::streamoff i = 0; i < align; ++i) f.put(0);
     f.close();
 }
 
@@ -104,6 +117,7 @@ std::vector<MetadataEntry> qwen35_metadata(int interval = 4, int nextn = 1) {
         {"qwen35.ssm.time_step_rank", 4, scalar_u32(16)},
         {"qwen35.ssm.inner_size", 4, scalar_u32(2048)},
         {"qwen35.rope.freq_base", 6, scalar_f32(10000000.0f)},
+        {"qwen35.rope.dimension_count", 4, scalar_u32(64)},
     };
 }
 
@@ -124,6 +138,7 @@ TEST(GgufConfigLoaderTest, LegalQwen35Config) {
     EXPECT_EQ(cfg.n_q_heads_, 8);
     EXPECT_EQ(cfg.n_kv_heads_, 2);
     EXPECT_EQ(cfg.head_dim_, 256);
+    EXPECT_EQ(cfg.rotary_dim_, 64);
     EXPECT_EQ(cfg.vocab_size_, 100);
     EXPECT_EQ(cfg.max_seq_len_, 262144);
     EXPECT_EQ(cfg.full_attention_interval_, 4);
@@ -139,9 +154,81 @@ TEST(GgufConfigLoaderTest, LegalQwen35Config) {
     EXPECT_EQ(cfg.layer_types_[4], LayerType::GatedDeltaNet);
     EXPECT_EQ(cfg.layer_types_[24], LayerType::MtpPredictor);
     EXPECT_EQ(static_cast<int>(std::count(cfg.layer_types_.begin(), cfg.layer_types_.end(),
-                                          LayerType::FullAttention)), 6);
+                                          LayerType::FullAttention)),
+              6);
     EXPECT_EQ(static_cast<int>(std::count(cfg.layer_types_.begin(), cfg.layer_types_.end(),
-                                          LayerType::MtpPredictor)), 1);
+                                          LayerType::MtpPredictor)),
+              1);
+}
+
+TEST(GgufConfigLoaderTest, LayerMappingHelpers) {
+    const std::string path = ScopedTempFile("ccinfer-test-gguf-config-mapping.gguf").path();
+    write_gguf(path, "qwen35", qwen35_metadata(4, 1));
+    auto reader_r = GGUFReader::create(path);
+    ASSERT_TRUE(reader_r.has_value());
+    auto cfg_r = GgufConfigLoader::load(**reader_r);
+    ASSERT_TRUE(cfg_r.has_value());
+    const auto& cfg = *cfg_r;
+
+    EXPECT_EQ(qwen35::num_kv_layers(cfg), 6);
+    EXPECT_EQ(qwen35::num_gdn_layers(cfg), 18);
+    // Full-attention main layers: 3,7,11,15,19,23.
+    EXPECT_EQ(qwen35::kv_layer_index(cfg, 3), 0);
+    EXPECT_EQ(qwen35::kv_layer_index(cfg, 7), 1);
+    EXPECT_EQ(qwen35::kv_layer_index(cfg, 11), 2);
+    EXPECT_EQ(qwen35::kv_layer_index(cfg, 15), 3);
+    EXPECT_EQ(qwen35::kv_layer_index(cfg, 19), 4);
+    EXPECT_EQ(qwen35::kv_layer_index(cfg, 23), 5);
+    // First three GDN layers are 0,1,2; the GDN just after layer 3 is layer 4.
+    EXPECT_EQ(qwen35::gdn_layer_index(cfg, 0), 0);
+    EXPECT_EQ(qwen35::gdn_layer_index(cfg, 1), 1);
+    EXPECT_EQ(qwen35::gdn_layer_index(cfg, 2), 2);
+    EXPECT_EQ(qwen35::gdn_layer_index(cfg, 4), 3);
+    EXPECT_EQ(qwen35::gdn_layer_index(cfg, 22), 17);
+}
+
+TEST(GgufConfigLoaderTest, RejectsMissingRotaryDimensionCount) {
+    const std::string path = ScopedTempFile("ccinfer-test-gguf-config-norotary.gguf").path();
+    auto metadata = qwen35_metadata();
+    metadata.erase(std::remove_if(metadata.begin(), metadata.end(),
+                                  [](const MetadataEntry& e) {
+                                      return e.key == "qwen35.rope.dimension_count";
+                                  }),
+                   metadata.end());
+    write_gguf(path, "qwen35", metadata);
+    auto reader_r = GGUFReader::create(path);
+    ASSERT_TRUE(reader_r.has_value());
+    auto cfg_r = GgufConfigLoader::load(**reader_r);
+    EXPECT_FALSE(cfg_r.has_value());
+    EXPECT_EQ(cfg_r.error(), ErrorCode::ModelConfigInvalid);
+}
+
+TEST(GgufConfigLoaderTest, RejectsInnerSizeNotDivisibleByTimeStepRank) {
+    const std::string path = ScopedTempFile("ccinfer-test-gguf-config-badinner.gguf").path();
+    auto metadata = qwen35_metadata();
+    for (auto& e : metadata) {
+        if (e.key == "qwen35.ssm.inner_size") e.value = scalar_u32(2047);
+    }
+    write_gguf(path, "qwen35", metadata);
+    auto reader_r = GGUFReader::create(path);
+    ASSERT_TRUE(reader_r.has_value());
+    auto cfg_r = GgufConfigLoader::load(**reader_r);
+    EXPECT_FALSE(cfg_r.has_value());
+    EXPECT_EQ(cfg_r.error(), ErrorCode::ModelConfigInvalid);
+}
+
+TEST(GgufConfigLoaderTest, RejectsOddRotaryDimensionCount) {
+    const std::string path = ScopedTempFile("ccinfer-test-gguf-config-oddrotary.gguf").path();
+    auto metadata = qwen35_metadata();
+    for (auto& e : metadata) {
+        if (e.key == "qwen35.rope.dimension_count") e.value = scalar_u32(65);
+    }
+    write_gguf(path, "qwen35", metadata);
+    auto reader_r = GGUFReader::create(path);
+    ASSERT_TRUE(reader_r.has_value());
+    auto cfg_r = GgufConfigLoader::load(**reader_r);
+    EXPECT_FALSE(cfg_r.has_value());
+    EXPECT_EQ(cfg_r.error(), ErrorCode::ModelConfigInvalid);
 }
 
 TEST(GgufConfigLoaderTest, RejectsNonQwen35Arch) {
@@ -178,7 +265,8 @@ TEST(GgufConfigLoaderTest, NoNextnLayersProducesNoMtpPredictor) {
     EXPECT_EQ(cfg.n_layers_, 24);
     EXPECT_EQ(cfg.nextn_predict_layers_, 0);
     ASSERT_EQ(cfg.layer_types_.size(), 24u);
-    EXPECT_EQ(std::count(cfg.layer_types_.begin(), cfg.layer_types_.end(), LayerType::MtpPredictor), 0);
+    EXPECT_EQ(std::count(cfg.layer_types_.begin(), cfg.layer_types_.end(), LayerType::MtpPredictor),
+              0);
 }
 
 }  // namespace

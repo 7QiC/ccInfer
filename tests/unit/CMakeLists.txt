@@ -25,7 +25,7 @@ target_link_libraries(test_weight_source PRIVATE ccinfer_checkpoint gtest_main)
 gtest_discover_tests(test_weight_source)
 
 add_executable(test_gguf_config_loader test_gguf_config_loader.cpp)
-target_link_libraries(test_gguf_config_loader PRIVATE ccinfer_checkpoint gtest_main)
+target_link_libraries(test_gguf_config_loader PRIVATE ccinfer_engine gtest_main)
 gtest_discover_tests(test_gguf_config_loader)
 
 add_executable(test_checkpoint test_checkpoint.cpp)
@@ -39,6 +39,7 @@ ccinfer_add_unit_test(test_block_storage CUDA::cudart)
 ccinfer_add_unit_test(test_device_buffer CUDA::cudart)
 ccinfer_add_unit_test(test_tensor CUDA::cudart)
 ccinfer_add_unit_test(test_config)
+ccinfer_add_unit_test(test_kv_layer_mapping)
 ccinfer_add_unit_test(test_smoke CUDA::cudart)
 
 add_executable(test_tokenizer test_tokenizer.cpp)
