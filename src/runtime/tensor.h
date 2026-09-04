@@ -16,6 +16,11 @@ class Backend;
 // Framework-side Tensor: a ccop::Tensor view plus the Buffer that owns the
 // underlying allocation. Copies share ownership (PyTorch-style value
 // semantics); views produced by view/flat/slice/select keep the same owner.
+//
+// The backing ccop::Tensor is representation-aware: it is either dense
+// (ccop::DType) or quantized (ccop::QType, e.g. Q8_0). Quantized owning
+// tensors are supported by the same Tensor type; there is no separate
+// QuantizedWeight/QuantizedTensor class.
 class Tensor final : public ccop::Tensor {
 public:
     Tensor() = default;
@@ -27,24 +32,32 @@ public:
     // Wraps an already-allocated Buffer. Never fails.
     Tensor(std::shared_ptr<Buffer> buffer, ccop::DType dtype,
            std::initializer_list<std::int64_t> shape);
+    Tensor(std::shared_ptr<Buffer> buffer, const ccop::QType& qtype,
+           std::initializer_list<std::int64_t> shape);
 
     // Uninitialized device tensor (torch.empty style).
     static Result<Tensor> empty(Backend& backend, ccop::DType dtype,
                                 std::initializer_list<std::int64_t> shape);
     static Result<Tensor> empty(Backend& backend, ccop::DType dtype,
                                 std::span<const std::int64_t> shape);
+    static Result<Tensor> empty(Backend& backend, const ccop::QType& qtype,
+                                std::initializer_list<std::int64_t> shape);
 
     // Allocates a device tensor and copies host data into it.
     static Result<Tensor> from_host(Backend& backend, const void* src, ccop::DType dtype,
                                     std::initializer_list<std::int64_t> shape);
     static Result<Tensor> from_host(Backend& backend, const void* src, ccop::DType dtype,
                                     std::span<const std::int64_t> shape);
+    static Result<Tensor> from_host(Backend& backend, const void* src, const ccop::QType& qtype,
+                                    std::initializer_list<std::int64_t> shape);
 
     // Wraps a sub-range of an existing Buffer at an explicit byte offset.
     static Tensor from_buffer(std::shared_ptr<Buffer> buffer, void* data, ccop::DType dtype,
                               std::initializer_list<std::int64_t> shape);
     static Tensor from_buffer(std::shared_ptr<Buffer> buffer, void* data, ccop::DType dtype,
                               std::span<const std::int64_t> shape);
+    static Tensor from_buffer(std::shared_ptr<Buffer> buffer, void* data, const ccop::QType& qtype,
+                              std::initializer_list<std::int64_t> shape);
 
     [[nodiscard]] const std::shared_ptr<Buffer>& buffer() const noexcept { return buffer_; }
 

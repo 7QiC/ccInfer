@@ -21,9 +21,7 @@ bool data_in_buffer(const Buffer* buffer, const void* data, std::size_t bytes) n
            (ptr - base) <= buffer->bytes() - bytes;
 }
 
-Result<std::size_t> checked_nbytes_span(ccop::DType dtype, std::span<const std::int64_t> shape) {
-    const std::size_t elem_size = ccop::dtype_size(dtype);
-    if (elem_size == 0) return std::unexpected(ErrorCode::Unsupported);
+Result<std::size_t> checked_numel(std::span<const std::int64_t> shape) {
     if (shape.empty() || shape.size() > static_cast<std::size_t>(ccop::kTensorMaxRank)) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
@@ -35,10 +33,31 @@ Result<std::size_t> checked_nbytes_span(ccop::DType dtype, std::span<const std::
         }
         numel *= static_cast<std::size_t>(dim);
     }
-    if (numel > kMax / elem_size) {
+    return numel;
+}
+
+Result<std::size_t> checked_nbytes_dense(ccop::DType dtype, std::span<const std::int64_t> shape) {
+    const std::size_t elem_size = ccop::dtype_size(dtype);
+    if (elem_size == 0) return std::unexpected(ErrorCode::Unsupported);
+    auto numel = checked_numel(shape);
+    if (!numel) return std::unexpected(numel.error());
+    if (*numel > std::numeric_limits<std::size_t>::max() / elem_size) {
         return std::unexpected(ErrorCode::InvalidArgument);
     }
-    return numel * elem_size;
+    return *numel * elem_size;
+}
+
+Result<std::size_t> checked_nbytes_quantized(const ccop::QType& qtype,
+                                             std::span<const std::int64_t> shape) {
+    if (shape.empty() || shape.size() > static_cast<std::size_t>(ccop::kTensorMaxRank)) {
+        return std::unexpected(ErrorCode::InvalidArgument);
+    }
+    if (qtype.quant_type != ccop::QuantType::kQ8_0) {
+        return std::unexpected(ErrorCode::Unsupported);
+    }
+    auto bytes = ccop::q8_0_storage_bytes(shape);
+    if (!bytes.has_value() || *bytes < 0) return std::unexpected(ErrorCode::InvalidArgument);
+    return static_cast<std::size_t>(*bytes);
 }
 
 }  // namespace
@@ -49,6 +68,12 @@ Tensor::Tensor(std::shared_ptr<Buffer> buffer, ccop::DType dtype,
     assert(nbytes() <= buffer_->bytes());
 }
 
+Tensor::Tensor(std::shared_ptr<Buffer> buffer, const ccop::QType& qtype,
+               std::initializer_list<std::int64_t> shape)
+    : ccop::Tensor(buffer->data(), qtype, buffer->device(), shape), buffer_(std::move(buffer)) {
+    assert(nbytes() <= buffer_->bytes());
+}
+
 Result<Tensor> Tensor::empty(Backend& backend, ccop::DType dtype,
                              std::initializer_list<std::int64_t> shape) {
     return empty(backend, dtype, std::span<const std::int64_t>(shape.begin(), shape.size()));
@@ -56,12 +81,23 @@ Result<Tensor> Tensor::empty(Backend& backend, ccop::DType dtype,
 
 Result<Tensor> Tensor::empty(Backend& backend, ccop::DType dtype,
                              std::span<const std::int64_t> shape) {
-    auto bytes = checked_nbytes_span(dtype, shape);
+    auto bytes = checked_nbytes_dense(dtype, shape);
     if (!bytes) return std::unexpected(bytes.error());
     auto buffer_r = backend.allocate_buffer(*bytes);
     if (!buffer_r) return std::unexpected(buffer_r.error());
     auto buffer = std::move(*buffer_r);
     return from_buffer(buffer, buffer->data(), dtype, shape);
+}
+
+Result<Tensor> Tensor::empty(Backend& backend, const ccop::QType& qtype,
+                             std::initializer_list<std::int64_t> shape) {
+    auto bytes = checked_nbytes_quantized(
+        qtype, std::span<const std::int64_t>(shape.begin(), shape.size()));
+    if (!bytes) return std::unexpected(bytes.error());
+    auto buffer_r = backend.allocate_buffer(*bytes);
+    if (!buffer_r) return std::unexpected(buffer_r.error());
+    auto buffer = std::move(*buffer_r);
+    return from_buffer(buffer, buffer->data(), qtype, shape);
 }
 
 Result<Tensor> Tensor::from_host(Backend& backend, const void* src, ccop::DType dtype,
@@ -74,6 +110,16 @@ Result<Tensor> Tensor::from_host(Backend& backend, const void* src, ccop::DType 
                                  std::span<const std::int64_t> shape) {
     if (src == nullptr) return std::unexpected(ErrorCode::InvalidArgument);
     auto tensor = empty(backend, dtype, shape);
+    if (!tensor) return std::unexpected(tensor.error());
+    auto r = backend.memcpy_h2d(tensor->data(), src, tensor->nbytes());
+    if (!r) return std::unexpected(r.error());
+    return tensor;
+}
+
+Result<Tensor> Tensor::from_host(Backend& backend, const void* src, const ccop::QType& qtype,
+                                 std::initializer_list<std::int64_t> shape) {
+    if (src == nullptr) return std::unexpected(ErrorCode::InvalidArgument);
+    auto tensor = empty(backend, qtype, shape);
     if (!tensor) return std::unexpected(tensor.error());
     auto r = backend.memcpy_h2d(tensor->data(), src, tensor->nbytes());
     if (!r) return std::unexpected(r.error());
@@ -108,8 +154,21 @@ Tensor Tensor::from_buffer(std::shared_ptr<Buffer> buffer, void* data, ccop::DTy
     return tensor;
 }
 
+Tensor Tensor::from_buffer(std::shared_ptr<Buffer> buffer, void* data, const ccop::QType& qtype,
+                           std::initializer_list<std::int64_t> shape) {
+    Tensor tensor;
+    static_cast<ccop::Tensor&>(tensor) = ccop::Tensor(data, qtype, buffer->device(), shape);
+    tensor.buffer_ = std::move(buffer);
+    assert(data_in_buffer(tensor.buffer_.get(), data, tensor.nbytes()));
+    return tensor;
+}
+
 Tensor Tensor::view(std::initializer_list<std::int64_t> shape) {
     assert(buffer_ && "Tensor has no owner");
+    if (!is_dense()) {
+        assert(false && "view requires a dense tensor");
+        return Tensor{};
+    }
     assert(is_contiguous() && "view requires a contiguous tensor");
     const ccop::Tensor view(data(), dtype(), device(), shape);
     assert(view.numel() == numel() && "view shape must preserve numel");
