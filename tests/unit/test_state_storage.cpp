@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
 
 #include "backend/backend.h"
-#include "state/state_storage.h"
 #include "config/model_config.h"
+#include "state/state_storage.h"
 
 namespace ccinfer {
 namespace {
@@ -46,7 +46,7 @@ TEST(StateStorageTest, PreallocatesZeroedSlotsAndCopies) {
     ASSERT_TRUE(storage_r.has_value());
     auto& storage = **storage_r;
 
-    EXPECT_EQ(storage.num_slots(), 5);
+    EXPECT_EQ(storage.num_states(), 5);
     EXPECT_EQ(storage.recurrent_state(0).shape(0), 5);
     EXPECT_EQ(storage.recurrent_state(0).shape(1), 16);
     EXPECT_EQ(storage.recurrent_state(0).shape(2), 128);
@@ -55,12 +55,12 @@ TEST(StateStorageTest, PreallocatesZeroedSlotsAndCopies) {
     EXPECT_EQ(storage.conv_state(0).shape(1), 6144);
     EXPECT_EQ(storage.conv_state(0).shape(2), 3);
 
-    ASSERT_TRUE(storage.zero_slot(0).has_value());
-    ASSERT_TRUE(storage.copy_slot(0, 1).has_value());
-    ASSERT_TRUE(storage.zero_slot(2).has_value());
-    ASSERT_TRUE(storage.copy_slot(2, 4).has_value());
-    EXPECT_FALSE(storage.copy_slot(4, 5).has_value());
-    EXPECT_FALSE(storage.zero_slot(-1).has_value());
+    ASSERT_TRUE(storage.zero_state(0).has_value());
+    ASSERT_TRUE(storage.copy_state(0, 1).has_value());
+    ASSERT_TRUE(storage.zero_state(2).has_value());
+    ASSERT_TRUE(storage.copy_state(2, 4).has_value());
+    EXPECT_FALSE(storage.copy_state(4, 5).has_value());
+    EXPECT_FALSE(storage.zero_state(-1).has_value());
 }
 
 }  // namespace

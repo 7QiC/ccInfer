@@ -19,6 +19,7 @@
 #include "base/error.h"
 #include "base/types.h"
 #include "block/block_storage.h"
+#include "cache/state_cache.h"
 #include "config/engine_config.h"
 #include "config/model_config.h"
 #include "facade/log.h"
@@ -103,7 +104,13 @@ private:
     std::unique_ptr<Backend> backend_;
     std::unique_ptr<Model> model_;
     std::unique_ptr<BlockStorage> block_storage_;
+    // T1.4/T1.6 transition state: active state resource/policy currently lives
+    // on the worker side because Worker still acquires active states and builds
+    // state_mapping. Once T1.6 moves state mapping into Scheduler descriptors,
+    // StatePool/StateCache belong to the Scheduler/resource side and Worker will
+    // retain only StateStorage (mirroring BlockStorage).
     std::unique_ptr<StatePool> state_pool_;
+    std::unique_ptr<StateCache> state_cache_;
 };
 
 }  // namespace ccinfer

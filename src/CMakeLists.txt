@@ -108,6 +108,7 @@ target_link_libraries(ccinfer_state
 add_library(ccinfer_cache STATIC
     cache/prefix_cache.cpp
     cache/block_cache.cpp
+    cache/state_cache.cpp
 )
 target_include_directories(ccinfer_cache
     PUBLIC
@@ -120,6 +121,7 @@ target_link_libraries(ccinfer_cache
     PUBLIC
         ccinfer_block
         ccinfer_core
+        ccinfer_state
         ccop::ccop
         spdlog::spdlog
     PRIVATE

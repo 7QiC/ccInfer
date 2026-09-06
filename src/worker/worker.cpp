@@ -118,8 +118,8 @@ Result<PhysicalBatch> Worker::BatchTranslator::translate(const ScheduledBatch& b
     std::vector<int32_t> state_slots(count, -1);
     if (state_pool_ != nullptr) {
         for (std::size_t i = 0; i < count; ++i) {
-            const auto slot = state_pool_->active_slot_of(item_seq_ids[i]);
-            state_slots[i] = slot.has_value() ? *slot : -1;
+            const auto state = state_pool_->active_state_of(item_seq_ids[i]);
+            state_slots[i] = state.has_value() ? *state : -1;
         }
     }
 
@@ -389,10 +389,11 @@ Result<void> Worker::init_resources(const std::string& model_path, const ModelCo
 
         if (model.arch_ == ModelArch::Qwen3_5) {
             auto state_pool = StatePool::create(*backend_, model, engine_config_.max_sequences,
-                                                engine_config_.state_prefix_cache_blocks,
                                                 engine_config_.state_prefix_cache_blocks);
             if (!state_pool) return std::unexpected(state_pool.error());
             state_pool_ = std::move(*state_pool);
+            state_cache_ = std::make_unique<StateCache>(*state_pool_,
+                                                        engine_config_.state_prefix_cache_blocks);
         }
 
         initialized_ = true;
@@ -413,6 +414,7 @@ void Worker::reset_resources() {
     failed_sequences_.clear();
     model_.reset();
     block_storage_.reset();
+    state_cache_.reset();
     state_pool_.reset();
     backend_.reset();
 }

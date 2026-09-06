@@ -39,136 +39,112 @@ ModelConfig qwen35_config() {
     return cfg;
 }
 
-TEST(StateSlotTest, KindAndFreeOccupiedStateMachine) {
-    StateSlot slot;
-    EXPECT_EQ(slot.slot_id, kInvalidStateSlot);
-    EXPECT_TRUE(slot.is_free());
-    EXPECT_FALSE(slot.is_occupied());
-    EXPECT_TRUE(slot.is_active_kind());
-    EXPECT_FALSE(slot.is_cached_kind());
+TEST(StateTest, DefaultResourceMetadata) {
+    State state;
+    EXPECT_EQ(state.id, kInvalidStateId);
+    EXPECT_EQ(state.kind, StateKind::Mutable);
+    EXPECT_TRUE(state.is_free());
+    EXPECT_FALSE(state.is_in_use());
 
-    slot.kind = StateSlotKind::Cached;
-    slot.status = StateSlotStatus::Occupied;
-    slot.prefix_hash = 0x1234;
-    EXPECT_TRUE(slot.is_cached_kind());
-    EXPECT_TRUE(slot.is_occupied());
-    EXPECT_FALSE(slot.is_free());
+    state.kind = StateKind::Snapshot;
+    state.status = StateStatus::InUse;
+    EXPECT_TRUE(state.is_snapshot_kind());
+    EXPECT_TRUE(state.is_in_use());
+    EXPECT_FALSE(state.is_free());
 }
 
-TEST(StatePoolTest, ActiveAcquireReleaseReusesSlots) {
+TEST(StateTest, FreeListPushPop) {
+    StateFreeList fl;
+    State states[3];
+    for (int i = 0; i < 3; ++i) states[i].id = i;
+
+    fl.push_back(states[0]);
+    fl.push_back(states[1]);
+    fl.push_back(states[2]);
+    EXPECT_EQ(static_cast<int>(fl.size()), 3);
+
+    auto& front = fl.front();
+    fl.pop_front();
+    EXPECT_EQ(front.id, 0);
+    EXPECT_EQ(static_cast<int>(fl.size()), 2);
+
+    fl.pop_front();
+    fl.pop_front();
+}
+
+TEST(StatePoolTest, ActiveAcquireReleaseReusesStates) {
     auto backend_r = Backend::create(0);
     if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
-    auto pool_r = StatePool::create(**backend_r, qwen35_config(), 2, 3, 3);
+    auto pool_r = StatePool::create(**backend_r, qwen35_config(), 2, 3);
     ASSERT_TRUE(pool_r.has_value());
     auto& pool = **pool_r;
 
     ASSERT_TRUE(pool.acquire_active(10).has_value());
     ASSERT_TRUE(pool.acquire_active(20).has_value());
-    EXPECT_EQ(pool.active_slot_of(10), 0);
-    EXPECT_EQ(pool.active_slot_of(20), 1);
-    EXPECT_FALSE(pool.active_slot_of(30).has_value());
+    EXPECT_EQ(pool.active_state_of(10), 0);
+    EXPECT_EQ(pool.active_state_of(20), 1);
+    EXPECT_FALSE(pool.active_state_of(30).has_value());
 
-    // Same-sequence multiple outstanding batches share the same active slot.
+    // Same-sequence multiple outstanding batches share the same active state.
     ASSERT_TRUE(pool.acquire_active(10).has_value());
-    EXPECT_EQ(pool.active_slot_of(10), 0);
+    EXPECT_EQ(pool.active_state_of(10), 0);
 
     ASSERT_TRUE(pool.release_active(10).has_value());
     ASSERT_TRUE(pool.acquire_active(30).has_value());
-    EXPECT_EQ(pool.active_slot_of(30), 0);
-    EXPECT_FALSE(pool.active_slot_of(10).has_value());
+    EXPECT_EQ(pool.active_state_of(30), 0);
+    EXPECT_FALSE(pool.active_state_of(10).has_value());
 }
 
-TEST(StatePoolTest, CachedIdentityIsPrefixHashNotSeqId) {
+TEST(StatePoolTest, ActiveStateIsNotReusedUntilExplicitRelease) {
     auto backend_r = Backend::create(0);
     if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
-    auto pool_r = StatePool::create(**backend_r, qwen35_config(), 2, 3, 3);
+    auto pool_r = StatePool::create(**backend_r, qwen35_config(), 1, 0);
     ASSERT_TRUE(pool_r.has_value());
     auto& pool = **pool_r;
 
     ASSERT_TRUE(pool.acquire_active(10).has_value());
-    ASSERT_TRUE(pool.acquire_active(20).has_value());
-    const StateSlotId a_slot = *pool.active_slot_of(10);
-    const StateSlotId b_slot = *pool.active_slot_of(20);
-
-    // prefixA at three block frontiers (hashes are arbitrary but distinct in
-    // this unit test; real callers use PrefixCache::chain_hashes).
-    constexpr uint64_t kPrefixA0 = 0xA000000000000001ULL;
-    constexpr uint64_t kPrefixA1 = 0xA000000000000002ULL;
-    constexpr uint64_t kPrefixA2 = 0xA000000000000003ULL;
-    ASSERT_TRUE(pool.snapshot(kPrefixA0, 0, a_slot).has_value());
-    ASSERT_TRUE(pool.snapshot(kPrefixA1, 1, a_slot).has_value());
-    ASSERT_TRUE(pool.snapshot(kPrefixA2, 2, a_slot).has_value());
-
-    // seq B can restore the same prefix identity; seq_id is not part of the key.
-    EXPECT_TRUE(pool.has_cached(kPrefixA0));
-    EXPECT_TRUE(pool.has_cached(kPrefixA1));
-    EXPECT_TRUE(pool.has_cached(kPrefixA2));
-    EXPECT_FALSE(pool.has_cached(kPrefixA0 + 1));
-    ASSERT_TRUE(pool.restore(kPrefixA1, b_slot).has_value());
-    EXPECT_NE(pool.cached_slot_of(kPrefixA1), kInvalidStateSlot);
-    EXPECT_FALSE(pool.snapshot(kPrefixA0, 3, a_slot).has_value());  // depth 3.
-}
-
-TEST(StatePoolTest, FrontierDepthIsSeparateFromCachedCapacity) {
-    auto backend_r = Backend::create(0);
-    if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
-    // depth=3, capacity=2: capacity can fill with two distinct prefixes while
-    // both are at frontier 0, proving they are not the same concept.
-    auto pool_r = StatePool::create(**backend_r, qwen35_config(), 2, 3, 2);
-    ASSERT_TRUE(pool_r.has_value());
-    auto& pool = **pool_r;
-
-    ASSERT_TRUE(pool.acquire_active(10).has_value());
-    const StateSlotId slot = *pool.active_slot_of(10);
-    constexpr uint64_t kHashA = 0xB000000000000001ULL;
-    constexpr uint64_t kHashB = 0xB000000000000002ULL;
-    constexpr uint64_t kHashC = 0xB000000000000003ULL;
-
-    ASSERT_TRUE(pool.snapshot(kHashA, 0, slot).has_value());
-    ASSERT_TRUE(pool.snapshot(kHashB, 0, slot).has_value());
-    // Capacity is exhausted although frontier depth still permits more.
-    EXPECT_FALSE(pool.snapshot(kHashC, 0, slot).has_value());
-    EXPECT_TRUE(pool.has_cached(kHashA));
-    EXPECT_TRUE(pool.has_cached(kHashB));
-
-    // Frontier depth still rejects a frontier >= 3 even with free capacity.
-    auto pool2_r = StatePool::create(**backend_r, qwen35_config(), 2, 3, 5);
-    ASSERT_TRUE(pool2_r.has_value());
-    auto& pool2 = **pool2_r;
-    ASSERT_TRUE(pool2.acquire_active(20).has_value());
-    const StateSlotId slot2 = *pool2.active_slot_of(20);
-    ASSERT_TRUE(pool2.snapshot(kHashA, 0, slot2).has_value());
-    EXPECT_FALSE(pool2.snapshot(kHashB, 3, slot2).has_value());
-}
-
-TEST(StatePoolTest, ActiveSlotIsNotReusedUntilExplicitRelease) {
-    auto backend_r = Backend::create(0);
-    if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
-    // max_active=1 makes reuse observable: A keeps slot 0, B must not steal it.
-    auto pool_r = StatePool::create(**backend_r, qwen35_config(), 1, 0, 0);
-    ASSERT_TRUE(pool_r.has_value());
-    auto& pool = **pool_r;
-
-    ASSERT_TRUE(pool.acquire_active(10).has_value());
-    EXPECT_EQ(pool.active_slot_of(10), 0);
+    EXPECT_EQ(pool.active_state_of(10), 0);
     EXPECT_FALSE(pool.acquire_active(20).has_value());
 
     ASSERT_TRUE(pool.release_active(10).has_value());
     ASSERT_TRUE(pool.acquire_active(20).has_value());
-    EXPECT_EQ(pool.active_slot_of(20), 0);
+    EXPECT_EQ(pool.active_state_of(20), 0);
 }
 
-TEST(StatePoolTest, ZeroCacheDepthDisablesSnapshot) {
+TEST(StatePoolTest, SnapshotResourcesAreSeparateAndReusable) {
     auto backend_r = Backend::create(0);
     if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
-    auto pool_r = StatePool::create(**backend_r, qwen35_config(), 2, 0, 0);
+    auto pool_r = StatePool::create(**backend_r, qwen35_config(), 2, 2);
     ASSERT_TRUE(pool_r.has_value());
     auto& pool = **pool_r;
+    EXPECT_EQ(pool.max_active(), 2);
+    EXPECT_EQ(pool.max_snapshots(), 2);
+    EXPECT_EQ(pool.num_free_snapshots(), 2);
 
-    ASSERT_TRUE(pool.acquire_active(10).has_value());
-    const StateSlotId slot = *pool.active_slot_of(10);
-    EXPECT_FALSE(pool.snapshot(1, 0, slot).has_value());
-    EXPECT_FALSE(pool.restore(1, slot).has_value());
+    auto first = pool.acquire_snapshot();
+    auto second = pool.acquire_snapshot();
+    ASSERT_TRUE(first.has_value());
+    ASSERT_TRUE(second.has_value());
+    EXPECT_EQ(*first, 2);
+    EXPECT_EQ(*second, 3);
+    EXPECT_EQ(pool.num_free_snapshots(), 0);
+    EXPECT_FALSE(pool.acquire_snapshot().has_value());
+
+    ASSERT_TRUE(pool.release_snapshot(*first).has_value());
+    EXPECT_EQ(pool.num_free_snapshots(), 1);
+    auto reused = pool.acquire_snapshot();
+    ASSERT_TRUE(reused.has_value());
+    EXPECT_EQ(*reused, *first);
+}
+
+TEST(StatePoolTest, ZeroSnapshotCapacityRejectsAcquire) {
+    auto backend_r = Backend::create(0);
+    if (!backend_r) GTEST_SKIP() << "CUDA unavailable";
+    auto pool_r = StatePool::create(**backend_r, qwen35_config(), 2, 0);
+    ASSERT_TRUE(pool_r.has_value());
+    auto& pool = **pool_r;
+    EXPECT_EQ(pool.num_free_snapshots(), 0);
+    EXPECT_FALSE(pool.acquire_snapshot().has_value());
 }
 
 }  // namespace
