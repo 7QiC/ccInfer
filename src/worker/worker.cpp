@@ -11,11 +11,13 @@
 #include <boost/asio/post.hpp>
 
 #include "backend/backend.h"
-#include "base/asio_error.h"
+#include "cache/state_cache.h"
 #include "checkpoint/checkpoint.h"
+#include "facade/log.h"
 #include "model/qwen35/qwen35_model.h"
 #include "model/registry.h"
 #include "runtime/precision.h"
+#include "state/state_pool.h"
 #include "worker/model_runner.h"
 
 namespace ccinfer {

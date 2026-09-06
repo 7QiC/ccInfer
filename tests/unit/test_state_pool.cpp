@@ -1,5 +1,3 @@
-#include <optional>
-
 #include <gtest/gtest.h>
 
 #include "backend/backend.h"

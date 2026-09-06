@@ -4,7 +4,6 @@
 
 #include "block/block_pool.h"
 #include "cache/block_cache.h"
-#include "cache/prefix_cache.h"
 
 namespace ccinfer {
 namespace {

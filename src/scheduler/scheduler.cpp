@@ -17,7 +17,6 @@
 #include <boost/asio/post.hpp>
 
 #include "engine/engine_core.h"
-#include "facade/log.h"
 
 namespace ccinfer {
 

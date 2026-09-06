@@ -2,9 +2,6 @@
 
 #include <cassert>
 #include <utility>
-#include <vector>
-
-#include "runtime/precision.h"
 
 namespace ccinfer {
 

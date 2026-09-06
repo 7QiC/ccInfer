@@ -12,23 +12,22 @@
 #include <vector>
 
 #include <boost/asio/io_context.hpp>
-#include <boost/asio/post.hpp>
 
 #include "backend/backend.h"
 #include "base/channel.h"
 #include "base/error.h"
 #include "base/types.h"
 #include "block/block_storage.h"
-#include "cache/state_cache.h"
 #include "config/engine_config.h"
 #include "config/model_config.h"
-#include "facade/log.h"
-#include "state/state_pool.h"
 #include "worker/model_runner.h"
 
 namespace ccinfer {
 
 namespace asio = boost::asio;
+
+class StatePool;
+class StateCache;
 
 class Worker {
 public:
