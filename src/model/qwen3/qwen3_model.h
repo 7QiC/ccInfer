@@ -11,14 +11,13 @@ namespace ccinfer {
 
 class Qwen3Model final : public Model {
 public:
-    static Result<std::unique_ptr<Model>> create(const ModelConfig& config,
-                                                 WeightSource& weights,
+    static Result<std::unique_ptr<Model>> create(const ModelConfig& config, WeightSource& weights,
                                                  Backend& backend);
 
     Qwen3Model(ModelConfig config, Qwen3Weights weights, RopeCache rope_cache);
 
     Result<void> forward(const ForwardInput& input, ForwardOutput& output,
-                         Backend& backend) override;
+                         ModelExecutionContext& exec_ctx) override;
 
     const ModelConfig& config() const override { return config_; }
 

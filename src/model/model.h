@@ -23,7 +23,6 @@ struct ForwardInput {
     ForwardMode mode_ = ForwardMode::Prefill;
 
     // Paged-attention fields.
-    BlockStorage* block_storage_ = nullptr;
     Tensor slot_mapping;     // [num_tokens]
     Tensor block_table;      // [batch, max_blocks_per_req]
     Tensor query_start_loc;  // [batch + 1]
@@ -32,15 +31,27 @@ struct ForwardInput {
     int max_blocks_per_req_ = 0;
 
     // GDN state: state_mapping_[i] is the active state slot for batch item i
-    // (-1 for Qwen3 or when no state is used). The physical storage is passed
-    // separately so PhysicalBatch stays metadata-only.
+    // (-1 for Qwen3 or when no state is used). This is execution metadata only;
+    // physical storage resources live in ModelExecutionContext.
     Tensor state_mapping;  // [batch_size], int32
-    StateStorage* state_storage_ = nullptr;
 
     // CPU-side rows of the hidden tensor that need logits. The model computes
     // only these rows so the full [T, V] logits buffer is never materialized.
     std::vector<int32_t> logits_indices_host;
     int num_logits_ = 0;
+};
+
+// Runtime resources available to a model forward call. This is separate from
+// ForwardInput: input describes how this batch maps to KV/state slots, ctx
+// provides the storage/backend resources needed to execute those mappings.
+struct ModelExecutionContext {
+    Backend& backend;
+    BlockStorage* block_storage;
+    StateStorage* state_storage;
+
+    ModelExecutionContext(Backend& backend, BlockStorage* block_storage = nullptr,
+                          StateStorage* state_storage = nullptr)
+        : backend(backend), block_storage(block_storage), state_storage(state_storage) {}
 };
 
 struct ForwardOutput {
@@ -53,7 +64,7 @@ public:
     virtual ~Model() = default;
 
     virtual Result<void> forward(const ForwardInput& input, ForwardOutput& output,
-                                 Backend& backend) = 0;
+                                 ModelExecutionContext& exec_ctx) = 0;
 
     virtual const ModelConfig& config() const = 0;
 };

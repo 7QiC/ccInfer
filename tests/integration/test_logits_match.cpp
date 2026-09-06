@@ -16,8 +16,8 @@
 #include "block/block.h"
 #include "block/block_pool.h"
 #include "block/block_storage.h"
-#include "config/model_config.h"
 #include "checkpoint/checkpoint.h"
+#include "config/model_config.h"
 #include "model/registry.h"
 #include "tokenizer/byte_level_bpe_tokenizer.h"
 
@@ -148,7 +148,6 @@ std::vector<float> run_prefill_logits(Backend& backend, const ModelConfig& confi
     fwd_in.positions = Tensor(fixture.positions, ccop::DType::kInt32, {T});
     fwd_in.max_position_id_ = T - 1;
     fwd_in.mode_ = ForwardMode::Prefill;
-    fwd_in.block_storage_ = fixture.storage.get();
     fwd_in.slot_mapping = Tensor(fixture.slot_mapping, ccop::DType::kInt32, {T});
     fwd_in.block_table =
         Tensor(fixture.block_table, ccop::DType::kInt32, {1, fixture.max_blocks_per_req});
@@ -160,7 +159,8 @@ std::vector<float> run_prefill_logits(Backend& backend, const ModelConfig& confi
     ForwardOutput fwd_out{};
     fwd_out.logits = Tensor(output_logits, ccop::DType::kFloat32, {1, V});
 
-    auto fwd_result = (*model)->forward(fwd_in, fwd_out, backend);
+    ModelExecutionContext exec{backend, fixture.storage.get(), nullptr};
+    auto fwd_result = (*model)->forward(fwd_in, fwd_out, exec);
     if (!fwd_result) {
         fprintf(stderr, "run_prefill_logits: forward failed\n");
         return {};
@@ -259,7 +259,6 @@ std::vector<float> run_decode_step(Backend& backend, const ModelConfig& config,
     fwd_in.positions = Tensor(f.positions, ccop::DType::kInt32, {1});
     fwd_in.max_position_id_ = pos;
     fwd_in.mode_ = ForwardMode::Decode;
-    fwd_in.block_storage_ = f.storage.get();
     fwd_in.slot_mapping = Tensor(f.slot_mapping, ccop::DType::kInt32, {1});
     fwd_in.block_table = Tensor(f.block_table, ccop::DType::kInt32, {1, f.max_blocks_per_req});
     fwd_in.query_start_loc = Tensor(f.query_start_loc, ccop::DType::kInt32, {2});
@@ -270,7 +269,8 @@ std::vector<float> run_decode_step(Backend& backend, const ModelConfig& config,
     ForwardOutput fwd_out{};
     fwd_out.logits = Tensor(logits_buf, ccop::DType::kFloat32, {1, V});
 
-    if (!model->forward(fwd_in, fwd_out, backend)) {
+    ModelExecutionContext exec{backend, f.storage.get(), nullptr};
+    if (!model->forward(fwd_in, fwd_out, exec)) {
         fprintf(stderr, "run_decode_step: forward failed at pos=%d\n", pos);
         return {};
     }
@@ -353,7 +353,6 @@ std::vector<int32_t> run_greedy_generation(Backend& backend, const ModelConfig& 
         fwd_in.positions = Tensor(pf_pos, ccop::DType::kInt32, {prompt_len});
         fwd_in.max_position_id_ = prompt_len - 1;
         fwd_in.mode_ = ForwardMode::Prefill;
-        fwd_in.block_storage_ = f.storage.get();
         fwd_in.slot_mapping = Tensor(pf_slot, ccop::DType::kInt32, {prompt_len});
         fwd_in.block_table = Tensor(f.block_table, ccop::DType::kInt32, {1, f.max_blocks_per_req});
         fwd_in.query_start_loc = Tensor(pf_qsl, ccop::DType::kInt32, {2});
@@ -364,7 +363,8 @@ std::vector<int32_t> run_greedy_generation(Backend& backend, const ModelConfig& 
         ForwardOutput fwd_out{};
         fwd_out.logits = Tensor(prefill_logits_buf, ccop::DType::kFloat32, {1, V});
 
-        if (!(*model)->forward(fwd_in, fwd_out, backend)) {
+        ModelExecutionContext exec{backend, f.storage.get(), nullptr};
+        if (!(*model)->forward(fwd_in, fwd_out, exec)) {
             fprintf(stderr, "run_greedy_generation: prefill failed\n");
             return {};
         }
@@ -602,8 +602,8 @@ TEST_F(LogitsMatchTest, GreedyGenerationMatches) {
             GTEST_SKIP() << "HF reference not found for: " << tc.prompt;
         }
 
-        auto cc_gen =
-            run_greedy_generation(*backend_, config_, checkpoint_->weights(), prompt_tokens, tc.max_tokens);
+        auto cc_gen = run_greedy_generation(*backend_, config_, checkpoint_->weights(),
+                                            prompt_tokens, tc.max_tokens);
         ASSERT_FALSE(cc_gen.empty()) << "Generation failed for: " << tc.prompt;
 
         printf("  Prompt tokens: ");

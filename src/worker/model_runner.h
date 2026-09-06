@@ -113,9 +113,7 @@ public:
         input.positions = batch.positions;
         input.num_tokens_ = T;
         input.max_position_id_ = batch.max_position_id;
-        input.block_storage_ = &block_storage;
         input.state_mapping = batch.state_mapping;
-        input.state_storage_ = state_storage;
         input.slot_mapping = batch.slot_mapping;
         input.block_table = batch.block_table;
         input.query_start_loc = batch.query_start_loc;
@@ -141,7 +139,8 @@ public:
         ForwardOutput output;
         output.logits = std::move(*logits_r);
         output.tokens_out = std::move(*tokens_r);
-        auto fwd_r = model.forward(input, output, backend);
+        ModelExecutionContext exec{backend, &block_storage, state_storage};
+        auto fwd_r = model.forward(input, output, exec);
         if (!fwd_r) return std::unexpected(fwd_r.error());
 
         auto s_r = map_result(ccop::greedy_sample(output.logits, batch.logits_indices,

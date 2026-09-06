@@ -30,12 +30,13 @@ Qwen3Model::Qwen3Model(ModelConfig config, Qwen3Weights weights, RopeCache rope_
       rope_cache_(std::move(rope_cache)) {}
 
 Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& output,
-                                 Backend& backend) {
+                                 ModelExecutionContext& exec_ctx) {
+    Backend& backend = exec_ctx.backend;
     assert(output.logits.valid());
     assert(input.num_tokens_ > 0);
     // Exactly one of token_ids / input_embeds must be valid.
     assert(input.token_ids.valid() != input.input_embeds.valid());
-    assert(input.block_storage_ != nullptr);
+    assert(exec_ctx.block_storage != nullptr);
     assert(input.max_position_id_ >= 0 && input.max_position_id_ < rope_cache_.max_position());
 
     const int T = input.num_tokens_;
@@ -155,16 +156,16 @@ Result<void> Qwen3Model::forward(const ForwardInput& input, ForwardOutput& outpu
         {
             // The whole batch enters write_kv_cache once.  DecodeOneToken with
             // write_kv=false uses -1 slots, so the operator skips them.
-            auto k_cache = input.block_storage_->k_layer_tensor(l);
-            auto v_cache = input.block_storage_->v_layer_tensor(l);
+            auto k_cache = exec_ctx.block_storage->k_layer_tensor(l);
+            auto v_cache = exec_ctx.block_storage->v_layer_tensor(l);
             auto r =
                 map_result(ccop::write_kv_cache(k, v, &k_cache, &v_cache, input.slot_mapping, ctx));
             if (!r) return std::unexpected(r.error());
         }
 
         {
-            auto k_blocks = input.block_storage_->k_block_tensor(l);
-            auto v_blocks = input.block_storage_->v_block_tensor(l);
+            auto k_blocks = exec_ctx.block_storage->k_block_tensor(l);
+            auto v_blocks = exec_ctx.block_storage->v_block_tensor(l);
             if (input.mode_ == ForwardMode::Decode) {
                 auto r = map_result(ccop::decode_attention(q, k_blocks, v_blocks, input.block_table,
                                                            input.context_lens, &attn_out_3d,
