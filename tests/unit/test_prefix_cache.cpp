@@ -1,3 +1,5 @@
+#include <vector>
+
 #include <gtest/gtest.h>
 
 #include "cache/prefix_cache.h"
@@ -56,95 +58,6 @@ TEST(PrefixCacheTest, ChainHashesTokenCountOverload) {
     std::vector<int32_t> first16(tokens.begin(), tokens.begin() + 16);
     auto ref = PrefixCache::chain_hashes(first16, 16, 0);
     EXPECT_EQ(hashes[0], ref[0]);
-}
-
-TEST(PrefixCacheTest, InsertLookupRoundTrip) {
-    PrefixCache cache;
-    cache.insert(0xABCD, 3);
-
-    auto opt = cache.lookup(0xABCD);
-    ASSERT_TRUE(opt.has_value());
-    EXPECT_EQ(*opt, 3);
-}
-
-TEST(PrefixCacheTest, LookupMissReturnsNullopt) {
-    PrefixCache cache;
-    EXPECT_FALSE(cache.lookup(0xDEAD).has_value());
-}
-
-TEST(PrefixCacheTest, InsertSameBlockIdempotent) {
-    PrefixCache cache;
-    cache.insert(0xAAAA, 7);
-    cache.insert(0xAAAA, 7);  // idempotent
-    EXPECT_EQ(cache.size(), 1);
-}
-
-TEST(PrefixCacheTest, InsertSameHashDifferentBlockUsesBucket) {
-    PrefixCache cache;
-    cache.insert(0xAAAA, 7);
-    cache.insert(0xAAAA, 8);
-    auto first = cache.lookup(0xAAAA);
-    ASSERT_TRUE(first.has_value());
-    EXPECT_EQ(*first, 7);
-    cache.remove_by_block(7);
-    auto second = cache.lookup(0xAAAA);
-    ASSERT_TRUE(second.has_value());
-    EXPECT_EQ(*second, 8);
-}
-
-TEST(PrefixCacheTest, RemoveMiddleBlockKeepsRemainingMappings) {
-    PrefixCache cache;
-    cache.insert(0xAAAA, 7);
-    cache.insert(0xAAAA, 8);
-    cache.insert(0xAAAA, 9);
-
-    cache.remove_by_block(8);
-    auto first = cache.lookup(0xAAAA);
-    ASSERT_TRUE(first.has_value());
-    EXPECT_EQ(*first, 7);
-
-    cache.remove_by_block(7);
-    auto remaining = cache.lookup(0xAAAA);
-    ASSERT_TRUE(remaining.has_value());
-    EXPECT_EQ(*remaining, 9);
-}
-
-TEST(PrefixCacheTest, RemoveByBlock) {
-    PrefixCache cache;
-    cache.insert(0xABCD, 5);
-    cache.remove_by_block(5);
-    EXPECT_FALSE(cache.lookup(0xABCD).has_value());
-    EXPECT_EQ(cache.size(), 0);
-}
-
-TEST(PrefixCacheTest, LookupAutoStats) {
-    PrefixCache cache;
-    cache.insert(0xAAAA, 1);
-    cache.insert(0xBBBB, 2);
-
-    cache.lookup(0xAAAA);  // hit
-    cache.lookup(0xBBBB);  // hit
-    cache.lookup(0xCCCC);  // miss
-
-    auto s = cache.stats();
-    EXPECT_EQ(s.lookup_hits, 2);
-    EXPECT_EQ(s.lookup_misses, 1);
-}
-
-TEST(PrefixCacheTest, EvictionStats) {
-    PrefixCache cache;
-    cache.record_eviction();
-    cache.record_eviction();
-    EXPECT_EQ(cache.stats().evictions, 2);
-}
-
-TEST(PrefixCacheTest, CachedBlocksCount) {
-    PrefixCache cache;
-    EXPECT_EQ(cache.stats().cached_blocks, 0);
-    cache.insert(0x1111, 1);
-    cache.insert(0x2222, 2);
-    cache.insert(0x3333, 3);
-    EXPECT_EQ(cache.stats().cached_blocks, 3);
 }
 
 }  // namespace

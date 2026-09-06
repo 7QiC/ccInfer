@@ -35,6 +35,7 @@ struct SchedulerTestAccess {
     static auto& running(Scheduler& s) { return s.running_; }
     static auto& by_seq_id(Scheduler& s) { return s.by_seq_id_; }
     static auto& block_pool(Scheduler& s) { return s.block_pool_; }
+    static auto& block_cache(Scheduler& s) { return s.block_cache_; }
     static void cancel_on_scheduler_thread(Scheduler& s, const std::string& id) {
         s.cancel_on_scheduler_thread(id);
     }
@@ -178,6 +179,20 @@ RequestState& add_running(Scheduler& scheduler, RequestState state) {
     return *request;
 }
 
+void release_request_blocks(Scheduler& scheduler, const BlockTable& table) {
+    auto& pool = SchedulerTestAccess::block_pool(scheduler);
+    auto& cache = SchedulerTestAccess::block_cache(scheduler);
+    for (int i = 0; i < table.size(); ++i) {
+        const BlockId id = table[i];
+        if (pool.release_request(id) != 0) continue;
+        if (cache.contains(id)) {
+            cache.mark_idle(id);
+        } else {
+            pool.recycle(id);
+        }
+    }
+}
+
 TEST_F(SchedulerTest, RunningSetAllowsSameSequenceAcrossInFlightBatches) {
     auto& first = add_running(*scheduler_, make_decode(1));
     auto& second = add_running(*scheduler_, make_decode(2));
@@ -269,7 +284,7 @@ TEST_F(SchedulerTest, FullBlockIsNotPrefixVisibleBeforeRetirement) {
     auto batch = schedule_step();
     ASSERT_EQ(batch.items.size(), 1u);
     const auto& chunk = std::get<PrefillChunk>(batch.items.front());
-    auto before = SchedulerTestAccess::block_pool(*scheduler_).lookup_prefix_cache(chunk.tokens);
+    auto before = SchedulerTestAccess::block_cache(*scheduler_).lookup_prefix_cache(chunk.tokens);
     EXPECT_EQ(before.prefix_hit_blocks, 0);
 
     BatchResult result;
@@ -288,23 +303,24 @@ TEST_F(SchedulerTest, FullBlockIsNotPrefixVisibleBeforeRetirement) {
     io_.run();
     update.get();
 
-    auto after = SchedulerTestAccess::block_pool(*scheduler_).lookup_prefix_cache(chunk.tokens);
+    auto after = SchedulerTestAccess::block_cache(*scheduler_).lookup_prefix_cache(chunk.tokens);
     ASSERT_EQ(after.prefix_hit_blocks, 1);
-    SchedulerTestAccess::block_pool(*scheduler_).release_blocks(after.block_table);
-    SchedulerTestAccess::block_pool(*scheduler_).release_blocks(chunk.block_table);
+    release_request_blocks(*scheduler_, after.block_table);
+    release_request_blocks(*scheduler_, chunk.block_table);
 }
 
 TEST_F(SchedulerTest, PartialPrefixHitStartsPrefillAfterCachedBlocks) {
     SchedulerTestAccess::accepting(*scheduler_).store(true);
     auto& pool = SchedulerTestAccess::block_pool(*scheduler_);
+    auto& cache = SchedulerTestAccess::block_cache(*scheduler_);
 
     std::vector<int32_t> prompt(20, 7);
     auto seeded = pool.allocate_blocks(1);
     ASSERT_TRUE(seeded);
     const int32_t seeded_block = (*seeded)[0];
     std::vector<int32_t> full_block(prompt.begin(), prompt.begin() + kKVBlockSize);
-    pool.publish_full_block(0, full_block, seeded_block);
-    pool.release_blocks(*seeded);
+    cache.publish_full_block(0, full_block, seeded_block);
+    release_request_blocks(*scheduler_, *seeded);
 
     SchedulerRequest request;
     request.request_id = "partial-prefix";

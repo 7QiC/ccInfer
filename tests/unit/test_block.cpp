@@ -8,29 +8,27 @@ namespace {
 
 TEST(BlockTest, InitialState) {
     Block b;
-    EXPECT_EQ(b.block_id, -1);
+    EXPECT_EQ(b.id, kInvalidBlockId);
     EXPECT_EQ(b.ref_count, 0);
-    EXPECT_EQ(b.block_hash, 0);
-    EXPECT_FALSE(b.is_free());
-    EXPECT_FALSE(b.is_cached());
+    EXPECT_TRUE(b.is_free());
+    EXPECT_FALSE(b.is_in_use());
 }
 
-TEST(BlockTest, Flags) {
+TEST(BlockTest, Status) {
     Block b;
-    b.flags = static_cast<uint32_t>(BlockFlags::kInFreeList);
-    EXPECT_TRUE(b.is_free());
-    EXPECT_FALSE(b.is_cached());
+    b.status = BlockStatus::InUse;
+    EXPECT_TRUE(b.is_in_use());
+    EXPECT_FALSE(b.is_free());
 
-    b.flags =
-        static_cast<uint32_t>(BlockFlags::kInFreeList) | static_cast<uint32_t>(BlockFlags::kCached);
+    b.status = BlockStatus::Free;
     EXPECT_TRUE(b.is_free());
-    EXPECT_TRUE(b.is_cached());
+    EXPECT_FALSE(b.is_in_use());
 }
 
 TEST(BlockTest, FreeListPushPop) {
     FreeList fl;
     Block blocks[3];
-    for (int i = 0; i < 3; ++i) blocks[i].block_id = i;
+    for (int i = 0; i < 3; ++i) blocks[i].id = i;
 
     fl.push_back(blocks[0]);
     fl.push_back(blocks[1]);
@@ -39,7 +37,7 @@ TEST(BlockTest, FreeListPushPop) {
 
     auto& front = fl.front();
     fl.pop_front();
-    EXPECT_EQ(front.block_id, 0);
+    EXPECT_EQ(front.id, 0);
     EXPECT_EQ(static_cast<int>(fl.size()), 2);
 
     fl.pop_front();

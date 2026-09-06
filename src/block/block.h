@@ -8,61 +8,41 @@ namespace ccinfer {
 
 constexpr int kKVBlockSize = 16;
 
-enum class BlockFlags : uint32_t {
-    kNone = 0,
-    kInFreeList = 1 << 0,
-    kCached = 1 << 1,
-    kInLRU = 1 << 2,
+using BlockId = std::int32_t;
+inline constexpr BlockId kInvalidBlockId = -1;
+
+enum class BlockStatus : std::uint8_t {
+    Free,
+    InUse,
 };
 
-inline constexpr bool has_flag(uint32_t flags, BlockFlags f) noexcept {
-    return (flags & static_cast<uint32_t>(f)) != 0;
-}
+using FreeHook = boost::intrusive::list_member_hook<>;
 
-// Block state machine (4 canonical states):
-//   FREE          — kInFreeList,           ref_count=0
-//   ACTIVE        — no flags,              ref_count>0
-//   ACTIVE_CACHED — kCached,               ref_count>0
-//   CACHED_IDLE   — kCached | kInLRU,      ref_count=0
+// Resource metadata for one KV block. Block objects live permanently in
+// BlockPool's fixed metadata storage and must never be moved after being
+// linked into the free list.
 //
-// Blocks live in fixed-address metadata storage owned by BlockPool, such as
-// std::unique_ptr<Block[]>.
-// They must never be moved after intrusive-list hooks are inserted.
-
+// Cache ownership is intentionally absent: it is represented by a
+// BlockCacheEntry in cache/, never by Block fields.
 struct Block {
-    int32_t block_id = -1;
-    int32_t ref_count = 0;
-    uint64_t block_hash = 0;
-    uint32_t flags = static_cast<uint32_t>(BlockFlags::kNone);
+    BlockId id = kInvalidBlockId;
+    int32_t ref_count = 0;  // request / sequence refs only; cache does not count
+    BlockStatus status = BlockStatus::Free;
 
-    boost::intrusive::list_member_hook<> free_hook;
-    boost::intrusive::list_member_hook<> lru_hook;
+    FreeHook free_hook;
 
-    // Immovable — intrusive-list hooks require stable addresses.
-    // Owning container must pre-allocate capacity (e.g. std::unique_ptr<Block[]>)
-    // and never reallocate after hooks are inserted.
     Block() = default;
     Block(const Block&) = delete;
     Block& operator=(const Block&) = delete;
     Block(Block&&) = delete;
     Block& operator=(Block&&) = delete;
 
-    bool is_free() const noexcept { return has_flag(flags, BlockFlags::kInFreeList); }
-    bool is_cached() const noexcept { return has_flag(flags, BlockFlags::kCached); }
-    bool is_in_lru() const noexcept { return has_flag(flags, BlockFlags::kInLRU); }
-    bool is_active() const noexcept { return ref_count > 0; }
-    bool is_cached_idle() const noexcept { return is_cached() && is_in_lru() && ref_count == 0; }
-
-    void set_flag(BlockFlags f) noexcept { flags |= static_cast<uint32_t>(f); }
-    void clear_flag(BlockFlags f) noexcept { flags &= ~static_cast<uint32_t>(f); }
+    bool is_free() const noexcept { return status == BlockStatus::Free; }
+    bool is_in_use() const noexcept { return status == BlockStatus::InUse; }
 };
 
 using FreeList = boost::intrusive::list<
     Block,
     boost::intrusive::member_hook<Block, boost::intrusive::list_member_hook<>, &Block::free_hook>>;
-
-using LruList = boost::intrusive::list<
-    Block,
-    boost::intrusive::member_hook<Block, boost::intrusive::list_member_hook<>, &Block::lru_hook>>;
 
 }  // namespace ccinfer

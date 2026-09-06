@@ -65,25 +65,6 @@ target_link_libraries(ccinfer_core
         CUDA::cudart
 )
 
-add_library(ccinfer_cache STATIC
-    cache/prefix_cache.cpp
-)
-target_include_directories(ccinfer_cache
-    PUBLIC
-        ${CMAKE_SOURCE_DIR}/src
-        ${Boost_INCLUDE_DIRS}
-    PRIVATE
-        ${CUDAToolkit_INCLUDE_DIRS}
-)
-target_link_libraries(ccinfer_cache
-    PUBLIC
-        ccinfer_core
-        ccop::ccop
-        spdlog::spdlog
-    PRIVATE
-        CUDA::cudart
-)
-
 add_library(ccinfer_block STATIC
     block/block_pool.cpp
     block/block_storage.cpp
@@ -97,7 +78,6 @@ target_include_directories(ccinfer_block
 )
 target_link_libraries(ccinfer_block
     PUBLIC
-        ccinfer_cache
         ccinfer_core
         ccop::ccop
         spdlog::spdlog
@@ -118,6 +98,27 @@ target_include_directories(ccinfer_state
 )
 target_link_libraries(ccinfer_state
     PUBLIC
+        ccinfer_core
+        ccop::ccop
+        spdlog::spdlog
+    PRIVATE
+        CUDA::cudart
+)
+
+add_library(ccinfer_cache STATIC
+    cache/prefix_cache.cpp
+    cache/block_cache.cpp
+)
+target_include_directories(ccinfer_cache
+    PUBLIC
+        ${CMAKE_SOURCE_DIR}/src
+        ${Boost_INCLUDE_DIRS}
+    PRIVATE
+        ${CUDAToolkit_INCLUDE_DIRS}
+)
+target_link_libraries(ccinfer_cache
+    PUBLIC
+        ccinfer_block
         ccinfer_core
         ccop::ccop
         spdlog::spdlog

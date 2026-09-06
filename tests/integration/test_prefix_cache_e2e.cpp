@@ -8,18 +8,39 @@
 #include "backend/backend.h"
 #include "block/block_pool.h"
 #include "block/block_storage.h"
+#include "cache/block_cache.h"
 #include "facade/ops.h"
 
 namespace ccinfer {
 namespace {
 
-void publish_blocks(BlockPool& pool, const std::vector<int32_t>& tokens, const BlockTable& table) {
+void publish_blocks(BlockPool& pool, BlockCache& cache, const std::vector<int32_t>& tokens,
+                    const BlockTable& table) {
     uint64_t parent_hash = 0;
     for (int i = 0; i < table.size(); ++i) {
         const auto begin = tokens.begin() + i * pool.block_size();
         std::vector<int32_t> block_tokens(begin, begin + pool.block_size());
-        parent_hash = pool.publish_full_block(parent_hash, block_tokens, table[i]);
+        parent_hash = cache.publish_full_block(parent_hash, block_tokens, table[i]);
     }
+}
+
+void release_request_blocks(BlockPool& pool, BlockCache& cache, const BlockTable& table) {
+    for (int i = 0; i < table.size(); ++i) {
+        const BlockId id = table[i];
+        if (pool.release_request(id) != 0) continue;
+        if (cache.contains(id)) {
+            cache.mark_idle(id);
+        } else {
+            pool.recycle(id);
+        }
+    }
+}
+
+Result<BlockTable> allocate_with_eviction(BlockPool& pool, BlockCache& cache, int num_blocks) {
+    while (pool.num_free_blocks() < num_blocks) {
+        if (!cache.evict_one()) break;
+    }
+    return pool.allocate_blocks(num_blocks);
 }
 
 // Full lifecycle: lookup/allocate → publish blocks → release →
@@ -44,20 +65,22 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
 
     auto storage = std::move(*sr);
     BlockPool pool(kMaxBlocks, block_size);
+    BlockCache cache(pool);
 
     // 2. Request 1: prepare and cache.
     std::vector<int32_t> tokens(kNumTokens);
     for (int i = 0; i < kNumTokens; ++i) tokens[i] = i + 1;
 
-    auto pr1 = pool.lookup_prefix_cache(tokens);
-    auto alloc1 = pool.allocate_blocks(kNumTokens / block_size - pr1.block_table.size());
+    auto pr1 = cache.lookup_prefix_cache(tokens);
+    auto alloc1 =
+        allocate_with_eviction(pool, cache, kNumTokens / block_size - pr1.block_table.size());
     ASSERT_TRUE(alloc1.has_value());
     for (int b = 0; b < alloc1->size(); ++b) pr1.block_table.push_back((*alloc1)[b]);
     ASSERT_EQ(pr1.block_table.size(), 2);
     ASSERT_EQ(pr1.prefix_hit_blocks, 0);
     int free_before_cache = pool.num_free_blocks();
 
-    publish_blocks(pool, tokens, pr1.block_table);
+    publish_blocks(pool, cache, tokens, pr1.block_table);
 
     // 3. Write KV data into the blocks, then release.
     cudaStream_t stream;
@@ -76,16 +99,16 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
     cudaMemcpyAsync(storage->v_layer_tensor(0).data(), h_v.data(), kv_elems * sizeof(__nv_bfloat16),
                     cudaMemcpyHostToDevice, stream);
 
-    pool.release_blocks(pr1.block_table);
+    release_request_blocks(pool, cache, pr1.block_table);
 
     // 4. Verify blocks went to LRU (CACHED_IDLE).
-    auto stats1 = pool.stats();
+    auto stats1 = cache.stats();
     EXPECT_EQ(stats1.block_cached_idle, 2);
     // Free count unchanged (blocks moved from ACTIVE to LRU, not FREE).
     EXPECT_EQ(pool.num_free_blocks(), free_before_cache);
 
     // 5. Request 2: same tokens → prefix hit.
-    auto pr2 = pool.lookup_prefix_cache(tokens);
+    auto pr2 = cache.lookup_prefix_cache(tokens);
     EXPECT_EQ(pr2.block_table.size(), 2);
     EXPECT_EQ(pr2.prefix_hit_blocks, 2);
     EXPECT_EQ(pr2.block_table.shared_count(), 2);
@@ -143,34 +166,34 @@ TEST(PrefixCacheE2ETest, SharedPrefixProducesCorrectOutput) {
     }
 
     // 7. Release second request.
-    pool.release_blocks(pr2.block_table);
-    EXPECT_EQ(pool.stats().block_cached_idle, 2);
+    release_request_blocks(pool, cache, pr2.block_table);
+    EXPECT_EQ(cache.stats().block_cached_idle, 2);
 
     // 8. LRU eviction: fill cache with distinct tokens, then verify eviction.
     int cached_count = 2;
     for (int i = 0; cached_count < kMaxBlocks; ++i) {
         std::vector<int32_t> t(32, 100 + i);
-        auto px = pool.lookup_prefix_cache(t);
-        auto alloc_px =
-            pool.allocate_blocks(static_cast<int>(t.size()) / block_size - px.block_table.size());
+        auto px = cache.lookup_prefix_cache(t);
+        auto alloc_px = allocate_with_eviction(
+            pool, cache, static_cast<int>(t.size()) / block_size - px.block_table.size());
         ASSERT_TRUE(alloc_px.has_value());
         for (int b = 0; b < alloc_px->size(); ++b) px.block_table.push_back((*alloc_px)[b]);
-        publish_blocks(pool, t, px.block_table);
-        pool.release_blocks(px.block_table);
+        publish_blocks(pool, cache, t, px.block_table);
+        release_request_blocks(pool, cache, px.block_table);
         // Some may collide with previous hashes; count actual cached blocks.
         cached_count =
-            pool.stats().block_cached_idle + pool.stats().block_active + pool.stats().block_free;
+            cache.stats().block_cached_idle + cache.stats().block_active + cache.stats().block_free;
     }
 
     // At this point free list should be 0 or close to it.
     // allocate_blocks should trigger eviction.
-    auto stats_before = pool.stats();
-    auto alloc = pool.allocate_blocks(1);
+    auto stats_before = cache.stats();
+    auto alloc = allocate_with_eviction(pool, cache, 1);
     ASSERT_TRUE(alloc.has_value());
-    auto stats_after = pool.stats();
+    auto stats_after = cache.stats();
     EXPECT_LE(stats_after.block_cached_idle, stats_before.block_cached_idle);
     if (stats_before.block_free == 0) {
-        EXPECT_GT(stats_after.prefix.evictions, stats_before.prefix.evictions);
+        EXPECT_GT(stats_after.evictions, stats_before.evictions);
     }
 
     cudaFree(d_q);

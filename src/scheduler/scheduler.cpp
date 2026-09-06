@@ -5,6 +5,7 @@
 #include <iterator>
 #include <limits>
 #include <type_traits>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -49,6 +50,7 @@ Scheduler::Scheduler(asio::io_context& io, Executor& executor, EngineConfig conf
       idle_timer_(io),
       core_(std::make_unique<EngineCore>(io, *this, executor, config)),
       block_pool_(config.max_blocks, config.kv_block_size),
+      block_cache_(block_pool_),
       shutdown_future_(shutdown_promise_.get_future().share()) {}
 
 Scheduler::~Scheduler() = default;
@@ -76,7 +78,7 @@ void Scheduler::cancel(std::string request_id) {
 }
 
 Capacity Scheduler::capacity() const {
-    const auto stats = block_pool_.stats();
+    const auto stats = block_cache_.stats();
     return Capacity{engine_config_.max_sequences,
                     static_cast<int>(running_.size() + skip_.size()),
                     stats.block_free,
@@ -84,10 +86,10 @@ Capacity Scheduler::capacity() const {
                     stats.block_size,
                     stats.block_active,
                     stats.block_cached_idle,
-                    stats.prefix.lookup_hits,
-                    stats.prefix.lookup_misses,
-                    stats.prefix.evictions,
-                    static_cast<uint64_t>(stats.prefix.cached_blocks)};
+                    stats.lookup_hits,
+                    stats.lookup_misses,
+                    stats.evictions,
+                    static_cast<uint64_t>(stats.cached_blocks)};
 }
 
 void Scheduler::start() {
@@ -325,14 +327,14 @@ asio::awaitable<bool> Scheduler::admit_one_waiting(BatchBuildContext& ctx) {
         co_return true;
     }
 
-    auto lookup = block_pool_.lookup_prefix_cache(state.prompt_tokens);
+    auto lookup = block_cache_.lookup_prefix_cache(state.prompt_tokens);
     const int blocks_needed =
         (prompt_len + block_pool_.block_size() - 1) / block_pool_.block_size();
     const int missing_blocks = blocks_needed - lookup.block_table.size();
     Result<BlockTable> allocated = BlockTable{};
-    if (missing_blocks > 0) allocated = block_pool_.allocate_blocks(missing_blocks);
+    if (missing_blocks > 0) allocated = allocate_kv_blocks(missing_blocks);
     if (!allocated) {
-        block_pool_.release_blocks(lookup.block_table);
+        release_request_blocks(lookup.block_table);
         if (allocated.error() == ErrorCode::KVBlockExhausted) {
             // KV shortage: free skipped sequences first, then suspend one
             // running sequence. A suspension pauses new admissions until a
@@ -350,7 +352,7 @@ asio::awaitable<bool> Scheduler::admit_one_waiting(BatchBuildContext& ctx) {
     for (int i = 0; i < allocated->size(); ++i) lookup.block_table.push_back((*allocated)[i]);
 
     if (!accepting_.load()) {
-        block_pool_.release_blocks(lookup.block_table);
+        release_request_blocks(lookup.block_table);
         send_event(state.sink, std::unexpected(ErrorCode::ServerShuttingDown));
         erase_request(request);
         co_return true;
@@ -513,7 +515,7 @@ void Scheduler::build_state_work(BatchBuildContext& ctx, RequestState& state) {
     const int required_blocks =
         (required_tokens + block_pool_.block_size() - 1) / block_pool_.block_size();
     if (required_blocks > scheduling.block_table.size()) {
-        auto blocks = block_pool_.allocate_blocks(required_blocks - scheduling.block_table.size());
+        auto blocks = allocate_kv_blocks(required_blocks - scheduling.block_table.size());
         if (!blocks) {
             block_shortage_pending_ = true;
             return;
@@ -576,7 +578,7 @@ void Scheduler::prepare_for_wait(RequestState& state) {
 void Scheduler::release_scheduling_blocks(RequestState& state) {
     if (!state.scheduling) return;
     by_seq_id_.erase(state.scheduling->seq_id);
-    block_pool_.release_blocks(state.scheduling->block_table);
+    release_request_blocks(state.scheduling->block_table);
     state.scheduling.reset();
 }
 
@@ -593,6 +595,29 @@ asio::awaitable<void> Scheduler::release_and_move_to_wait(const RequestPtr& requ
         }
     }
     waiting_.push_front(request);
+}
+
+Result<BlockTable> Scheduler::allocate_kv_blocks(int num_blocks) {
+    if (num_blocks <= 0) return BlockTable{};
+    while (block_pool_.num_free_blocks() < num_blocks) {
+        if (!block_cache_.evict_one()) break;
+    }
+    return block_pool_.allocate_blocks(num_blocks);
+}
+
+void Scheduler::release_request_blocks(const BlockTable& table) {
+    block_pool_.release_blocks(table);
+    std::unordered_set<int32_t> seen;
+    for (int i = 0; i < table.size(); ++i) {
+        const int32_t id = table[i];
+        if (!seen.insert(id).second) continue;
+        if (block_pool_.ref_count(id) != 0) continue;
+        if (block_cache_.contains(id)) {
+            block_cache_.mark_idle(id);
+        } else {
+            block_pool_.recycle(id);
+        }
+    }
 }
 
 void Scheduler::retire_reservation(RequestState& state, const WorkItem& item) {
@@ -701,7 +726,7 @@ void Scheduler::retire_work(const WorkItem& original, const WorkItemResult& work
                 scheduling.pending_hash_tokens.begin() + block_pool_.block_size());
             const int block_index = next_block_index++;
             assert(block_index >= 0 && block_index < scheduling.block_table.size());
-            scheduling.parent_hash = block_pool_.publish_full_block(
+            scheduling.parent_hash = block_cache_.publish_full_block(
                 scheduling.parent_hash, full_block, scheduling.block_table[block_index]);
             scheduling.pending_hash_tokens.erase(
                 scheduling.pending_hash_tokens.begin(),

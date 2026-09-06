@@ -219,6 +219,7 @@ TEST(KVCacheE2ETest, PrefillAndDecodeWithRelease) {
     }
 
     pool.release_blocks(*alloc);
+    for (int i = 0; i < alloc->size(); ++i) pool.recycle((*alloc)[i]);
     EXPECT_EQ(pool.num_free_blocks(), kMaxBlocks);
 
     auto sync_err = cudaStreamSynchronize(stream);

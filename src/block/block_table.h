@@ -41,7 +41,7 @@ public:
 private:
     std::vector<int32_t> block_ids_;
     // Number of prefix-hit shared blocks at the front of this table.
-    // release_blocks() determines block lifetime via ref_count, not shared_count_.
+    // BlockPool ref counts determine lifetime, not this hint.
     int32_t shared_count_ = 0;
 };
 

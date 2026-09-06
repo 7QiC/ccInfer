@@ -15,8 +15,9 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
 
-#include "block/block_pool.h"
 #include "base/types.h"
+#include "block/block_pool.h"
+#include "cache/block_cache.h"
 #include "config/engine_config.h"
 #include "executor/executor.h"
 
@@ -132,6 +133,8 @@ private:
     static void prepare_for_wait(RequestState& state);
     void release_scheduling_blocks(RequestState& state);
     asio::awaitable<void> release_and_move_to_wait(const RequestPtr& request);
+    Result<BlockTable> allocate_kv_blocks(int num_blocks);
+    void release_request_blocks(const BlockTable& table);
 
     asio::awaitable<void> update_from_output(const ScheduledBatch& batch,
                                              const BatchResult& result);
@@ -172,6 +175,7 @@ private:
     uint64_t next_batch_id_{1};
     uint64_t next_seq_id_{1};
     BlockPool block_pool_;
+    BlockCache block_cache_;
 
     std::atomic<bool> shutdown_requested_{false};
     std::promise<void> shutdown_promise_;
