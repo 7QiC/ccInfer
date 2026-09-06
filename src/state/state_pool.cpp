@@ -22,6 +22,13 @@ Result<std::unique_ptr<StatePool>> StatePool::create(Backend& backend, const Mod
     if (!storage_r) return std::unexpected(storage_r.error());
     pool->storage_ = std::move(*storage_r);
 
+    pool->slots_.resize(static_cast<std::size_t>(max_active + cached_capacity));
+    for (int slot = 0; slot < max_active + cached_capacity; ++slot) {
+        pool->slots_[static_cast<std::size_t>(slot)].slot_id = slot;
+        pool->slots_[static_cast<std::size_t>(slot)].kind =
+            slot < max_active ? StateSlotKind::Active : StateSlotKind::Cached;
+    }
+
     pool->free_active_.reserve(static_cast<std::size_t>(max_active));
     for (int slot = 0; slot < max_active; ++slot) {
         pool->free_active_.push_back(slot);
@@ -39,10 +46,14 @@ Result<void> StatePool::acquire_active(SequenceId seq) {
 
     const StateSlotId slot = free_active_.back();
     free_active_.pop_back();
+    auto& meta = slots_[static_cast<std::size_t>(slot)];
+    assert(meta.is_free() && meta.is_active_kind());
     if (auto r = storage_->zero_slot(slot); !r) {
         free_active_.push_back(slot);
         return r;
     }
+    meta.status = StateSlotStatus::Occupied;
+    meta.owner_seq = seq;
     active_.emplace(seq, slot);
     return {};
 }
@@ -53,6 +64,10 @@ Result<void> StatePool::release_active(SequenceId seq) {
     const StateSlotId slot = it->second;
     active_.erase(it);
     assert(slot >= 0 && slot < max_active_);
+    auto& meta = slots_[static_cast<std::size_t>(slot)];
+    assert(meta.is_occupied() && meta.is_active_kind() && meta.owner_seq == seq);
+    meta.status = StateSlotStatus::Free;
+    meta.owner_seq = 0;
     free_active_.push_back(slot);
     return {};
 }
@@ -76,10 +91,14 @@ Result<void> StatePool::snapshot(uint64_t prefix_hash, int frontier_block,
     if (free_cached_.empty()) return std::unexpected(ErrorCode::MaxSequencesReached);
     const StateSlotId cached_slot = free_cached_.back();
     free_cached_.pop_back();
+    auto& meta = slots_[static_cast<std::size_t>(cached_slot)];
+    assert(meta.is_free() && meta.is_cached_kind());
     if (auto r = storage_->copy_slot(active_slot, cached_slot); !r) {
         free_cached_.push_back(cached_slot);
         return r;
     }
+    meta.status = StateSlotStatus::Occupied;
+    meta.prefix_hash = prefix_hash;
     cached_by_hash_.emplace(prefix_hash, cached_slot);
     return {};
 }

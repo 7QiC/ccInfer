@@ -39,6 +39,22 @@ ModelConfig qwen35_config() {
     return cfg;
 }
 
+TEST(StateSlotTest, KindAndFreeOccupiedStateMachine) {
+    StateSlot slot;
+    EXPECT_EQ(slot.slot_id, kInvalidStateSlot);
+    EXPECT_TRUE(slot.is_free());
+    EXPECT_FALSE(slot.is_occupied());
+    EXPECT_TRUE(slot.is_active_kind());
+    EXPECT_FALSE(slot.is_cached_kind());
+
+    slot.kind = StateSlotKind::Cached;
+    slot.status = StateSlotStatus::Occupied;
+    slot.prefix_hash = 0x1234;
+    EXPECT_TRUE(slot.is_cached_kind());
+    EXPECT_TRUE(slot.is_occupied());
+    EXPECT_FALSE(slot.is_free());
+}
+
 TEST(StatePoolTest, ActiveAcquireReleaseReusesSlots) {
     auto backend_r = Backend::create(0);
     if (!backend_r) GTEST_SKIP() << "CUDA unavailable";

@@ -65,6 +65,7 @@ private:
     int frontier_depth_ = 0;
     int cached_capacity_ = 0;
     int cached_base_ = 0;
+    std::vector<StateSlot> slots_;
     std::vector<StateSlotId> free_active_;
     std::vector<StateSlotId> free_cached_;
     std::unordered_map<SequenceId, StateSlotId> active_;
