@@ -1,44 +1,120 @@
 # Repository Guidelines
 
-Contributor guide for ccInfer, a high-performance C++23 LLM inference framework targeting CUDA GPUs.
+ccInfer is a C++23 LLM inference framework targeting CUDA GPUs. Optimize for
+correctness, explicit ownership, asynchronous execution, and measurable
+end-to-end inference performance.
 
-## Project Structure & Module Organization
+## Project Structure
 
-- `src/` — Source code. `common/` holds shared types (`Result<T>`, error codes, request types, and channels); `backend/` abstracts the GPU backend (`Backend`, `Buffer`); `cache/` implements the paged KV cache and prefix cache; `core/` defines the framework `Tensor` and dtype traits; `engine/`, `executor/`, `worker/`, and `scheduler/` form the execution pipeline; `model/` handles model loading and Qwen3; `facade/` adapts external libraries such as ccop; `http/` and `tokenizer/` make up the server layer; `main.cpp` is the server entry point.
-- `tests/` — `unit/` GTest tests and `integration/` end-to-end tests.
-- `docs/`, `scripts/`, `models/`, `tools/` — Project notes, Python benchmark/profiling scripts, downloaded model weights, and helper utilities.
+- `src/common/` — shared types, errors, request types, channels.
+- `src/backend/` — backend abstraction and device-memory `Buffer`.
+- `src/cache/` — paged KV cache and prefix cache.
+- `src/core/` — framework `Tensor` and dtype infrastructure.
+- `src/engine/`, `src/executor/`, `src/worker/`, `src/scheduler/` — execution pipeline.
+- `src/model/` — model loading and model implementations.
+- `src/facade/` — adapters for external libraries such as ccop.
+- `src/http/`, `src/tokenizer/` — serving layer.
+- `tests/unit/`, `tests/integration/` — GTest and end-to-end tests.
+- `third_party/ccop/` — independent CUDA operator-library submodule.
 
-## Build, Test, and Development Commands
+When working inside `third_party/ccop/`, follow its own `AGENTS.md`. Its
+operator-learning rules do not apply to normal ccInfer framework code.
+
+## Build & Test
 
 ```bash
 conda activate llm-infer
 cmake -S . -B build -DBUILD_SERVER=ON -DCMAKE_CUDA_ARCHITECTURES=89
-make -C build -j$(nproc)
+cmake --build build -j$(nproc)
 ctest --test-dir build
 ```
 
-Configure with `-DBUILD_SERVER=ON` to build the HTTP server (`BUILD_TESTS` defaults to ON). Run the server with `./build/src/ccinfer-server --port 8080 --model-path ./models/qwen3-0.6B`. Requires CUDA Toolkit 11.8+, GCC 13+, CMake 3.20+, Boost 1.83+, nlohmann-json, fmt, spdlog.
+Run the server with:
 
-## Coding Style & Naming Conventions
+```bash
+./build/src/ccinfer-server --port 8080 --model-path ./models/qwen3-0.6B
+```
 
-C++23 with the `ccinfer` namespace. `.clang-format` enforces Google base style: 100-column limit, 4-space indentation, no tabs; run `clang-format-20` on changed files before committing. Classes/enums use PascalCase; functions, variables, and files use snake_case; members end with an underscore (e.g. `int count_;`). Parameter semantics: read-only parameters use `const T&`; parameters that are written (outputs/in-place) take a pointer `T*`, never a reference. Headers use `.h` with `#pragma once` and sorted includes (source-file header first, then C std → C++ std → third-party → project). Errors use `Result<T> = std::expected<T, ErrorCode>` from `common/error_code.h`; never throw in hot paths. Device memory is owned by the framework-side `Buffer` (`backend/buffer.h`). Internal invariants that are guaranteed by correct function logic should use `assert` instead of returning `ErrorCode`; keep `Result` validation at module boundaries.
+Never weaken assertions or tolerances to make tests pass.
 
-## Comment Policy
+## Architecture & Engineering Rules
 
-- No unnecessary comments: add concise comments only where intent or constraints are not obvious from the code. Never restate code, add line-by-line noise, or copy conversational decisions into code comments.
-- Prefer self-documenting code: naming and structure carry meaning; comments explain "why", not "what".
+- Device memory is owned by framework-side `Buffer`; views/operators do not
+  acquire ownership implicitly.
+- Use `Result<T> = std::expected<T, ErrorCode>` at module/API boundaries.
+  Internal invariants guaranteed by correct program logic use `assert`.
+  Do not throw exceptions on hot paths.
+- Preserve asynchronous execution semantics. Do not add host blocking,
+  unnecessary stream synchronization, or implicit device synchronization.
+- Keep ownership and lifetime explicit across scheduler, executor, worker,
+  KV-cache, and asynchronous in-flight work.
+- Prefer simple state ownership and explicit contracts over duplicated state,
+  hidden synchronization, or defensive state copies.
+- Changes to scheduling or execution flow must preserve established ordering,
+  retirement, and ownership semantics; do not simplify away supported in-flight
+  concurrency without an explicit design change.
 
-## Testing Guidelines
+## Performance Work
 
-Tests use GTest, one test file per module, named `test_<module>.cpp`. Unit tests should run without a GPU; integration tests may require a GPU and/or a local Qwen3-0.6B model. Run everything with `ctest --test-dir build`, or the scheduler suite with `ctest --test-dir build -R SchedulerTest`. Never weaken assertions or relax tolerances to make a failing test pass — fix the root cause.
+Treat inference performance as a cross-layer problem:
 
-## Commit & Pull Request Guidelines
+`request -> scheduler -> executor -> kernels -> KV/cache -> runtime -> GPU`
 
-History follows Conventional Commits: `feat:`, `fix:`, `refactor:`, `perf:`, `test:`, `docs:`, `chore:`. Use a lowercase imperative subject under 72 characters, e.g. `feat: add prefix-cache LRU eviction`. Keep PRs to one logical change, describe what and why, link the relevant issue, and include benchmark or correctness evidence for performance changes.
+Before deep optimization, identify the actual bottleneck. Consider:
 
-## Git Operations
+- scheduler and batching behavior;
+- CPU launch gaps and synchronization;
+- CUDA Graph applicability;
+- KV-cache layout and memory traffic;
+- kernel performance;
+- communication/overlap when distributed execution is involved.
 
-- Never run repository-mutating git operations (commit, push, branch, tag, reset, revert, merge, stash, etc.) without the user's explicit request or consent. The user may say "commit" / "push" directly, which authorizes that specific operation only.
-- Read-only git commands (`git status`, `git log`, `git diff`, `git show`) are always allowed.
-- When the user requests a commit or push, stage only the files the user asked for; do not add unrelated working-tree changes.
-- If a requested git operation would include unrelated changes, stop and ask before proceeding.
+Use pipeline/system profiling before spending significant effort on isolated
+kernels. Kernel-specific optimization belongs primarily in ccop.
+
+Performance changes should record representative workload/shape information and
+before/after measurements. Prefer explanations tied to the measured bottleneck,
+not surface-level micro-optimizations.
+
+## Coding Style
+
+C++23, namespace `ccinfer`. Follow `.clang-format` (Google base, 100 columns,
+4 spaces).
+
+- Types/enums: `PascalCase`
+- Functions/variables/files: `snake_case`
+- Members: trailing `_`
+- Read-only parameters: `const T&`
+- Output/in-place parameters: `T*`
+- Headers: `.h` + `#pragma once`
+- Include order: matching header first, then standard, third-party, project
+
+Comments explain non-obvious intent, invariants, ownership, synchronization, or
+performance constraints. Do not restate code or preserve conversational history
+in comments.
+
+## Testing
+
+Tests use GTest. Unit tests should avoid GPU requirements when possible;
+integration tests may require CUDA and local model weights.
+
+Run the smallest relevant test while iterating, then run `ctest --test-dir build`
+before considering the change complete.
+
+Never:
+- relax correctness tolerances to hide a bug;
+- weaken assertions to make a test pass;
+- remove coverage for an existing behavior without an explicit design change.
+
+## Commits & Git Safety
+
+Use Conventional Commits (`feat:`, `fix:`, `refactor:`, `perf:`, `test:`,
+`docs:`, `chore:`) and keep each commit to one logical change.
+
+Never perform mutating git operations without explicit user authorization.
+Read-only commands such as `git status`, `git diff`, `git log`, and `git show`
+are allowed.
+
+`third_party/ccop` is a separate Git repository. Do not accidentally mix ccop
+changes with unrelated ccInfer changes, and do not update the ccop submodule
+pointer unless that is part of the requested work.
